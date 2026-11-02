@@ -1,3 +1,4 @@
+mod boxdraw;
 mod glyphs;
 mod input;
 mod links;

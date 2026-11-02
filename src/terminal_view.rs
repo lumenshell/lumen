@@ -23,6 +23,7 @@ use gpui::{
     canvas, div, fill, font, point, prelude::FluentBuilder, px, size,
 };
 
+use crate::boxdraw;
 use crate::glyphs::{self, Glyph, GlyphCache};
 use crate::links::{self, Link, LinkFinder};
 use crate::mouse::{self, Action as MouseAction, Button as ReportButton};
@@ -494,6 +495,7 @@ fn link_modifier(m: &Modifiers) -> bool {
 struct Frame {
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
     glyphs: Vec<GlyphDraw>,
+    shapes: Vec<(boxdraw::Shape, Hsla)>,
     decorations: Vec<Decoration>,
     cursor: Option<(Bounds<Pixels>, CursorShape)>,
     cursor_color: Hsla,
@@ -542,6 +544,61 @@ fn extend_run<S: PartialEq>(
     }
     done.extend(run.take());
     *run = style.map(|s| (row, col, col + span, s));
+}
+
+fn paint_shape(window: &mut Window, shape: boxdraw::Shape, color: Hsla) {
+    use boxdraw::{Corner, Shape};
+    match shape {
+        Shape::Rect(b, a) => window.paint_quad(fill(b, alpha(color, color.a * a))),
+        Shape::Arc { quad, clip, corner, radius, width } => {
+            let zero = px(0.0);
+            let mut radii = gpui::Corners::all(zero);
+            let mut edges = gpui::Edges::all(zero);
+            match corner {
+                Corner::TopLeft => (radii.top_left, edges.top, edges.left) = (radius, width, width),
+                Corner::TopRight => (radii.top_right, edges.top, edges.right) = (radius, width, width),
+                Corner::BottomRight => {
+                    (radii.bottom_right, edges.bottom, edges.right) = (radius, width, width)
+                }
+                Corner::BottomLeft => {
+                    (radii.bottom_left, edges.bottom, edges.left) = (radius, width, width)
+                }
+            }
+            window.with_content_mask(Some(gpui::ContentMask { bounds: clip }), |window| {
+                window.paint_quad(gpui::quad(
+                    quad,
+                    radii,
+                    gpui::transparent_black(),
+                    edges,
+                    color,
+                    gpui::BorderStyle::Solid,
+                ))
+            });
+        }
+        Shape::Polygon(points) | Shape::Polyline(points, _)
+            if points.len() < 2 => {}
+        Shape::Polygon(points) => {
+            let mut path = gpui::PathBuilder::fill();
+            path.move_to(points[0]);
+            for p in &points[1..] {
+                path.line_to(*p);
+            }
+            path.close();
+            if let Ok(path) = path.build() {
+                window.paint_path(path, color);
+            }
+        }
+        Shape::Polyline(points, width) => {
+            let mut path = gpui::PathBuilder::stroke(width);
+            path.move_to(points[0]);
+            for p in &points[1..] {
+                path.line_to(*p);
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, color);
+            }
+        }
+    }
 }
 
 fn rgb_to_hsla(rgb: Rgb) -> Hsla {
@@ -646,6 +703,7 @@ impl Render for TerminalView {
 
             let mut backgrounds: Vec<(Bounds<Pixels>, Hsla)> = Vec::new();
             let mut glyphs: Vec<GlyphDraw> = Vec::new();
+            let mut shapes: Vec<(boxdraw::Shape, Hsla)> = Vec::new();
             let mut underlines: Vec<Run<UnderlineStyle>> = Vec::new();
             let mut strikes: Vec<Run<StrikethroughStyle>> = Vec::new();
             let mut cursor_wide = false;
@@ -798,6 +856,18 @@ impl Render for TerminalView {
                 if ch == ' ' || ch == '\0' {
                     continue;
                 }
+                if zerowidth.is_none() && boxdraw::handles(ch) {
+                    // Snap to whole pixels at edges shared with neighbouring cells.
+                    let edge = |c: usize| f32::from(origin.x + cell_width * c as f32).round();
+                    let top = f32::from(origin.y + line_height * row as f32).round();
+                    let bottom = top + f32::from(line_height);
+                    shapes.extend(
+                        boxdraw::shapes(ch, edge(col), edge(col + span), top, bottom)
+                            .into_iter()
+                            .map(|s| (s, fg)),
+                    );
+                    continue;
+                }
                 let cached = match zerowidth {
                     Some(extra) => {
                         let mut s = String::from(ch);
@@ -861,6 +931,7 @@ impl Render for TerminalView {
             Frame {
                 backgrounds,
                 glyphs,
+                shapes,
                 decorations,
                 cursor,
                 cursor_color: theme.cursor,
@@ -889,6 +960,9 @@ impl Render for TerminalView {
                     && focused
                 {
                     window.paint_quad(fill(b, cursor_color).corner_radii(px(2.0)));
+                }
+                for (shape, color) in frame.shapes {
+                    paint_shape(window, shape, color);
                 }
                 for g in &frame.glyphs {
                     let Glyph { font_id, id, emoji, .. } = g.glyph;
