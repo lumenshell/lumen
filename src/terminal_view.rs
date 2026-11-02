@@ -102,9 +102,10 @@ impl TerminalView {
     pub fn new(cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = Settings::get(cx);
         let mut applied = term_config(settings);
+        let pane = cx.entity_id().as_u64();
         let (pty, mut rx) =
-            Pty::spawn(cwd, settings.shell.as_deref(), settings.shell_integration, applied.clone())
-            .expect("failed to spawn shell");
+            Pty::spawn(cwd, settings.shell.as_deref(), settings.shell_integration, pane, applied.clone())
+                .expect("failed to spawn shell");
         let focus = cx.focus_handle();
 
         let events = cx.spawn(async move |this, cx| {
@@ -168,6 +169,43 @@ impl TerminalView {
         self.pty.cwd()
     }
 
+    /// Type `text` into the pane, as if pasted without bracketing.
+    pub fn send_text(&self, text: &str) {
+        self.pty.write(text.as_bytes().to_vec());
+    }
+
+    /// Columns and rows of the grid.
+    pub fn grid_size(&self) -> (usize, usize) {
+        (self.pty.size.cols as usize, self.pty.size.rows as usize)
+    }
+
+    /// Exit status of the last command that finished (shell integration).
+    pub fn last_exit(&self) -> Option<i32> {
+        marks::prompts(&self.pty.term.lock()).last().and_then(|p| p.exit_before)
+    }
+
+    /// Text of the screen, or with `lines`, of the last `lines` lines of
+    /// history and screen together, counting up from the last line with text
+    /// on it. Trailing blanks are trimmed.
+    pub fn screen_text(&self, lines: Option<usize>) -> String {
+        use alacritty_terminal::grid::Dimensions as _;
+        let term = self.pty.term.lock();
+        let grid = term.grid();
+        let blank = |line: Line| grid[line].into_iter().all(|c| c.c == ' ' || c.c == '\0');
+        let bottom = (0..term.screen_lines() as i32)
+            .rev()
+            .map(Line)
+            .find(|&l| !blank(l))
+            .unwrap_or(Line(0));
+        let top = match lines {
+            Some(n) => Line((bottom.0 - n as i32 + 1).max(term.topmost_line().0)),
+            None => Line(0),
+        };
+        let text = term.bounds_to_string(GridPoint::new(top, Column(0)), GridPoint::new(bottom, term.last_column()));
+        let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+        lines.join("\n").trim_end().to_string()
+    }
+
     fn handle_event(&mut self, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::Wakeup => {
@@ -179,11 +217,12 @@ impl TerminalView {
                 }
                 cx.notify()
             }
-            Event::Title(title) => {
+            // Shells set the title at every prompt; only a change is news.
+            Event::Title(title) if title != self.title => {
                 self.title = title;
                 cx.emit(TerminalEvent::TitleChanged);
             }
-            Event::ResetTitle => {
+            Event::ResetTitle if self.title != default_title() => {
                 self.title = default_title();
                 cx.emit(TerminalEvent::TitleChanged);
             }
@@ -211,6 +250,7 @@ impl TerminalView {
             Event::TextAreaSizeRequest(format) => {
                 self.pty.write(format(self.pty.window_size()).into_bytes())
             }
+            Event::Bell => crate::api::emit("bell", serde_json::json!({ "pane": cx.entity_id().as_u64() })),
             Event::ChildExit(_) | Event::Exit => cx.emit(TerminalEvent::Exited),
             _ => {}
         }

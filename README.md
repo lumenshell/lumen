@@ -22,6 +22,9 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
   maximized state
 - Command palette (fuzzy search over every action and theme)
 - Find in scrollback, with optional case-sensitive and regex matching
+- Scriptable: `lumen msg` opens tabs and splits, types into panes, reads their
+  screens and streams events such as "command finished with exit 1" (see
+  [Scripting](#scripting-lumen-msg))
 - Shell integration for bash, zsh and fish: jump between commands, copy the last
   command's output, a red mark beside commands that failed, and new panes that
   open in the shell's directory (see [Shell integration](#shell-integration))
@@ -51,7 +54,13 @@ sudo apt install libxkbcommon-x11-dev libxcb1-dev libfreetype-dev libfontconfig-
                  libwayland-dev libvulkan1
 
 cargo run --release
+
+# or install it, which also puts `lumen msg` on your PATH (~/.cargo/bin)
+cargo install --path .
 ```
+
+`lumen` opens a window; `lumen msg ...` controls a running one (see
+[Scripting](#scripting-lumen-msg)); `lumen --help` lists both.
 
 On macOS you only need Xcode command-line tools.
 
@@ -110,6 +119,7 @@ scrollback = 10000             # lines of history per pane
 cursor-style = "block"         # "block", "beam" or "underline", until a program picks one
 shell = "/usr/bin/fish --login" # program for new panes; defaults to $SHELL
 shell-integration = true       # mark prompts and commands in bash, zsh and fish
+socket-api = true              # let scripts control Lumen with `lumen msg`
 ```
 
 Delete a line to go back to its default. Mistakes (a typo'd key, a bad value, a
@@ -119,8 +129,9 @@ keeps the previous settings. Switching theme or zooming the font from inside
 Lumen edits just those keys and keeps your comments.
 
 `shell` is split on spaces, so an argument can't contain a space (wrap it in a
-script instead). `shell` and `shell-integration` apply to new panes; everything
-else applies to open ones too. Older
+script instead). `shell` and `shell-integration` apply to new panes, and
+turning `socket-api` on takes a restart (turning it off applies at once);
+everything else applies to open ones too. Older
 versions used `~/.config/lumen/config`; its values are carried over the first
 time `config.toml` is created.
 
@@ -182,6 +193,100 @@ host are ignored, so new panes still open locally.
 
 Set `shell-integration = false` in the config to turn it off.
 
+## Scripting (`lumen msg`)
+
+Lumen can be driven from scripts, shell aliases and (later) plugins. `lumen msg`
+is the same `lumen` binary, so it needs to be on your PATH (`cargo install
+--path .` does that). Inside a Lumen pane, `lumen msg` talks to that Lumen and acts on that pane by default;
+from anywhere else it finds the most recently started Lumen.
+
+```sh
+lumen msg list                          # tabs and panes with their ids
+p=$(lumen msg split right --run 'npm run dev')   # prints the new pane's id
+lumen msg split down --pane "$p" --cwd ~/api --run 'cargo watch -x test' --no-focus
+lumen msg send-text --pane "$p" 'q\n'   # type into a pane (\n is Enter)
+lumen msg read-screen --pane "$p" --lines 20
+lumen msg set-title "Servers"           # this pane's tab; no title resets it
+lumen msg action toggle-zoom            # any action from Key bindings
+lumen msg notify "Deploy done" "web-3 is live"
+lumen msg watch command-finished        # events as JSON lines, until Ctrl+C
+```
+
+| Command | Does |
+|---|---|
+| `list [--json]` | Tabs and panes: ids, titles, directories, sizes, last exit status |
+| `new-tab [--cwd DIR] [--run CMD]` | Open a tab; prints its pane id |
+| `split [right\|down] [--pane ID] [--cwd DIR] [--run CMD] [--no-focus]` | Split a pane; prints the new pane id |
+| `focus [ID]`, `close [ID]` | Show and focus, or close, a pane |
+| `send-text [--pane ID] TEXT` | Type text; `\n`, `\r`, `\t`, `\e` and `\\` are understood |
+| `read-screen [--pane ID] [--lines N]` | Print the screen, or the last N lines including history |
+| `set-title [--pane ID] [TITLE]` | Name a tab; without TITLE the program's title is shown again |
+| `notify TITLE [BODY]` | Desktop notification (`notify-send` on Linux) |
+| `action NAME [--pane ID]` | Run an action such as `split-right` or `find` |
+| `watch [EVENT...]` | Stream events (all of them, or the ones named) |
+| `call METHOD [JSON]` | Send any request and print the raw result |
+
+`--run` types the command into the new pane's shell, so the shell stays open
+after it finishes. A new pane starts in the directory of the pane it was split
+from (or the current one, for tabs) unless `--cwd` says otherwise. Tab titles
+set this way aren't kept between sessions.
+
+For example, a notification whenever a command fails in any pane (needs
+[`jq`](https://jqlang.org)):
+
+```sh
+lumen msg watch command-finished |
+  jq --unbuffered -r 'select(.exit != 0) | "exit \(.exit) in pane \(.pane)"' |
+  while read -r msg; do lumen msg notify "Command failed" "$msg"; done
+```
+
+### Events
+
+| Event | Fields | When |
+|---|---|---|
+| `pane-opened` / `pane-closed` | `pane` | A pane starts or closes |
+| `focus-changed` | `pane` | Another pane gets keyboard focus |
+| `title-changed` | `pane`, `title` | A program changes its title |
+| `cwd-changed` | `pane`, `cwd` | The shell changes directory\* |
+| `bell` | `pane` | A program rings the bell |
+| `command-started` | `pane` | A command starts running\* |
+| `command-finished` | `pane`, `exit` | A command finishes, with its exit status\* |
+
+\* Needs [shell integration](#shell-integration).
+
+`focus-changed` is sent when the window next redraws, so it can trail the
+change slightly, and not at all while the window is minimized.
+
+### Protocol
+
+`lumen msg` is a thin client; anything that can open a Unix socket can do the
+same. Each Lumen listens on `lumen-<pid>.sock` in `$XDG_RUNTIME_DIR/lumen`
+(else `$TMPDIR/lumen-<uid>`), and every pane gets its path in `LUMEN_SOCKET`
+and its own id in `LUMEN_PANE`. Messages are [JSON-RPC 2.0](https://www.jsonrpc.org/specification),
+one per line:
+
+```sh
+echo '{"jsonrpc":"2.0","id":1,"method":"split","params":{"direction":"down","run":"htop"}}' |
+  socat - UNIX-CONNECT:"$LUMEN_SOCKET"
+# {"jsonrpc":"2.0","id":1,"result":{"pane":4294967299}}
+```
+
+Methods: `hello` (protocol version, Lumen version, actions and events),
+`list`, `new-tab` (`cwd`, `run`), `split` (`pane`, `direction`, `cwd`, `run`,
+`focus`), `focus`, `close`, `send-text` (`pane`, `text`), `read-screen`
+(`pane`, `lines`), `set-title` (`pane`, `title`), `notify` (`title`, `body`),
+`run-action` (`action`, `pane`) and `subscribe` (`events`, a list; omit for
+all). `pane` is optional everywhere and means the focused pane. After
+`subscribe`, the connection also receives events as notifications:
+`{"jsonrpc":"2.0","method":"event","params":{"event":"bell","pane":4294967298}}`.
+Errors use the standard JSON-RPC codes, with `-32000` for requests that can't
+be carried out (such as an unknown pane). The protocol version (`hello`) goes
+up only when a change could break existing clients.
+
+The socket and its directory are readable only by you. Anything running as
+you can use it to type into panes and read their screens, so turn it off with
+`socket-api = false` if that's a concern.
+
 ## Session
 
 The pane layout is saved to `~/.local/state/lumen/session.json`
@@ -204,9 +309,12 @@ come back.
 | Settings       | `~/.config/lumen/config.toml` (`$XDG_CONFIG_HOME`) | same                                             |
 | Session        | `~/.local/state/lumen/session.json` (`$XDG_STATE_HOME`) | `~/Library/Application Support/lumen/session.json` |
 | Shell scripts  | `~/.local/share/lumen/shell-integration/` (`$XDG_DATA_HOME`) | `~/Library/Application Support/lumen/shell-integration/` |
+| Socket         | `$XDG_RUNTIME_DIR/lumen/lumen-<pid>.sock`       | `$TMPDIR/lumen-<uid>/lumen-<pid>.sock`              |
 
 Shells started by Lumen get `TERM=xterm-256color`, `COLORTERM=truecolor` and
-`TERM_PROGRAM=lumen`, so scripts can tell they're running in Lumen.
+`TERM_PROGRAM=lumen`, so scripts can tell they're running in Lumen, plus
+`LUMEN_SOCKET` and `LUMEN_PANE` for [`lumen msg`](#scripting-lumen-msg) when the
+socket API is on.
 
 ## Layout
 
@@ -214,6 +322,8 @@ Shells started by Lumen get `TERM=xterm-256color`, `COLORTERM=truecolor` and
 |------------------------|-----------------------------------------------------------|
 | `src/main.rs`          | Actions, fonts, window creation                           |
 | `src/keymap.rs`        | Default shortcuts and the `[keys]` table                  |
+| `src/api.rs`           | Socket API server: JSON-RPC requests and the event stream |
+| `src/cli.rs`           | The `lumen msg` command                                   |
 | `src/workspace.rs`     | Title bar, tabs, pane tree, focus halo, palette overlay   |
 | `src/terminal_view.rs` | Grid rendering, cursor, selection, mouse and key input    |
 | `src/pty.rs`           | Shell process + `alacritty_terminal` state and event loop |
@@ -240,7 +350,7 @@ cargo test
 ## Next up
 
 - Keyboard selection mode, keyboard link hints
-- A plugin API (socket and `lumen msg` first)
+- Plugins built on the socket API: a plugin host with manifests and permissions
 - Notifications when a long command finishes; a quick-terminal dropdown
 - IME input, cursor blink, background blur/opacity setting
 - Ghostty theme file import

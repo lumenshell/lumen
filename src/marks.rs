@@ -97,7 +97,7 @@ mod tests {
     /// A terminal fed shell output (with OSC 133 marks) through the rewriter.
     fn term(output: &str) -> Term<VoidListener> {
         let mut term = Term::new(Config::default(), &Size, VoidListener);
-        let mut rewriter = Rewriter::new(Arc::new(Mutex::new(Shared::default())));
+        let mut rewriter = Rewriter::new(Arc::new(Mutex::new(Shared::default())), None);
         let mut bytes = Vec::new();
         let output = output.replace('A', "\x1b]133;A\x07").replace('B', "\x1b]133;B\x07");
         let output = output.replace('C', "\x1b]133;C\x07").replace("D0", "\x1b]133;D;0\x07").replace("D1", "\x1b]133;D;1\x07");

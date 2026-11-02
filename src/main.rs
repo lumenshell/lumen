@@ -1,7 +1,9 @@
 //! Lumen: a GPU-rendered terminal. Declares the actions, opens the window
 //! (restoring its saved placement) and wires up settings and key bindings.
 
+mod api;
 mod boxdraw;
+mod cli;
 mod glyphs;
 mod input;
 mod keymap;
@@ -79,11 +81,21 @@ fn load_fonts(cx: &App) {
 
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("msg") {
+        std::process::exit(cli::run(&args[1..]));
+    }
+    if let Some(arg) = args.first() {
+        let help = matches!(arg.as_str(), "-h" | "--help" | "help");
+        eprintln!("Usage: lumen            open a window\n       lumen msg ...      control a running Lumen (lumen msg help)");
+        std::process::exit(if help { 0 } else { 2 });
+    }
     Application::new().run(|cx: &mut App| {
         load_fonts(cx);
         cx.set_global(Settings::load());
         Settings::watch(cx);
         keymap::apply(cx);
+        let listener = api::listen(cx);
 
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &NextTheme, cx| {
@@ -130,6 +142,9 @@ fn main() {
                 |window, cx| cx.new(|cx| Workspace::new(saved, window, cx)),
             )
             .expect("failed to open window");
+        if let Some(listener) = listener {
+            api::serve(listener, window, cx);
+        }
         window
             .update(cx, |_, window, _| window.activate_window())
             .ok();

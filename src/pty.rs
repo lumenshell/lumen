@@ -72,6 +72,7 @@ impl Pty {
         cwd: Option<PathBuf>,
         shell: Option<&[String]>,
         integrate: bool,
+        pane: u64,
         config: Config,
     ) -> anyhow::Result<(Self, UnboundedReceiver<Event>)> {
         let (tx, rx) = unbounded();
@@ -82,6 +83,11 @@ impl Pty {
         env.insert("TERM".into(), "xterm-256color".into());
         env.insert("COLORTERM".into(), "truecolor".into());
         env.insert("TERM_PROGRAM".into(), "lumen".into());
+        // For `lumen msg` and plugins run from this pane.
+        if let Some(socket) = crate::api::socket_path() {
+            env.insert("LUMEN_SOCKET".into(), socket.display().to_string());
+            env.insert("LUMEN_PANE".into(), pane.to_string());
+        }
 
         let shell = shell.map(<[String]>::to_vec).unwrap_or_else(shell_integration::default_shell);
         let shell = if integrate {
@@ -104,7 +110,7 @@ impl Pty {
         let pty = tty::new(&options, size.window_size(), 0)?;
         let child_pid = pty.child().id();
         let shell_state = Arc::new(Mutex::new(Shared::default()));
-        let pty = MarkedPty::new(pty, shell_state.clone())?;
+        let pty = MarkedPty::new(pty, shell_state.clone(), pane)?;
         let event_loop = EventLoop::new(term.clone(), Listener(tx), pty, false, false)?;
         let notifier = Notifier(event_loop.channel());
         event_loop.spawn();

@@ -42,6 +42,8 @@ pub struct Settings {
     pub shell: Option<Vec<String>>,
     /// Load Lumen's shell integration into bash, zsh and fish.
     pub shell_integration: bool,
+    /// Let scripts control Lumen over a socket (`lumen msg`).
+    pub socket_api: bool,
     /// Shortcuts from `[keys]`: normalized keys and the action they run
     /// (`None` frees the key), in file order.
     pub keys: Vec<(String, Option<String>)>,
@@ -64,6 +66,7 @@ impl Default for Settings {
             cursor_shape: CursorShape::Block,
             shell: None,
             shell_integration: true,
+            socket_api: true,
             keys: Vec::new(),
             problems: Vec::new(),
         }
@@ -207,6 +210,13 @@ impl Settings {
                     }
                     None => Some(bad("true or false")),
                 },
+                "socket-api" => match item.as_bool() {
+                    Some(v) => {
+                        s.socket_api = v;
+                        None
+                    }
+                    None => Some(bad("true or false")),
+                },
                 other => Some(format!("unknown setting `{other}`")),
             };
             s.problems.extend(problem);
@@ -297,6 +307,10 @@ impl Settings {
              # commands, copying output and marking failures. Applies to new panes.\n\
              shell-integration = {integration}\n\
              \n\
+             # Let scripts and plugins control Lumen with `lumen msg` (a socket only you\n\
+             # can open). Turning it on takes a restart; turning it off applies at once.\n\
+             socket-api = {socket_api}\n\
+             \n\
              # Keyboard shortcuts. Each line binds a key to an action, replacing what that\n\
              # key did before; \"none\" frees a key so programs in the terminal get it.\n\
              # An action's other keys keep working. Keys look like ctrl-shift-t, alt-1,\n\
@@ -312,6 +326,7 @@ impl Settings {
             padding = self.padding,
             scrollback = self.scrollback,
             integration = self.shell_integration,
+            socket_api = self.socket_api,
             actions = wrap_comment(&keymap::ACTIONS.join(", "), 80),
             keys = self.keys_template(),
         )

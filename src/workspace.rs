@@ -13,6 +13,10 @@ use gpui::{
     point, prelude::FluentBuilder, px, relative,
 };
 
+use serde_json::{Value, json};
+
+use crate::api::{self, ApiError, ApiResult};
+use crate::keymap;
 use crate::palette::{CommandPalette, PaletteEvent, PaletteItem};
 use crate::session::{self, Axis, NodeState, Session, TabState, WindowState};
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
@@ -168,6 +172,8 @@ struct Tab {
     root: PaneNode,
     active: Entity<TerminalView>,
     zoomed: bool,
+    /// Title set over the socket API, shown instead of the program's.
+    title: Option<String>,
 }
 
 impl Tab {
@@ -244,7 +250,7 @@ impl Workspace {
             root.leaves(&mut leaves);
             let active = leaves[tab.active.min(leaves.len() - 1)].clone();
             let zoomed = tab.zoomed && leaves.len() > 1;
-            self.tabs.push(Tab { root, active, zoomed });
+            self.tabs.push(Tab { root, active, zoomed, title: None });
         }
         self.active_tab = saved.active_tab.min(self.tabs.len() - 1);
         self.focus_active(window, cx);
@@ -321,9 +327,17 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Entity<TerminalView> {
         let term = cx.new(|cx| TerminalView::new(cwd, window, cx));
+        api::emit("pane-opened", json!({ "pane": term.entity_id().as_u64() }));
         let sub = cx.subscribe_in(&term, window, |this, term, event, window, cx| match event {
-            TerminalEvent::TitleChanged => cx.notify(),
+            TerminalEvent::TitleChanged => {
+                api::emit(
+                    "title-changed",
+                    json!({ "pane": term.entity_id().as_u64(), "title": term.read(cx).title }),
+                );
+                cx.notify()
+            }
             TerminalEvent::Focused => {
+                api::emit("focus-changed", json!({ "pane": term.entity_id().as_u64() }));
                 // Only track the active pane within its own tab; switching tabs is
                 // driven explicitly so a late focus event can't snap back.
                 if let Some(tab) =
@@ -357,27 +371,57 @@ impl Workspace {
 
     fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.current_cwd(cx);
+        self.open_tab(cwd, window, cx);
+    }
+
+    /// Open a tab after the current one and switch to it.
+    fn open_tab(
+        &mut self,
+        cwd: Option<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TerminalView> {
         let term = self.spawn_terminal(cwd, window, cx);
         let insert_at = if self.tabs.is_empty() { 0 } else { self.active_tab + 1 };
         self.tabs.insert(
             insert_at,
-            Tab { root: PaneNode::Leaf(term.clone()), active: term, zoomed: false },
+            Tab { root: PaneNode::Leaf(term.clone()), active: term.clone(), zoomed: false, title: None },
         );
         self.active_tab = insert_at;
         self.focus_active(window, cx);
         cx.notify();
+        term
     }
 
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.active_terminal().map(|t| t.entity_id()) else { return };
         let cwd = self.current_cwd(cx);
+        self.split_pane(target, axis, cwd, true, window, cx);
+    }
+
+    /// Split the pane `target` (in any tab), putting a new pane after it. With
+    /// `focus`, the new pane becomes active and its tab is shown.
+    fn split_pane(
+        &mut self,
+        target: EntityId,
+        axis: Axis,
+        cwd: Option<std::path::PathBuf>,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<TerminalView>> {
+        let tab_idx = self.tabs.iter().position(|t| t.leaves().iter().any(|l| l.entity_id() == target))?;
         let new = self.spawn_terminal(cwd, window, cx);
-        let Some(tab) = self.tabs.get_mut(self.active_tab) else { return };
-        let target = tab.active.entity_id();
+        let tab = &mut self.tabs[tab_idx];
         tab.root.split(target, &new, axis);
-        tab.active = new;
         tab.zoomed = false;
-        self.focus_active(window, cx);
+        if focus {
+            tab.active = new.clone();
+            self.active_tab = tab_idx;
+            self.focus_active(window, cx);
+        }
         cx.notify();
+        Some(new)
     }
 
     fn split_right(&mut self, _: &SplitRight, window: &mut Window, cx: &mut Context<Self>) {
@@ -400,6 +444,7 @@ impl Workspace {
         else {
             return;
         };
+        api::emit("pane-closed", json!({ "pane": id.as_u64() }));
         let tab = &mut self.tabs[tab_idx];
         if matches!(tab.root, PaneNode::Leaf(_)) {
             self.tabs.remove(tab_idx);
@@ -670,7 +715,8 @@ impl Workspace {
     ) -> impl IntoElement {
         let tabs = self.tabs.iter().enumerate().map(|(i, tab)| {
             let active = i == self.active_tab;
-            let title: SharedString = tab.active.read(cx).title.clone().into();
+            let title: SharedString =
+                tab.title.clone().unwrap_or_else(|| tab.active.read(cx).title.clone()).into();
             let panes = tab.leaves().len();
             div()
                 .id(("tab", i))
@@ -985,6 +1031,195 @@ fn pretty_keystroke(ks: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(if mac { "" } else { "+" })
+}
+
+impl Workspace {
+    // ---- socket API -----------------------------------------------------
+
+    fn find_pane(&self, id: u64) -> Option<(usize, Entity<TerminalView>)> {
+        self.tabs.iter().enumerate().find_map(|(i, t)| {
+            t.leaves().into_iter().find(|l| l.entity_id().as_u64() == id).map(|l| (i, l))
+        })
+    }
+
+    /// The pane named by `params.pane`, or the focused one.
+    fn target_pane(&self, params: &Value) -> Result<(usize, Entity<TerminalView>), ApiError> {
+        match params.get("pane") {
+            None | Some(Value::Null) => self
+                .active_terminal()
+                .map(|t| (self.active_tab, t.clone()))
+                .ok_or_else(|| ApiError::failed("there are no panes")),
+            Some(v) => {
+                let id = v.as_u64().ok_or_else(|| ApiError::invalid_params("`pane` should be a pane id"))?;
+                self.find_pane(id)
+                    .ok_or_else(|| ApiError::failed(format!("no pane {id}; `lumen msg list` shows them")))
+            }
+        }
+    }
+
+    fn api_list(&self, cx: &App) -> Value {
+        let focused = self.active_terminal().map(|t| t.entity_id());
+        let tabs: Vec<Value> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| {
+                let panes: Vec<Value> = tab
+                    .leaves()
+                    .iter()
+                    .map(|p| {
+                        let view = p.read(cx);
+                        let (cols, rows) = view.grid_size();
+                        json!({
+                            "id": p.entity_id().as_u64(),
+                            "title": view.title,
+                            "cwd": view.cwd(),
+                            "active": *p == tab.active,
+                            "focused": Some(p.entity_id()) == focused,
+                            "cols": cols,
+                            "rows": rows,
+                            "last_exit": view.last_exit(),
+                        })
+                    })
+                    .collect();
+                json!({
+                    "index": i,
+                    "title": tab.title.clone().unwrap_or_else(|| tab.active.read(cx).title.clone()),
+                    "custom_title": tab.title.is_some(),
+                    "active": i == self.active_tab,
+                    "zoomed": tab.zoomed,
+                    "panes": panes,
+                })
+            })
+            .collect();
+        json!({ "tabs": tabs, "focused_pane": focused.map(|f| f.as_u64()) })
+    }
+
+    /// Run one socket API request. Methods and their parameters are described
+    /// in the README.
+    pub fn handle_api(&mut self, method: &str, params: &Value, window: &mut Window, cx: &mut Context<Self>) -> ApiResult {
+        let string = |name: &str| -> Result<Option<String>, ApiError> {
+            match params.get(name) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(s)) => Ok(Some(s.clone())),
+                Some(_) => Err(ApiError::invalid_params(format!("`{name}` should be a string"))),
+            }
+        };
+        let required = |name: &str| string(name)?.ok_or_else(|| ApiError::invalid_params(format!("`{name}` is required")));
+        let cwd = || -> Result<Option<std::path::PathBuf>, ApiError> {
+            match string("cwd")? {
+                None => Ok(None),
+                Some(dir) => {
+                    let path = std::path::PathBuf::from(&dir);
+                    if path.is_dir() { Ok(Some(path)) } else { Err(ApiError::failed(format!("{dir} isn't a directory"))) }
+                }
+            }
+        };
+        // Typed into a new pane's shell, which reads it once it's ready.
+        let run = |term: &Entity<TerminalView>, cx: &App| -> Result<(), ApiError> {
+            if let Some(cmd) = string("run")? {
+                term.read(cx).send_text(&format!("{cmd}\r"));
+            }
+            Ok(())
+        };
+
+        match method {
+            "hello" => Ok(json!({
+                "protocol": api::PROTOCOL,
+                "version": env!("CARGO_PKG_VERSION"),
+                "pid": std::process::id(),
+                "events": api::EVENTS,
+                "actions": keymap::ACTIONS,
+            })),
+            "list" => Ok(self.api_list(cx)),
+            "new-tab" => {
+                let dir = cwd()?.or_else(|| self.current_cwd(cx));
+                string("run")?;
+                let term = self.open_tab(dir, window, cx);
+                run(&term, cx)?;
+                Ok(json!({ "pane": term.entity_id().as_u64(), "tab": self.active_tab }))
+            }
+            "split" => {
+                let axis = match string("direction")?.as_deref() {
+                    None | Some("right") => Axis::Row,
+                    Some("down") => Axis::Column,
+                    Some(other) => {
+                        return Err(ApiError::invalid_params(format!(
+                            "`direction` should be \"right\" or \"down\", not \"{other}\""
+                        )));
+                    }
+                };
+                let focus = match params.get("focus") {
+                    None | Some(Value::Null) => true,
+                    Some(v) => v.as_bool().ok_or_else(|| ApiError::invalid_params("`focus` should be true or false"))?,
+                };
+                string("run")?;
+                let (_, target) = self.target_pane(params)?;
+                let dir = cwd()?.or_else(|| target.read(cx).cwd());
+                let new = self
+                    .split_pane(target.entity_id(), axis, dir, focus, window, cx)
+                    .ok_or_else(|| ApiError::failed("that pane just closed"))?;
+                run(&new, cx)?;
+                Ok(json!({ "pane": new.entity_id().as_u64() }))
+            }
+            "focus" => {
+                let (tab, pane) = self.target_pane(params)?;
+                self.tabs[tab].active = pane;
+                self.active_tab = tab;
+                self.focus_active(window, cx);
+                window.activate_window();
+                cx.notify();
+                Ok(json!({}))
+            }
+            "close" => {
+                let (_, pane) = self.target_pane(params)?;
+                self.close_pane_entity(pane.entity_id(), window, cx);
+                Ok(json!({}))
+            }
+            "send-text" => {
+                let text = required("text")?;
+                let (_, pane) = self.target_pane(params)?;
+                pane.read(cx).send_text(&text);
+                Ok(json!({}))
+            }
+            "read-screen" => {
+                let lines = match params.get("lines") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(
+                        v.as_u64()
+                            .filter(|n| *n > 0)
+                            .ok_or_else(|| ApiError::invalid_params("`lines` should be a positive number"))?
+                            as usize,
+                    ),
+                };
+                let (_, pane) = self.target_pane(params)?;
+                Ok(json!({ "text": pane.read(cx).screen_text(lines) }))
+            }
+            "set-title" => {
+                let title = string("title")?.filter(|t| !t.trim().is_empty());
+                let (tab, _) = self.target_pane(params)?;
+                self.tabs[tab].title = title;
+                cx.notify();
+                Ok(json!({}))
+            }
+            "run-action" => {
+                let name = required("action")?;
+                let name = keymap::check_action(&name)
+                    .map_err(ApiError::invalid_params)?
+                    .ok_or_else(|| ApiError::invalid_params("\"none\" isn't an action"))?;
+                let action = keymap::action(&name).expect("checked above");
+                if params.get("pane").is_some_and(|p| !p.is_null()) {
+                    let (tab, pane) = self.target_pane(params)?;
+                    self.tabs[tab].active = pane;
+                    self.active_tab = tab;
+                    self.focus_active(window, cx);
+                }
+                window.dispatch_action(action, cx);
+                Ok(json!({}))
+            }
+            other => Err(ApiError(-32601, format!("unknown method \"{other}\""))),
+        }
+    }
 }
 
 fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {

@@ -50,7 +50,7 @@ pub const ACTIONS: &[&str] = &[
 /// Frees a key: it's sent to the terminal instead of running an action.
 pub const NONE: &str = "none";
 
-fn action(name: &str) -> Option<Box<dyn Action>> {
+pub fn action(name: &str) -> Option<Box<dyn Action>> {
     if let Some(n) = name.strip_prefix("tab-") {
         let n: usize = n.parse().ok().filter(|n| (1..=9).contains(n))?;
         return Some(Box::new(ActivateTab(n - 1)));

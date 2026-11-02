@@ -147,6 +147,8 @@ pub struct Rewriter {
     running: bool,
     shared: Arc<Mutex<Shared>>,
     host: String,
+    /// Pane id for socket API events; `None` sends none (tests).
+    pane: Option<u64>,
 }
 
 fn local_hostname() -> &'static str {
@@ -184,12 +186,29 @@ fn percent_decode(s: &str) -> String {
 }
 
 impl Rewriter {
-    pub fn new(shared: Arc<Mutex<Shared>>) -> Self {
-        Self::with_host(shared, local_hostname().to_string())
+    pub fn new(shared: Arc<Mutex<Shared>>, pane: Option<u64>) -> Self {
+        Self { pane, ..Self::with_host(shared, local_hostname().to_string()) }
     }
 
     fn with_host(shared: Arc<Mutex<Shared>>, host: String) -> Self {
-        Self { state: State::Normal, body: Vec::new(), ran: false, exit: None, prompted: false, running: false, shared, host }
+        Self {
+            state: State::Normal,
+            body: Vec::new(),
+            ran: false,
+            exit: None,
+            prompted: false,
+            running: false,
+            shared,
+            host,
+            pane: None,
+        }
+    }
+
+    fn emit(&self, event: &str, mut params: serde_json::Value) {
+        if let Some(pane) = self.pane {
+            params["pane"] = pane.into();
+            crate::api::emit(event, params);
+        }
     }
 
     /// Could `body` (bytes after `ESC ]`) still become an OSC we capture?
@@ -300,11 +319,13 @@ impl Rewriter {
                     Self::link(out, "");
                     self.ran = true;
                     self.running = true;
+                    self.emit("command-started", serde_json::json!({}));
                 }
                 Some("D") => {
-                    self.running = false;
-                    if self.ran {
+                    let was_running = std::mem::take(&mut self.running);
+                    if self.ran && was_running {
                         self.exit = parts.next().and_then(|c| c.trim().parse().ok());
+                        self.emit("command-finished", serde_json::json!({ "exit": self.exit }));
                     }
                 }
                 _ => {}
@@ -320,7 +341,11 @@ impl Rewriter {
                 let (host, path) = rest.find('/').map(|i| rest.split_at(i)).unwrap_or((rest, ""));
                 let local = host.is_empty() || host == "localhost" || host.eq_ignore_ascii_case(&self.host);
                 if local && !path.is_empty() {
-                    self.shared.lock().unwrap().cwd = Some(PathBuf::from(percent_decode(path)));
+                    let cwd = PathBuf::from(percent_decode(path));
+                    let changed = self.shared.lock().unwrap().cwd.replace(cwd.clone()) != Some(cwd.clone());
+                    if changed {
+                        self.emit("cwd-changed", serde_json::json!({ "cwd": cwd }));
+                    }
                 }
             }
         }
@@ -367,13 +392,13 @@ pub struct MarkedPty {
 }
 
 impl MarkedPty {
-    pub fn new(pty: Pty, shared: Arc<Mutex<Shared>>) -> io::Result<Self> {
+    pub fn new(pty: Pty, shared: Arc<Mutex<Shared>>, pane: u64) -> io::Result<Self> {
         // A second handle on the same open file: polling still watches the
         // original, and reads through either see the same data.
         let file = pty.file().try_clone()?;
         let reader = MarkedReader {
             file,
-            rewriter: Rewriter::new(shared),
+            rewriter: Rewriter::new(shared, Some(pane)),
             out: Vec::new(),
             pos: 0,
             scratch: vec![0; 0x1_0000],
