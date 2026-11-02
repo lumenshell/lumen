@@ -4,10 +4,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext, Bounds, BoxShadow, Context, CursorStyle, Decorations,
+    AnyElement, AnyView, App, AppContext, Bounds, BoxShadow, Context, CursorStyle, Decorations,
     DragMoveEvent, ElementId, Entity, EntityId, Focusable, HitboxBehavior, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ResizeEdge,
-    SharedString, Size, StatefulInteractiveElement, Styled, Subscription, Task, Window,
+    SharedString, Size, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task,
+    Window,
     WindowBounds, canvas, div,
     point, prelude::FluentBuilder, px, relative,
 };
@@ -840,7 +841,13 @@ fn pane_frame(
         .border_color(if focused && multi { alpha(theme.accent, 0.6) } else { theme.border })
         .shadow(shadows)
         .overflow_hidden()
-        .child(div().size_full().pl(px(14.0)).pr(px(10.0)).py(px(10.0)).child(term.clone()))
+        .child(
+            div().size_full().pl(px(14.0)).pr(px(10.0)).py(px(10.0)).child(
+                // Reuse the pane's last frame unless it changed, so output in one
+                // pane (or hovering a tab) doesn't redraw every other pane.
+                AnyView::from(term.clone()).cached(StyleRefinement::default().size_full()),
+            ),
+        )
         .when(multi && !focused, |d| {
             d.child(
                 div()

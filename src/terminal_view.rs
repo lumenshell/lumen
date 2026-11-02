@@ -17,13 +17,15 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, FontStyle,
     FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, Modifiers,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent, ShapedLine,
-    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, Subscription, Task,
+    DispatchPhase, ParentElement, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent, ShapedLine,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, Subscription, Task,
     TextRun, UnderlineStyle, Window,
     canvas, div, fill, font, point, prelude::FluentBuilder, px, size,
 };
 
+use crate::glyphs::{self, Glyph, GlyphCache};
 use crate::links::{self, Link, LinkFinder};
+use crate::mouse::{self, Action as MouseAction, Button as ReportButton};
 use crate::pty::{GridSize, Pty};
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
 use crate::theme::{Theme, alpha, indexed};
@@ -51,11 +53,18 @@ pub struct TerminalView {
     layout: Rc<StdCell<Option<GridLayout>>>,
     selecting: bool,
     scroll_acc: f32,
+    /// Fractional wheel notches not yet reported to a program in mouse mode.
+    wheel_acc: f32,
     links: LinkFinder,
     /// Link under the pointer while the link modifier is held.
     hovered_link: Option<Link>,
     /// Last pointer position and modifiers over this pane.
     pointer: Option<(Point<Pixels>, Modifiers)>,
+    /// Button whose press was reported to the program (mouse mode), so its
+    /// drags and release go to the program too.
+    reported_button: Option<ReportButton>,
+    /// Cell of the last reported motion, to send one event per cell crossed.
+    last_report_cell: Option<(usize, usize)>,
     _events: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -98,7 +107,13 @@ impl TerminalView {
             }
         });
 
-        let subs = vec![cx.on_focus(&focus, window, |_, _, cx| cx.emit(TerminalEvent::Focused))];
+        let subs = vec![
+            cx.on_focus(&focus, window, |this, _, cx| {
+                this.report_focus(true);
+                cx.emit(TerminalEvent::Focused)
+            }),
+            cx.on_blur(&focus, window, |this, _, _| this.report_focus(false)),
+        ];
 
         Self {
             pty,
@@ -107,9 +122,12 @@ impl TerminalView {
             layout: Rc::new(StdCell::new(None)),
             selecting: false,
             scroll_acc: 0.0,
+            wheel_acc: 0.0,
             links: LinkFinder::new(),
             hovered_link: None,
             pointer: None,
+            reported_button: None,
+            last_report_cell: None,
             _events: events,
             _subs: subs,
         }
@@ -138,10 +156,9 @@ impl TerminalView {
             }
             Event::PtyWrite(s) => self.pty.write(s.into_bytes()),
             Event::ClipboardStore(_, s) => cx.write_to_clipboard(ClipboardItem::new_string(s)),
-            Event::ClipboardLoad(_, format) => {
-                let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
-                self.pty.write(format(&text).into_bytes());
-            }
+            // OSC 52 reads are ignored: any program (including one on a remote
+            // host over SSH) could otherwise silently read the clipboard.
+            Event::ClipboardLoad(..) => {}
             Event::ColorRequest(index, format) => {
                 let theme = Settings::get(cx).theme().clone();
                 let color = match index {
@@ -163,6 +180,49 @@ impl TerminalView {
             }
             Event::ChildExit(_) | Event::Exit => cx.emit(TerminalEvent::Exited),
             _ => {}
+        }
+    }
+
+    /// Focus in/out reports (mode 1004), used by tmux `focus-events` and vim.
+    fn report_focus(&self, focused: bool) {
+        if self.pty.term.lock().mode().contains(TermMode::FOCUS_IN_OUT) {
+            self.pty.write(if focused { b"\x1b[I".to_vec() } else { b"\x1b[O".to_vec() });
+        }
+    }
+
+    fn mode(&self) -> TermMode {
+        *self.pty.term.lock().mode()
+    }
+
+    /// Does this event go to the program rather than to local selection?
+    /// Holding Shift always keeps the mouse local, as in other terminals.
+    fn reports_mouse(&self, mods: &Modifiers) -> bool {
+        !mods.shift && mouse::reporting(self.mode())
+    }
+
+    /// 0-based viewport cell under `pos`, clamped to the grid so drags that
+    /// leave the pane still report the nearest edge.
+    fn viewport_cell(&self, pos: Point<Pixels>) -> Option<(usize, usize)> {
+        let l = self.layout.get()?;
+        let x = ((pos.x - l.origin.x) / l.cell_width).floor().max(0.0) as usize;
+        let y = ((pos.y - l.origin.y) / l.line_height).floor().max(0.0) as usize;
+        Some((x.min(l.cols.saturating_sub(1)), y.min(l.rows.saturating_sub(1))))
+    }
+
+    fn report_mouse(
+        &mut self,
+        button: ReportButton,
+        action: MouseAction,
+        pos: Point<Pixels>,
+        mods: &Modifiers,
+    ) {
+        let Some((col, row)) = self.viewport_cell(pos) else { return };
+        if action == MouseAction::Motion && self.last_report_cell == Some((col, row)) {
+            return;
+        }
+        self.last_report_cell = Some((col, row));
+        if let Some(bytes) = mouse::encode(self.mode(), button, action, mods, col, row) {
+            self.pty.write(bytes);
         }
     }
 
@@ -248,29 +308,34 @@ impl TerminalView {
 
     fn on_scroll(&mut self, ev: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
         let Some(layout) = self.layout.get() else { return };
+        // GPUI already reports a wheel notch as LINES_PER_NOTCH lines.
+        const LINES_PER_NOTCH: f32 = 3.0;
         let lines = match ev.delta {
-            ScrollDelta::Lines(p) => p.y * 3.0,
+            ScrollDelta::Lines(p) => p.y,
             ScrollDelta::Pixels(p) => p.y / layout.line_height,
         };
+
+        if self.reports_mouse(&ev.modifiers) {
+            // Programs expect one wheel event per notch, as xterm sends.
+            self.wheel_acc += lines / LINES_PER_NOTCH;
+            let n = self.wheel_acc.trunc() as i32;
+            self.wheel_acc -= n as f32;
+            let button = if n > 0 { ReportButton::WheelUp } else { ReportButton::WheelDown };
+            for _ in 0..n.unsigned_abs() {
+                self.report_mouse(button, MouseAction::Press, ev.position, &ev.modifiers);
+            }
+            return;
+        }
+
         self.scroll_acc += lines;
         let n = self.scroll_acc.trunc() as i32;
         if n == 0 {
             return;
         }
         self.scroll_acc -= n as f32;
-
         let mut term = self.pty.term.lock();
         let mode = *term.mode();
-        if mode.intersects(TermMode::MOUSE_MODE) && mode.contains(TermMode::SGR_MOUSE) {
-            drop(term);
-            let button = if n > 0 { 64 } else { 65 };
-            if let Some((p, _)) = self.grid_point(ev.position) {
-                let seq = format!("\x1b[<{};{};{}M", button, p.column.0 + 1, p.line.0 + 1);
-                for _ in 0..n.unsigned_abs() {
-                    self.pty.write(seq.clone().into_bytes());
-                }
-            }
-        } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
+        if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
             drop(term);
             let seq: &[u8] = if n > 0 { b"\x1bOA" } else { b"\x1bOB" };
             for _ in 0..n.unsigned_abs() {
@@ -284,14 +349,33 @@ impl TerminalView {
 
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
-        if link_modifier(&ev.modifiers)
+        if ev.button == MouseButton::Left
+            && link_modifier(&ev.modifiers)
             && let Some(link) = self.link_at(ev.position)
         {
-            if links::openable(&link.uri) {
+            if links::openable(&link) {
                 cx.open_url(&link.uri);
             }
             return;
         }
+        if self.reports_mouse(&ev.modifiers)
+            && let Some(button) = ReportButton::from_gpui(ev.button)
+        {
+            self.pty.term.lock().selection = None;
+            self.reported_button = Some(button);
+            self.last_report_cell = None;
+            self.report_mouse(button, MouseAction::Press, ev.position, &ev.modifiers);
+            cx.notify();
+            return;
+        }
+        match ev.button {
+            MouseButton::Left => self.start_selection(ev, cx),
+            MouseButton::Middle => self.paste_primary(cx),
+            _ => {}
+        }
+    }
+
+    fn start_selection(&mut self, ev: &MouseDownEvent, cx: &mut Context<Self>) {
         let Some((point, side)) = self.grid_point(ev.position) else { return };
         let ty = match ev.click_count {
             0 | 1 => SelectionType::Simple,
@@ -310,6 +394,25 @@ impl TerminalView {
     fn on_mouse_move(&mut self, ev: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.pointer = Some((ev.position, ev.modifiers));
         self.update_hovered_link(cx);
+        self.handle_motion(ev, cx);
+    }
+
+    /// Motion while hovering, or while a drag that started here is outside the pane.
+    fn handle_motion(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let mode = self.mode();
+        if let Some(button) = self.reported_button {
+            if mouse::wants_motion(mode, true) {
+                self.report_mouse(button, MouseAction::Motion, ev.position, &ev.modifiers);
+            }
+            return;
+        }
+        if ev.pressed_button.is_none()
+            && !ev.modifiers.shift
+            && mouse::wants_motion(mode, false)
+        {
+            self.report_mouse(ReportButton::None, MouseAction::Motion, ev.position, &ev.modifiers);
+            return;
+        }
         if !self.selecting || ev.pressed_button != Some(MouseButton::Left) {
             return;
         }
@@ -321,7 +424,20 @@ impl TerminalView {
         }
     }
 
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+    /// Release over the pane or anywhere else in the window: a reported press
+    /// always gets its release, and a selection always ends.
+    fn on_mouse_up(&mut self, ev: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(button) = self.reported_button
+            && ReportButton::from_gpui(ev.button) == Some(button)
+        {
+            self.reported_button = None;
+            self.report_mouse(button, MouseAction::Release, ev.position, &ev.modifiers);
+            cx.notify();
+            return;
+        }
+        if ev.button != MouseButton::Left || !self.selecting {
+            return;
+        }
         self.selecting = false;
         let mut term = self.pty.term.lock();
         if term.selection.as_ref().is_some_and(|s| s.is_empty()) {
@@ -334,7 +450,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn on_middle_click(&mut self, _: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn paste_primary(&mut self, cx: &mut Context<Self>) {
         #[cfg(target_os = "linux")]
         if let Some(text) = cx.read_from_primary().and_then(|c| c.text()) {
             self.paste_text(&text);
@@ -377,12 +493,55 @@ fn link_modifier(m: &Modifiers) -> bool {
 
 struct Frame {
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
-    lines: Vec<(Point<Pixels>, ShapedLine)>,
+    glyphs: Vec<GlyphDraw>,
+    decorations: Vec<Decoration>,
     cursor: Option<(Bounds<Pixels>, CursorShape)>,
     cursor_color: Hsla,
-    line_height: Pixels,
     /// Target of the hovered link, shown in a pill at the bottom of the pane.
     link_label: Option<(ShapedLine, Hsla, Hsla)>,
+}
+
+struct GlyphDraw {
+    origin: Point<Pixels>,
+    glyph: Glyph,
+    color: Hsla,
+}
+
+enum Decoration {
+    Underline(Point<Pixels>, Pixels, UnderlineStyle),
+    Strikethrough(Point<Pixels>, Pixels, StrikethroughStyle),
+}
+
+/// A run of operator characters waiting to be drawn.
+struct Join {
+    row: usize,
+    col: usize,
+    len: usize,
+    style: u8,
+    color: Hsla,
+    text: String,
+}
+
+/// A same-style stretch of cells on one row: (row, start_col, end_col, style).
+type Run<S> = (usize, usize, usize, S);
+
+/// Grow `run` by one cell, or move it to `done` and start a new one.
+fn extend_run<S: PartialEq>(
+    run: &mut Option<Run<S>>,
+    style: Option<S>,
+    (row, col, span): (usize, usize, usize),
+    done: &mut Vec<Run<S>>,
+) {
+    if let (Some((r, _, end, s)), Some(new)) = (run.as_mut(), style.as_ref())
+        && *r == row
+        && *end == col
+        && s == new
+    {
+        *end = col + span;
+        return;
+    }
+    done.extend(run.take());
+    *run = style.map(|s| (row, col, col + span, s));
 }
 
 fn rgb_to_hsla(rgb: Rgb) -> Hsla {
@@ -417,28 +576,6 @@ fn resolve(color: Color, colors: &Colors, theme: &Theme) -> Hsla {
     }
 }
 
-struct Segment {
-    col: usize,
-    text: String,
-    runs: Vec<TextRun>,
-}
-
-impl Segment {
-    fn push(&mut self, s: &str, run: TextRun) {
-        self.text.push_str(s);
-        if let Some(last) = self.runs.last_mut()
-            && last.font == run.font
-            && last.color == run.color
-            && last.underline == run.underline
-            && last.strikethrough == run.strikethrough
-        {
-            last.len += s.len();
-            return;
-        }
-        self.runs.push(TextRun { len: s.len(), ..run });
-    }
-}
-
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = Settings::get(cx);
@@ -449,7 +586,10 @@ impl Render for TerminalView {
         let term = self.pty.term.clone();
         let layout_cell = self.layout.clone();
         let entity = cx.entity();
+        let drag_entity = entity.clone();
         let hovered_link = self.hovered_link.clone();
+        let dragging = self.selecting || self.reported_button.is_some();
+        let mouse_mode = mouse::reporting(self.mode());
 
         let prepaint = move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| -> Frame {
             let text_system = window.text_system().clone();
@@ -497,11 +637,22 @@ impl Render for TerminalView {
                 && (cursor_row as usize) < rows;
 
             let mut backgrounds: Vec<(Bounds<Pixels>, Hsla)> = Vec::new();
-            let mut segments: Vec<(usize, Segment)> = Vec::new();
-            let mut current: Option<(usize, Segment)> = None;
+            let mut glyphs: Vec<GlyphDraw> = Vec::new();
+            let mut underlines: Vec<Run<UnderlineStyle>> = Vec::new();
+            let mut strikes: Vec<Run<StrikethroughStyle>> = Vec::new();
             let mut cursor_wide = false;
             // (row, start_col, end_col, color) for background run merging
             let mut bg_run: Option<(usize, usize, usize, Hsla)> = None;
+            let mut underline_run: Option<(usize, usize, usize, UnderlineStyle)> = None;
+            let mut strike_run: Option<(usize, usize, usize, StrikethroughStyle)> = None;
+            // Consecutive operator characters, drawn together so ligatures form.
+            let mut join: Option<Join> = None;
+
+            let cache = GlyphCache::get(cx, font_size);
+            let (ascent, descent) = cache.metrics(&text_system, &fonts[0]);
+            let baseline = (line_height - ascent - descent) / 2.0 + ascent;
+            let underline_y = baseline + descent * 0.618;
+            let strike_y = (ascent * 0.5 + baseline) * 0.5;
 
             let cell_bounds = |row: usize, col: usize, span: usize| {
                 Bounds::new(
@@ -511,6 +662,24 @@ impl Render for TerminalView {
                     ),
                     size(cell_width * span as f32, line_height),
                 )
+            };
+            let emit = |glyphs: &mut Vec<GlyphDraw>, row: usize, col: usize, color: Hsla, cached: &[Glyph]| {
+                let origin = cell_bounds(row, col, 1).origin;
+                glyphs.extend(cached.iter().map(|g| GlyphDraw {
+                    origin: point(origin.x + g.x, origin.y + baseline),
+                    glyph: *g,
+                    color,
+                }));
+            };
+            let flush_join = |join: &mut Option<Join>, glyphs: &mut Vec<GlyphDraw>, cache: &mut GlyphCache| {
+                if let Some(j) = join.take() {
+                    let cached = if j.len == 1 {
+                        cache.char(&text_system, &fonts, j.style, j.text.chars().next().unwrap_or(' '))
+                    } else {
+                        cache.cluster(&text_system, &fonts, j.style, &j.text)
+                    };
+                    emit(glyphs, j.row, j.col, j.color, cached);
+                }
             };
 
             for indexed_cell in content.display_iter {
@@ -583,76 +752,77 @@ impl Render for TerminalView {
                     }
                 }
 
-                // Text
-                let needs_new = match &current {
-                    Some((r, seg)) => *r != row || seg.col + seg.text.chars().count() != col,
-                    None => true,
-                };
-                if needs_new && let Some(seg) = current.take() {
-                    segments.push(seg);
-                }
-                let seg = current.get_or_insert_with(|| {
-                    (row, Segment { col, text: String::new(), runs: Vec::new() })
-                });
-
-                let mut ch = if flags.contains(Flags::HIDDEN) { ' ' } else { cell.c };
-                if ch == '\t' || ch == '\0' {
-                    ch = ' ';
-                }
-                let mut s = String::from(ch);
-                if let Some(extra) = cell.zerowidth() {
-                    s.extend(extra.iter());
-                }
-                let font_idx = (flags.contains(Flags::BOLD) as usize)
-                    | ((flags.contains(Flags::ITALIC) as usize) << 1);
+                // Underline and strikethrough runs
                 let underline =
                     (in_link || flags.intersects(Flags::ALL_UNDERLINES)).then(|| UnderlineStyle {
                         thickness: px(1.0),
                         color: Some(fg),
                         wavy: !in_link && flags.contains(Flags::UNDERCURL),
                     });
-                let strikethrough = flags
+                extend_run(&mut underline_run, underline, (row, col, span), &mut underlines);
+                let strike = flags
                     .contains(Flags::STRIKEOUT)
                     .then(|| StrikethroughStyle { thickness: px(1.0), color: Some(fg) });
-                seg.1.push(
-                    &s,
-                    TextRun {
-                        len: 0,
-                        font: fonts[font_idx].clone(),
-                        color: fg,
-                        background_color: None,
-                        underline,
-                        strikethrough,
-                    },
-                );
-                if wide {
-                    // Wide glyphs get their own segment so following text stays on the grid.
-                    if let Some(seg) = current.take() {
-                        segments.push(seg);
+                extend_run(&mut strike_run, strike, (row, col, span), &mut strikes);
+
+                // Text
+                let ch = if flags.contains(Flags::HIDDEN) || cell.c == '\t' { ' ' } else { cell.c };
+                let style = (flags.contains(Flags::BOLD) as u8)
+                    | ((flags.contains(Flags::ITALIC) as u8) << 1);
+                let zerowidth = cell.zerowidth().filter(|z| !z.is_empty() && ch != ' ');
+                if !wide && zerowidth.is_none() && glyphs::joins(ch) {
+                    if let Some(j) = &mut join
+                        && j.row == row
+                        && j.col + j.len == col
+                        && j.style == style
+                        && j.color == fg
+                        && j.len < glyphs::MAX_JOIN
+                    {
+                        j.text.push(ch);
+                        j.len += 1;
+                        continue;
                     }
+                    flush_join(&mut join, &mut glyphs, cache);
+                    join = Some(Join { row, col, len: 1, style, color: fg, text: ch.to_string() });
+                    continue;
                 }
+                flush_join(&mut join, &mut glyphs, cache);
+                if ch == ' ' || ch == '\0' {
+                    continue;
+                }
+                let cached = match zerowidth {
+                    Some(extra) => {
+                        let mut s = String::from(ch);
+                        s.extend(extra.iter());
+                        cache.cluster(&text_system, &fonts, style, &s)
+                    }
+                    None => cache.char(&text_system, &fonts, style, ch),
+                };
+                emit(&mut glyphs, row, col, fg, cached);
             }
-            if let Some(seg) = current.take() {
-                segments.push(seg);
-            }
+            flush_join(&mut join, &mut glyphs, cache);
             if let Some((r, start, end, c)) = bg_run.take() {
                 backgrounds.push((cell_bounds(r, start, end - start), c));
             }
-
-            let lines = segments
+            underlines.extend(underline_run.take());
+            strikes.extend(strike_run.take());
+            let place = |(r, start, end): (usize, usize, usize), y: Pixels| {
+                let o = cell_bounds(r, start, 1).origin;
+                (point(o.x, o.y + y), cell_width * (end - start) as f32)
+            };
+            let decorations = underlines
                 .into_iter()
-                .filter(|(_, seg)| !seg.text.trim_end().is_empty())
-                .map(|(row, seg)| {
-                    let origin = cell_bounds(row, seg.col, 1).origin;
-                    let shaped = text_system.shape_line(
-                        SharedString::from(seg.text),
-                        font_size,
-                        &seg.runs,
-                        Some(cell_width),
-                    );
-                    (origin, shaped)
+                .map(|(r, a, b, style)| {
+                    let (o, w) = place((r, a, b), underline_y);
+                    Decoration::Underline(o, w, style)
                 })
+                .chain(strikes.into_iter().map(|(r, a, b, style)| {
+                    let (o, w) = place((r, a, b), strike_y);
+                    Decoration::Strikethrough(o, w, style)
+                }))
                 .collect();
+            // Painting doesn't need the terminal; let the PTY thread carry on.
+            drop(term);
 
             let cursor = show_cursor.then(|| {
                 let span = if cursor_wide { 2 } else { 1 };
@@ -664,7 +834,7 @@ impl Render for TerminalView {
                 if uri.chars().count() > 120 {
                     uri = uri.chars().take(119).chain(['…']).collect();
                 }
-                if !links::openable(&link.uri) {
+                if !links::openable(link) {
                     uri = format!("{uri}  (won't open: unsupported scheme)");
                 }
                 let len = uri.len();
@@ -682,55 +852,83 @@ impl Render for TerminalView {
 
             Frame {
                 backgrounds,
-                lines,
+                glyphs,
+                decorations,
                 cursor,
                 cursor_color: theme.cursor,
-                line_height,
                 link_label,
             }
         };
 
         let paint = move |bounds: Bounds<Pixels>, frame: Frame, window: &mut Window, cx: &mut App| {
-            for (b, color) in &frame.backgrounds {
-                window.paint_quad(fill(*b, *color));
-            }
-            let cursor_color = frame.cursor_color;
-            if let Some((b, CursorShape::Block)) = frame.cursor
-                && focused
-            {
-                window.paint_quad(fill(b, cursor_color).corner_radii(px(2.0)));
-            }
-            for (origin, line) in &frame.lines {
-                let _ = line.paint(*origin, frame.line_height, window, cx);
-            }
-            if let Some((b, shape)) = frame.cursor {
-                let thick = px(2.0);
-                match shape {
-                    CursorShape::Block if focused => {}
-                    CursorShape::Block | CursorShape::HollowBlock => {
-                        window.paint_quad(
-                            gpui::outline(b, cursor_color, gpui::BorderStyle::Solid)
-                                .corner_radii(px(2.0)),
-                        );
+            // Follow a drag that started in this pane after it leaves the pane;
+            // the div's own listener only sees motion while hovered.
+            if dragging {
+                window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Bubble && !bounds.contains(&ev.position) {
+                        drag_entity.update(cx, |this, cx| this.handle_motion(ev, cx));
                     }
-                    CursorShape::Beam => {
-                        window.paint_quad(fill(
-                            Bounds::new(b.origin, size(thick, b.size.height)),
-                            cursor_color,
-                        ));
-                    }
-                    CursorShape::Underline => {
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                point(b.origin.x, b.origin.y + b.size.height - thick),
-                                size(b.size.width, thick),
-                            ),
-                            cursor_color,
-                        ));
-                    }
-                    CursorShape::Hidden => {}
+                });
+            }
+            // One layer for the whole grid: GPUI then orders it as a unit instead of
+            // tracking overlaps for each of the thousands of glyphs.
+            window.paint_layer(bounds, |window| {
+                for (b, color) in &frame.backgrounds {
+                    window.paint_quad(fill(*b, *color));
                 }
-            }
+                let cursor_color = frame.cursor_color;
+                if let Some((b, CursorShape::Block)) = frame.cursor
+                    && focused
+                {
+                    window.paint_quad(fill(b, cursor_color).corner_radii(px(2.0)));
+                }
+                for g in &frame.glyphs {
+                    let Glyph { font_id, id, emoji, .. } = g.glyph;
+                    let _ = if emoji {
+                        window.paint_emoji(g.origin, font_id, id, font_size)
+                    } else {
+                        window.paint_glyph(g.origin, font_id, id, font_size, g.color)
+                    };
+                }
+                for d in &frame.decorations {
+                    match d {
+                        Decoration::Underline(origin, width, style) => {
+                            window.paint_underline(*origin, *width, style)
+                        }
+                        Decoration::Strikethrough(origin, width, style) => {
+                            window.paint_strikethrough(*origin, *width, style)
+                        }
+                    }
+                }
+                if let Some((b, shape)) = frame.cursor {
+                    let thick = px(2.0);
+                    match shape {
+                        CursorShape::Block if focused => {}
+                        CursorShape::Block | CursorShape::HollowBlock => {
+                            window.paint_quad(
+                                gpui::outline(b, cursor_color, gpui::BorderStyle::Solid)
+                                    .corner_radii(px(2.0)),
+                            );
+                        }
+                        CursorShape::Beam => {
+                            window.paint_quad(fill(
+                                Bounds::new(b.origin, size(thick, b.size.height)),
+                                cursor_color,
+                            ));
+                        }
+                        CursorShape::Underline => {
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    point(b.origin.x, b.origin.y + b.size.height - thick),
+                                    size(b.size.width, thick),
+                                ),
+                                cursor_color,
+                            ));
+                        }
+                        CursorShape::Hidden => {}
+                    }
+                }
+            });
             if let Some((label, bg, border)) = &frame.link_label {
                 // Clamp to the pane so a long URL can't spill out.
                 let (pad_x, height) = (px(8.0), px(22.0));
@@ -755,15 +953,22 @@ impl Render for TerminalView {
             .track_focus(&self.focus)
             .size_full()
             .when(self.hovered_link.is_some(), |d| d.cursor_pointer())
-            .when(self.hovered_link.is_none(), |d| d.cursor_text())
+            .when(self.hovered_link.is_none() && mouse_mode, |d| d.cursor_default())
+            .when(self.hovered_link.is_none() && !mouse_mode, |d| d.cursor_text())
             .on_hover(cx.listener(Self::on_hover))
             .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_middle_click))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
             .child(canvas(prepaint, paint).size_full())

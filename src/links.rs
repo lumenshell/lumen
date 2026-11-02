@@ -12,12 +12,16 @@ use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 const URL_REGEX: &str = "(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file:|git://|ssh:|ftp://)\
                          [^\u{0000}-\u{001F}\u{007F}-\u{009F}<>\"\\s{-}\\^⟨⟩`\\\\]+";
 
-/// Schemes we'll hand to the system opener. OSC 8 links can carry any URI, so
-/// anything else (custom app handlers and the like) is ignored.
+/// Schemes we'll hand to the system opener for URLs written out in the text,
+/// where what you see is what opens.
 const ALLOWED_SCHEMES: &[&str] = &[
     "http", "https", "mailto", "ftp", "file", "gemini", "gopher", "ssh", "git", "news", "magnet",
     "ipfs", "ipns",
 ];
+
+/// OSC 8 links hide their target behind arbitrary text, so a program could
+/// dress up `file:///…/evil.desktop` as "docs". Only web and mail targets open.
+const EXPLICIT_SCHEMES: &[&str] = &["http", "https", "mailto"];
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Link {
@@ -67,10 +71,12 @@ impl LinkFinder {
     }
 }
 
-/// Is this URI something we're willing to open?
-pub fn openable(uri: &str) -> bool {
-    uri.split_once(':')
-        .is_some_and(|(scheme, _)| ALLOWED_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str()))
+/// Is this link something we're willing to open?
+pub fn openable(link: &Link) -> bool {
+    let allowed = if link.explicit { EXPLICIT_SCHEMES } else { ALLOWED_SCHEMES };
+    link.uri
+        .split_once(':')
+        .is_some_and(|(scheme, _)| allowed.contains(&scheme.to_ascii_lowercase().as_str()))
 }
 
 fn in_grid<T>(term: &Term<T>, point: Point) -> bool {
@@ -138,12 +144,25 @@ mod tests {
         assert_eq!(trim_url("https://a.b/?q=1"), "https://a.b/?q=1");
     }
 
+    fn link(uri: &str, explicit: bool) -> Link {
+        let p = Point::new(alacritty_terminal::index::Line(0), alacritty_terminal::index::Column(0));
+        Link { range: p..=p, uri: uri.into(), explicit }
+    }
+
     #[test]
     fn scheme_allowlist() {
-        assert!(openable("https://example.com"));
-        assert!(openable("HTTP://example.com"));
-        assert!(openable("file:///etc/hosts"));
-        assert!(!openable("vscode://open?file=x"));
-        assert!(!openable("no-scheme"));
+        assert!(openable(&link("https://example.com", false)));
+        assert!(openable(&link("HTTP://example.com", false)));
+        assert!(openable(&link("file:///etc/hosts", false)));
+        assert!(!openable(&link("vscode://open?file=x", false)));
+        assert!(!openable(&link("no-scheme", false)));
+    }
+
+    #[test]
+    fn osc8_links_are_web_only() {
+        assert!(openable(&link("https://example.com", true)));
+        assert!(openable(&link("mailto:a@b.c", true)));
+        assert!(!openable(&link("file:///home/me/evil.desktop", true)));
+        assert!(!openable(&link("ssh://host", true)));
     }
 }

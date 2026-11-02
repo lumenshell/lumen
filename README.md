@@ -22,7 +22,13 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
   copy and middle-click paste on Linux, bracketed paste
 - Clickable links: hold Ctrl (⌘ on macOS) to underline URLs and OSC 8 hyperlinks
   under the pointer, with the target shown at the bottom of the pane; click to
-  open. Only common schemes (http, https, mailto, file, ftp, ssh, …) are opened
+  open. Plain-text URLs with common schemes open; OSC 8 links, whose target is
+  hidden behind other text, only open http, https and mailto
+- Mouse reporting for vim, tmux, htop and friends: clicks, drags, motion and the
+  wheel in X10, UTF-8 and SGR formats, plus focus in/out events. Hold Shift to
+  select text locally instead
+- Programs may set the clipboard (OSC 52, used by tmux and vim over SSH) but
+  can't read it
 - Bundled JetBrains Mono and Inter, so it looks the same everywhere
 - Settings persist to `~/.config/lumen/config`
 
@@ -92,6 +98,7 @@ come back.
 | `src/pty.rs`           | Shell process + `alacritty_terminal` state and event loop |
 | `src/input.rs`         | Keystroke → escape-sequence encoding                      |
 | `src/links.rs`         | URL and OSC 8 hyperlink detection                         |
+| `src/mouse.rs`         | Mouse event encoding for programs in mouse mode           |
 | `src/palette.rs`       | Command palette                                           |
 | `src/theme.rs`         | Theme palettes and 256-colour table                       |
 | `src/settings.rs`      | Settings global and config file                           |
@@ -101,6 +108,6 @@ come back.
 
 - Drawers, workspaces
 - Procedural box-drawing/powerline glyphs so lines join seamlessly
-- Mouse reporting for clicks (vim/tmux mouse mode), search
+- Search in scrollback
 - IME input, cursor blink, background blur/opacity setting
 - Ghostty theme file import

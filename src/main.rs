@@ -1,5 +1,7 @@
+mod glyphs;
 mod input;
 mod links;
+mod mouse;
 mod palette;
 mod pty;
 mod session;
