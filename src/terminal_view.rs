@@ -26,11 +26,12 @@ use gpui::{
 use crate::boxdraw;
 use crate::glyphs::{self, Glyph, GlyphCache};
 use crate::links::{self, Link, LinkFinder};
+use crate::search::Search;
 use crate::mouse::{self, Action as MouseAction, Button as ReportButton};
 use crate::pty::{GridSize, Pty};
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
 use crate::theme::{Theme, alpha, indexed};
-use crate::{Copy, Paste, input};
+use crate::{Copy, Find, Paste, input};
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -66,6 +67,11 @@ pub struct TerminalView {
     reported_button: Option<ReportButton>,
     /// Cell of the last reported motion, to send one event per cell crossed.
     last_report_cell: Option<(usize, usize)>,
+    /// Find bar state, while it's open.
+    search: Option<Search>,
+    /// Pending rescan after new output, so heavy output rescans a few times a
+    /// second rather than on every chunk.
+    search_rescan: Option<Task<()>>,
     _events: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -129,6 +135,8 @@ impl TerminalView {
             pointer: None,
             reported_button: None,
             last_report_cell: None,
+            search: None,
+            search_rescan: None,
             _events: events,
             _subs: subs,
         }
@@ -141,6 +149,7 @@ impl TerminalView {
     fn handle_event(&mut self, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::Wakeup => {
+                self.schedule_search_rescan(cx);
                 // Output may have moved or replaced the text under the pointer.
                 if self.hovered_link.is_some() {
                     self.update_hovered_link(cx);
@@ -287,6 +296,11 @@ impl TerminalView {
     fn on_key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         let m = ks.modifiers;
+        if self.search.is_some() && self.search_key(ks, cx) {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if m.shift && !m.control && !m.alt && (ks.key == "pageup" || ks.key == "pagedown") {
             let scroll = if ks.key == "pageup" { Scroll::PageUp } else { Scroll::PageDown };
             self.pty.term.lock().scroll_display(scroll);
@@ -466,9 +480,100 @@ impl TerminalView {
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else { return };
+        if let Some(search) = self.search.as_mut() {
+            search.query.push_str(text.lines().next().unwrap_or(""));
+            self.update_search(cx);
+        } else {
             self.paste_text(&text);
         }
+    }
+
+    fn find(&mut self, _: &Find, _: &mut Window, cx: &mut Context<Self>) {
+        if self.search.is_some() {
+            return;
+        }
+        // Start from the selection when it's a single short line.
+        let selected = self
+            .pty
+            .term
+            .lock()
+            .selection_to_string()
+            .filter(|t| !t.contains('\n') && t.len() <= 200);
+        let mut search = Search::default();
+        search.query = selected.unwrap_or_default();
+        self.search = Some(search);
+        self.update_search(cx);
+    }
+
+    fn close_search(&mut self, cx: &mut Context<Self>) {
+        self.search = None;
+        self.search_rescan = None;
+        cx.notify();
+    }
+
+    /// Re-run the search after the query or its options change.
+    fn update_search(&mut self, cx: &mut Context<Self>) {
+        if let Some(search) = self.search.as_mut() {
+            search.update(&mut self.pty.term.lock());
+        }
+        cx.notify();
+    }
+
+    fn schedule_search_rescan(&mut self, cx: &mut Context<Self>) {
+        if self.search_rescan.is_some() || self.search.as_ref().is_none_or(|s| s.query.is_empty()) {
+            return;
+        }
+        self.search_rescan = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
+            let _ = this.update(cx, |this, cx| {
+                this.search_rescan = None;
+                let term = this.pty.term.lock();
+                if let Some(search) = this.search.as_mut() {
+                    search.rescan(&term);
+                }
+                drop(term);
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Keys typed while the find bar is open. Returns false for keys that
+    /// should still reach the shell (Ctrl/Cmd combinations such as Ctrl+C).
+    fn search_key(&mut self, ks: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        let m = ks.modifiers;
+        let Some(search) = self.search.as_mut() else { return false };
+        match ks.key.as_str() {
+            "escape" => self.close_search(cx),
+            "enter" | "up" | "down" => {
+                let older = match ks.key.as_str() {
+                    "enter" => !m.shift,
+                    k => k == "up",
+                };
+                search.step(&mut self.pty.term.lock(), older);
+            }
+            "backspace" => {
+                search.query.pop();
+                self.update_search(cx);
+            }
+            "c" if m.alt => {
+                search.case_sensitive = !search.case_sensitive;
+                self.update_search(cx);
+            }
+            "r" if m.alt => {
+                search.regex = !search.regex;
+                self.update_search(cx);
+            }
+            _ if m.control || m.platform => return false,
+            _ if m.alt => {}
+            _ => {
+                if let Some(ch) = ks.key_char.as_ref().filter(|c| !c.chars().any(char::is_control)) {
+                    search.query.push_str(ch);
+                    self.update_search(cx);
+                }
+            }
+        }
+        true
     }
 
     fn paste_text(&mut self, text: &str) {
@@ -544,6 +649,82 @@ fn extend_run<S: PartialEq>(
     }
     done.extend(run.take());
     *run = style.map(|s| (row, col, col + span, s));
+}
+
+/// The find bar floating at the top right of the pane.
+fn search_bar(search: &Search, theme: &Theme) -> gpui::AnyElement {
+    let has_query = !search.query.is_empty();
+    let status: gpui::SharedString = if search.invalid {
+        "Invalid pattern".into()
+    } else if !has_query {
+        "".into()
+    } else if search.count() == 0 {
+        "No results".into()
+    } else {
+        let more = if search.truncated { "+" } else { "" };
+        match search.current {
+            Some(i) => format!("{} of {}{more}", i + 1, search.count()).into(),
+            None => format!("{}{more} results", search.count()).into(),
+        }
+    };
+    let toggle = |label: &'static str, on: bool, hint: &'static str| {
+        div()
+            .px(px(6.0))
+            .py(px(1.0))
+            .rounded(px(5.0))
+            .font_family(MONO_FONT)
+            .text_size(px(11.5))
+            .when(on, |d| d.bg(alpha(theme.accent, 0.22)).text_color(theme.text))
+            .when(!on, |d| d.text_color(theme.muted))
+            .child(label)
+            .id(hint)
+    };
+    div()
+        .absolute()
+        .top(px(4.0))
+        .right(px(4.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .h(px(34.0))
+        .pl(px(12.0))
+        .pr(px(6.0))
+        .min_w(px(280.0))
+        .font_family(UI_FONT)
+        .text_size(px(12.5))
+        .bg(theme.raised)
+        .border_1()
+        .border_color(alpha(theme.text, 0.08))
+        .rounded(px(9.0))
+        .shadow(vec![gpui::BoxShadow {
+            color: alpha(gpui::black(), 0.35),
+            offset: point(px(0.0), px(6.0)),
+            blur_radius: px(18.0),
+            spread_radius: px(0.0),
+        }])
+        .child(div().text_color(theme.accent).child("⌕"))
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .font_family(MONO_FONT)
+                .text_color(if has_query { theme.text } else { theme.muted })
+                .when(!has_query, |d| d.child(caret(theme.accent)).child("Find"))
+                .when(has_query, |d| d.child(search.query.clone()).child(caret(theme.accent))),
+        )
+        .child(
+            div()
+                .text_color(if search.invalid { theme.ansi[1] } else { theme.subtext })
+                .child(status),
+        )
+        .child(toggle("Aa", search.case_sensitive, "search-case"))
+        .child(toggle(".*", search.regex, "search-regex"))
+        .into_any_element()
+}
+
+fn caret(color: Hsla) -> gpui::Div {
+    div().w(px(2.0)).h(px(16.0)).mx(px(1.0)).rounded(px(1.0)).bg(color)
 }
 
 fn paint_shape(window: &mut Window, shape: boxdraw::Shape, color: Hsla) {
@@ -647,6 +828,12 @@ impl Render for TerminalView {
         let hovered_link = self.hovered_link.clone();
         let dragging = self.selecting || self.reported_button.is_some();
         let mouse_mode = mouse::reporting(self.mode());
+        let search_hits = self
+            .search
+            .as_ref()
+            .map(|s| s.visible(&self.pty.term.lock()))
+            .unwrap_or_default();
+        let search_bar = self.search.as_ref().map(|s| search_bar(s, &theme));
 
         let prepaint = move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| -> Frame {
             let text_system = window.text_system().clone();
@@ -789,6 +976,16 @@ impl Render for TerminalView {
                     hovered_link.as_ref().is_some_and(|l| l.range.contains(&indexed_cell.point));
                 if in_link {
                     fg = theme.accent;
+                }
+                if let Some((_, current)) =
+                    search_hits.iter().find(|(r, _)| r.contains(&indexed_cell.point))
+                {
+                    if *current {
+                        bg = Some(theme.accent);
+                        fg = theme.pane;
+                    } else {
+                        bg = Some(alpha(theme.accent, 0.3));
+                    }
                 }
                 if selection.is_some_and(|s| s.contains(indexed_cell.point)) {
                     bg = Some(theme.selection);
@@ -1053,6 +1250,9 @@ impl Render for TerminalView {
             .on_mouse_up_out(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::find))
+            .relative()
             .child(canvas(prepaint, paint).size_full())
+            .children(search_bar)
     }
 }

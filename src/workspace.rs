@@ -965,6 +965,7 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
         action::<ResetFont>("Reset Font Size"),
         action::<Copy>("Copy"),
         action::<Paste>("Paste"),
+        action::<Find>("Find in Scrollback"),
         action::<Quit>("Quit"),
     ];
     let mut items: Vec<PaletteItem> = actions

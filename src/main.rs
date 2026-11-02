@@ -5,6 +5,7 @@ mod links;
 mod mouse;
 mod palette;
 mod pty;
+mod search;
 mod session;
 mod settings;
 mod terminal_view;
@@ -45,6 +46,7 @@ actions!(
         ResetFont,
         Copy,
         Paste,
+        Find,
         Quit,
     ]
 );
@@ -82,6 +84,7 @@ fn keybindings() -> Vec<KeyBinding> {
         KeyBinding::new(&m("cmd-0", "ctrl-0"), ResetFont, None),
         KeyBinding::new(&m("cmd-c", "ctrl-shift-c"), Copy, None),
         KeyBinding::new(&m("cmd-v", "ctrl-shift-v"), Paste, None),
+        KeyBinding::new(&m("cmd-f", "ctrl-shift-f"), Find, None),
         KeyBinding::new("shift-insert", Paste, None),
         KeyBinding::new(&m("cmd-q", "ctrl-shift-q"), Quit, None),
     ];

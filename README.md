@@ -62,6 +62,12 @@ On macOS you only need Xcode command-line tools.
 | Copy / paste       | Ctrl+Shift+C / V     | ⌘C / ⌘V          |
 | Scroll a page      | Shift+PgUp / PgDn    | Shift+PgUp / PgDn|
 | Open link          | Ctrl+click           | ⌘+click          |
+| Find in scrollback | Ctrl+Shift+F         | ⌘F               |
+
+In the find bar, Enter or ↑ goes to the older match and Shift+Enter or ↓ to
+the newer one. Alt+C toggles case-sensitive matching (otherwise case is ignored
+unless the query has a capital letter), Alt+R toggles regular expressions, and
+Esc closes it.
 
 ## Config
 
@@ -98,6 +104,9 @@ come back.
 | `src/pty.rs`           | Shell process + `alacritty_terminal` state and event loop |
 | `src/input.rs`         | Keystroke → escape-sequence encoding                      |
 | `src/links.rs`         | URL and OSC 8 hyperlink detection                         |
+| `src/search.rs`        | Find in scrollback: matching, navigation, highlights      |
+| `src/glyphs.rs`        | Per-character glyph cache used to draw the grid           |
+| `src/boxdraw.rs`       | Box-drawing, block and powerline characters as shapes     |
 | `src/mouse.rs`         | Mouse event encoding for programs in mouse mode           |
 | `src/palette.rs`       | Command palette                                           |
 | `src/theme.rs`         | Theme palettes and 256-colour table                       |
@@ -107,7 +116,5 @@ come back.
 ## Next up
 
 - Drawers, workspaces
-- Procedural box-drawing/powerline glyphs so lines join seamlessly
-- Search in scrollback
 - IME input, cursor blink, background blur/opacity setting
 - Ghostty theme file import
