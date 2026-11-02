@@ -1,0 +1,21 @@
+[package]
+name = "lumen"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alacritty_terminal = "0.26.0"
+anyhow = "1.0.104"
+futures = "0.3"
+gpui = "0.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["randr"] }
+
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"
