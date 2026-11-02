@@ -1,6 +1,7 @@
 mod boxdraw;
 mod glyphs;
 mod input;
+mod keymap;
 mod links;
 mod marks;
 mod mouse;
@@ -18,7 +19,7 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use gpui::{
-    Action, App, AppContext, Application, Bounds, KeyBinding, Pixels, TitlebarOptions,
+    Action, App, AppContext, Application, Bounds, Pixels, TitlebarOptions,
     WindowBackgroundAppearance,
     WindowBounds, WindowDecorations, WindowOptions, actions, point, px, size,
 };
@@ -60,49 +61,6 @@ actions!(
 #[action(namespace = lumen, no_json)]
 pub struct ActivateTab(pub usize);
 
-fn keybindings() -> Vec<KeyBinding> {
-    // macOS uses cmd; Linux uses ctrl-shift so plain ctrl keys reach the shell.
-    let mac = cfg!(target_os = "macos");
-    let m = |mac_key: &str, linux_key: &str| -> String {
-        if mac { mac_key.to_string() } else { linux_key.to_string() }
-    };
-    let mut b = vec![
-        KeyBinding::new(&m("cmd-t", "ctrl-shift-t"), NewTab, None),
-        KeyBinding::new(&m("cmd-w", "ctrl-shift-w"), ClosePane, None),
-        KeyBinding::new(&m("cmd-d", "ctrl-shift-d"), SplitRight, None),
-        KeyBinding::new(&m("cmd-shift-d", "ctrl-shift-e"), SplitDown, None),
-        KeyBinding::new("ctrl-tab", NextTab, None),
-        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
-        KeyBinding::new(&m("cmd-shift-]", "ctrl-pagedown"), NextTab, None),
-        KeyBinding::new(&m("cmd-shift-[", "ctrl-pageup"), PrevTab, None),
-        KeyBinding::new(&m("cmd-]", "ctrl-shift-n"), NextPane, None),
-        KeyBinding::new(&m("cmd-alt-left", "alt-shift-left"), FocusLeft, None),
-        KeyBinding::new(&m("cmd-alt-right", "alt-shift-right"), FocusRight, None),
-        KeyBinding::new(&m("cmd-alt-up", "alt-shift-up"), FocusUp, None),
-        KeyBinding::new(&m("cmd-alt-down", "alt-shift-down"), FocusDown, None),
-        KeyBinding::new(&m("cmd-shift-enter", "ctrl-shift-enter"), ToggleZoom, None),
-        KeyBinding::new(&m("cmd-shift-p", "ctrl-shift-p"), TogglePalette, None),
-        KeyBinding::new(&m("cmd-shift-y", "ctrl-shift-y"), NextTheme, None),
-        KeyBinding::new(&m("cmd-=", "ctrl-="), IncreaseFont, None),
-        KeyBinding::new(&m("cmd-+", "ctrl-+"), IncreaseFont, None),
-        KeyBinding::new(&m("cmd--", "ctrl--"), DecreaseFont, None),
-        KeyBinding::new(&m("cmd-0", "ctrl-0"), ResetFont, None),
-        KeyBinding::new(&m("cmd-c", "ctrl-shift-c"), Copy, None),
-        KeyBinding::new(&m("cmd-v", "ctrl-shift-v"), Paste, None),
-        KeyBinding::new(&m("cmd-f", "ctrl-shift-f"), Find, None),
-        KeyBinding::new(&m("cmd-up", "ctrl-shift-up"), PrevPrompt, None),
-        KeyBinding::new(&m("cmd-down", "ctrl-shift-down"), NextPrompt, None),
-        KeyBinding::new(&m("cmd-shift-o", "ctrl-shift-o"), CopyLastOutput, None),
-        KeyBinding::new("shift-insert", Paste, None),
-        KeyBinding::new(&m("cmd-q", "ctrl-shift-q"), Quit, None),
-    ];
-    for i in 1..=9 {
-        let key = if mac { format!("cmd-{i}") } else { format!("alt-{i}") };
-        b.push(KeyBinding::new(&key, ActivateTab(i - 1), None));
-    }
-    b
-}
-
 fn load_fonts(cx: &App) {
     let fonts: Vec<Cow<'static, [u8]>> = vec![
         Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")),
@@ -122,7 +80,7 @@ fn main() {
         load_fonts(cx);
         cx.set_global(Settings::load());
         Settings::watch(cx);
-        cx.bind_keys(keybindings());
+        keymap::apply(cx);
 
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &NextTheme, cx| {

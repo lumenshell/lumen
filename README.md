@@ -80,6 +80,7 @@ unless the query has a capital letter), Alt+R toggles regular expressions, and
 Esc closes it.
 
 The command jumps and Copy last output need [shell integration](#shell-integration).
+Every shortcut can be changed in the config; see [Key bindings](#key-bindings).
 
 ## Config
 
@@ -110,6 +111,32 @@ script instead). `shell` and `shell-integration` apply to new panes; everything
 else applies to open ones too. Older
 versions used `~/.config/lumen/config`; its values are carried over the first
 time `config.toml` is created.
+
+## Key bindings
+
+Change shortcuts in a `[keys]` table at the end of `config.toml`. Each line
+binds a key to an action by name, and applies as soon as you save:
+
+```toml
+[keys]
+ctrl-alt-t = "new-tab"      # an extra key for New Tab; Ctrl+Shift+T still works
+ctrl-tab = "none"           # free Ctrl+Tab for the desktop or the shell
+"ctrl-=" = "increase-font"  # keys with symbols need quotes
+```
+
+A key you list replaces whatever it did by default; `"none"` frees it, so it
+goes to the program in the terminal instead. An action's other default keys
+keep working, so to move one, bind the new key and set the old one to
+`"none"`. Keys are case-insensitive and written like `ctrl-shift-t`, `alt-1`,
+`cmd-k` (macOS), `f5`, `shift-insert` or `ctrl-pageup`. Multi-key sequences
+such as `ctrl-a n` aren't supported yet. Typos are listed in the banner, with a
+suggestion when an action name is close.
+
+Actions: `new-tab`, `close-pane`, `split-right`, `split-down`, `next-tab`,
+`prev-tab`, `tab-1` … `tab-9`, `next-pane`, `focus-left`, `focus-right`,
+`focus-up`, `focus-down`, `toggle-zoom`, `command-palette`, `next-theme`,
+`increase-font`, `decrease-font`, `reset-font`, `copy`, `paste`, `find`,
+`prev-command`, `next-command`, `copy-last-output`, `quit`.
 
 ## Shell integration
 
@@ -162,7 +189,8 @@ come back.
 
 | File                   | What it does                                              |
 |------------------------|-----------------------------------------------------------|
-| `src/main.rs`          | Actions, keybindings, fonts, window creation              |
+| `src/main.rs`          | Actions, fonts, window creation                           |
+| `src/keymap.rs`        | Default shortcuts and the `[keys]` table                  |
 | `src/workspace.rs`     | Title bar, tabs, pane tree, focus halo, palette overlay   |
 | `src/terminal_view.rs` | Grid rendering, cursor, selection, mouse and key input    |
 | `src/pty.rs`           | Shell process + `alacritty_terminal` state and event loop |
@@ -188,7 +216,7 @@ cargo test
 
 ## Next up
 
-- Configurable keybindings, keyboard selection mode, keyboard link hints
+- Keyboard selection mode, keyboard link hints
 - A plugin API (socket and `lumen msg` first)
 - Notifications when a long command finishes; a quick-terminal dropdown
 - IME input, cursor blink, background blur/opacity setting

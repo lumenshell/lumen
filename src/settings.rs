@@ -14,6 +14,7 @@ use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
 use gpui::{App, Global, Pixels, SharedString, px};
 use toml_edit::{DocumentMut, Item, value};
 
+use crate::keymap;
 use crate::theme::{Theme, themes};
 
 pub const MONO_FONT: &str = "JetBrains Mono";
@@ -41,6 +42,9 @@ pub struct Settings {
     pub shell: Option<Vec<String>>,
     /// Load Lumen's shell integration into bash, zsh and fish.
     pub shell_integration: bool,
+    /// Shortcuts from `[keys]`: normalized keys and the action they run
+    /// (`None` frees the key), in file order.
+    pub keys: Vec<(String, Option<String>)>,
     /// Problems found in the config file, shown until it's fixed.
     pub problems: Vec<String>,
 }
@@ -60,6 +64,7 @@ impl Default for Settings {
             cursor_shape: CursorShape::Block,
             shell: None,
             shell_integration: true,
+            keys: Vec::new(),
             problems: Vec::new(),
         }
     }
@@ -119,6 +124,10 @@ impl Settings {
             }
         };
         for (key, item) in doc.iter() {
+            if key == "keys" {
+                s.parse_keys(item);
+                continue;
+            }
             let bad = |what: &str| format!("`{key}` should be {what}");
             let problem = match key {
                 "theme" => match item.as_str() {
@@ -205,6 +214,27 @@ impl Settings {
         s
     }
 
+    fn parse_keys(&mut self, item: &Item) {
+        let Some(table) = item.as_table_like() else {
+            self.problems.push("`keys` should be a table: a `[keys]` line followed by `key = \"action\"` lines".into());
+            return;
+        };
+        for (keys, item) in table.iter() {
+            let checked = keymap::normalize_keys(keys).and_then(|k| {
+                let name = item.as_str().ok_or_else(|| "should be an action name in quotes".to_string())?;
+                Ok((k, keymap::check_action(name)?))
+            });
+            match checked {
+                Ok((k, action)) => {
+                    // The same key written two ways: the later line wins.
+                    self.keys.retain(|(existing, _)| *existing != k);
+                    self.keys.push((k, action));
+                }
+                Err(e) => self.problems.push(format!("[keys] `{keys}`: {e}")),
+            }
+        }
+    }
+
     /// Read the config file, creating it on first run (carrying over values
     /// from the old `config` file if there is one).
     pub fn load() -> Self {
@@ -265,7 +295,15 @@ impl Settings {
              \n\
              # Let bash, zsh and fish mark prompts and commands, for jumping between\n\
              # commands, copying output and marking failures. Applies to new panes.\n\
-             shell-integration = {integration}\n",
+             shell-integration = {integration}\n\
+             \n\
+             # Keyboard shortcuts. Each line binds a key to an action, replacing what that\n\
+             # key did before; \"none\" frees a key so programs in the terminal get it.\n\
+             # An action's other keys keep working. Keys look like ctrl-shift-t, alt-1,\n\
+             # cmd-k (macOS), f5, shift-insert or ctrl-pageup.\n\
+             # Actions:\n\
+             {actions}\n\
+             {keys}",
             themes = names.join(", "),
             theme = self.theme().name,
             family = self.font_family,
@@ -274,7 +312,21 @@ impl Settings {
             padding = self.padding,
             scrollback = self.scrollback,
             integration = self.shell_integration,
+            actions = wrap_comment(&keymap::ACTIONS.join(", "), 80),
+            keys = self.keys_template(),
         )
+    }
+
+    fn keys_template(&self) -> String {
+        if self.keys.is_empty() {
+            return "#\n# [keys]\n# ctrl-alt-t = \"new-tab\"\n# ctrl-tab = \"none\"\n".into();
+        }
+        let lines: Vec<_> = self
+            .keys
+            .iter()
+            .map(|(k, a)| format!("\"{k}\" = \"{}\"", a.as_deref().unwrap_or(keymap::NONE)))
+            .collect();
+        format!("[keys]\n{}\n", lines.join("\n"))
     }
 
     /// Write the settings Lumen changes itself (theme and font size) into the
@@ -329,7 +381,11 @@ impl Settings {
             let problems = new.problems;
             cx.global_mut::<Settings>().problems = problems;
         } else if *Self::get(cx) != new {
+            let keys_changed = Self::get(cx).keys != new.keys;
             cx.set_global(new);
+            if keys_changed {
+                keymap::apply(cx);
+            }
         } else {
             return;
         }
@@ -360,6 +416,21 @@ impl Settings {
     }
 }
 
+/// `text` as `#   ` comment lines no wider than `width`, broken after commas.
+fn wrap_comment(text: &str, width: usize) -> String {
+    let mut lines = vec![String::from("#  ")];
+    for word in text.split(' ') {
+        let line = lines.last_mut().unwrap();
+        if line.len() + 1 + word.len() > width {
+            lines.push(format!("#   {word}"));
+        } else {
+            line.push(' ');
+            line.push_str(word);
+        }
+    }
+    lines.join("\n")
+}
+
 /// Convert the old `key = value` file (unquoted values) to TOML.
 fn legacy_to_toml(text: &str) -> String {
     text.lines()
@@ -386,6 +457,13 @@ mod tests {
         let parsed = Settings::parse(&s.template());
         assert!(parsed.problems.is_empty(), "{:?}", parsed.problems);
         assert!(parsed == s);
+        let s = Settings {
+            keys: vec![("ctrl-alt-t".into(), Some("new-tab".into())), ("ctrl-tab".into(), None)],
+            ..Default::default()
+        };
+        let parsed = Settings::parse(&s.template());
+        assert!(parsed.problems.is_empty(), "{:?}", parsed.problems);
+        assert_eq!(parsed.keys, s.keys);
     }
 
     #[test]
@@ -416,6 +494,28 @@ mod tests {
         let s = Settings::parse("font-size = \n");
         assert_eq!(s.problems.len(), 1);
         assert!(s.problems[0].starts_with("Couldn't read the file at line 1:"), "{:?}", s.problems);
+    }
+
+    #[test]
+    fn reads_keys_and_reports_bad_ones() {
+        let s = Settings::parse(
+            "font-size = 15\n[keys]\nCtrl-Alt-T = \"New-Tab\"\nctrl-tab = \"none\"\nctrl-shift-tbs = \"find\"\n\
+             alt-x = \"new-tb\"\nalt-y = 3\nalt-shift-t = \"quit\"\nshift-alt-t = \"find\"\n",
+        );
+        assert_eq!(s.font_size, 15.0);
+        assert_eq!(
+            s.keys,
+            vec![
+                ("ctrl-alt-t".to_string(), Some("new-tab".to_string())),
+                ("ctrl-tab".to_string(), None),
+                ("alt-shift-t".to_string(), Some("find".to_string())),
+            ]
+        );
+        assert_eq!(s.problems.len(), 3, "{:?}", s.problems);
+        assert!(s.problems.iter().any(|p| p.contains("unknown key `tbs`")));
+        assert!(s.problems.iter().any(|p| p.contains("did you mean \"new-tab\"")));
+        assert!(s.problems.iter().any(|p| p.contains("`alt-y`: should be an action name")));
+        assert!(Settings::parse("keys = 3\n").problems[0].contains("should be a table"));
     }
 
     #[test]
