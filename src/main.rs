@@ -1,3 +1,6 @@
+//! Lumen: a GPU-rendered terminal. Declares the actions, opens the window
+//! (restoring its saved placement) and wires up settings and key bindings.
+
 mod boxdraw;
 mod glyphs;
 mod input;

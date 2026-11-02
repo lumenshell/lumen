@@ -10,7 +10,10 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
   strikethrough, wide (CJK) glyphs, colour emoji, configurable scrollback
 - Box-drawing, block and powerline characters drawn as shapes, so lines and
   prompt segments join without gaps
-- Tabs in a custom title bar, with pane counts and inherited working directory
+- Tabs in a custom title bar, with pane counts and inherited working directory.
+  A tab shows the title its program sets; **+** opens a tab and a tab's **×**
+  closes it with all its panes. Drag the title bar to move the window and
+  double-click it to maximize. Closing the last pane quits Lumen
 - Split panes on a padded canvas: rounded frames, an accent focus halo, and
   dimmed unfocused panes; Focus Mode zooms the active pane
 - Drag the gap between panes to resize a split; double-click it to even the split out
@@ -24,8 +27,10 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
   open in the shell's directory (see [Shell integration](#shell-integration))
 - Themes that recolour both the terminal and the chrome: Rosé Pine, Rosé Pine
   Moon, Catppuccin Mocha, Tokyo Night, Rosé Pine Dawn (light)
-- Mouse selection (drag, double-click word, triple-click line), primary-selection
-  copy and middle-click paste on Linux, bracketed paste
+- Mouse selection (drag, double-click word, triple-click line, Shift+click to
+  extend), primary-selection copy and middle-click paste on Linux, bracketed paste
+- The wheel scrolls history, or in full-screen programs such as `less` and
+  `man` (which don't use the mouse) it moves through the text with arrow keys
 - Clickable links: hold Ctrl (⌘ on macOS) to underline URLs and OSC 8 hyperlinks
   under the pointer, with the target shown at the bottom of the pane; click to
   open. Plain-text URLs with common schemes open; OSC 8 links, whose target is
@@ -80,7 +85,14 @@ unless the query has a capital letter), Alt+R toggles regular expressions, and
 Esc closes it.
 
 The command jumps and Copy last output need [shell integration](#shell-integration).
-Every shortcut can be changed in the config; see [Key bindings](#key-bindings).
+
+The command palette searches every action above plus **Open Config File** and
+one **Theme:** entry per theme, showing each action's current shortcut. Type
+to filter, ↑/↓ or Tab to choose, Enter to run, Esc or a click outside to close.
+Focus left/right/up/down and Go to tab N are keyboard-only.
+
+Every shortcut can be changed in the config (see [Key bindings](#key-bindings))
+except Shift+PgUp/PgDn, Ctrl+click and the keys inside the find bar and palette.
 
 ## Config
 
@@ -184,6 +196,17 @@ was. If the saved spot would leave the title bar off every connected monitor
 (say a monitor was unplugged), the window manager places it instead. On Wayland,
 apps can't position their own windows, so only the size and maximized state
 come back.
+
+## Files and environment
+
+| What           | Where (Linux)                                   | macOS                                               |
+|----------------|-------------------------------------------------|-----------------------------------------------------|
+| Settings       | `~/.config/lumen/config.toml` (`$XDG_CONFIG_HOME`) | same                                             |
+| Session        | `~/.local/state/lumen/session.json` (`$XDG_STATE_HOME`) | `~/Library/Application Support/lumen/session.json` |
+| Shell scripts  | `~/.local/share/lumen/shell-integration/` (`$XDG_DATA_HOME`) | `~/Library/Application Support/lumen/shell-integration/` |
+
+Shells started by Lumen get `TERM=xterm-256color`, `COLORTERM=truecolor` and
+`TERM_PROGRAM=lumen`, so scripts can tell they're running in Lumen.
 
 ## Layout
 
