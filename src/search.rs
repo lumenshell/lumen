@@ -138,6 +138,10 @@ impl Search {
         // Bring the whole match into view (end first, so the start wins).
         term.scroll_to_point(to_point(term, end));
         term.scroll_to_point(to_point(term, start));
+        // In keyboard select mode the cursor follows, so the match can be selected.
+        if term.mode().contains(alacritty_terminal::term::TermMode::VI) {
+            term.vi_goto_point(to_point(term, start));
+        }
     }
 
     pub fn count(&self) -> usize {

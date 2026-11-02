@@ -22,6 +22,8 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
   maximized state
 - Command palette (fuzzy search over every action and theme)
 - Find in scrollback, with optional case-sensitive and regex matching
+- Keyboard select mode: move through the screen and scrollback with vi keys,
+  select and copy without the mouse (see [Keyboard select mode](#keyboard-select-mode))
 - Scriptable: `lumen msg` opens tabs and splits, types into panes, reads their
   screens and streams events such as "command finished with exit 1" (see
   [Scripting](#scripting-lumen-msg))
@@ -86,6 +88,7 @@ On macOS you only need Xcode command-line tools.
 | Find in scrollback | Ctrl+Shift+F         | ⌘F               |
 | Prev / next command | Ctrl+Shift+↑ / ↓    | ⌘↑ / ⌘↓          |
 | Copy last output   | Ctrl+Shift+O         | ⌘⇧O              |
+| Keyboard select mode | Ctrl+Shift+Space   | ⌘⇧Space          |
 | Quit               | Ctrl+Shift+Q         | ⌘Q               |
 
 In the find bar, Enter or ↑ goes to the older match and Shift+Enter or ↓ to
@@ -101,7 +104,40 @@ to filter, ↑/↓ or Tab to choose, Enter to run, Esc or a click outside to clo
 Focus left/right/up/down and Go to tab N are keyboard-only.
 
 Every shortcut can be changed in the config (see [Key bindings](#key-bindings))
-except Shift+PgUp/PgDn, Ctrl+click and the keys inside the find bar and palette.
+except Shift+PgUp/PgDn, Ctrl+click and the keys inside the find bar, palette
+and keyboard select mode.
+
+## Keyboard select mode
+
+Ctrl+Shift+Space (⌘⇧Space) puts a pane into select mode: a second, accent
+coloured cursor you move with vi keys over the screen and scrollback, while a
+hint at the bottom of the pane shows what the next keys do. Nothing you type
+reaches the shell until you leave.
+
+| Keys | Move |
+|---|---|
+| `h` `j` `k` `l` or arrows | Left, down, up, right |
+| `w` `b` `e` | Next word, previous word, end of word (`W` `B` `E`: words split only at spaces) |
+| `0` `^` `$` (or Home, End) | Start of line, first non-blank, end of line |
+| `H` `M` `L` | Top, middle, bottom of the screen |
+| `gg` `G` | Oldest line of history, last line of output |
+| `Ctrl+U` `Ctrl+D`, `Ctrl+B` `Ctrl+F` (or PgUp, PgDn) | Half a page, a page, up or down |
+| `{` `}`, `%` | Previous or next blank line, matching bracket |
+| `[` `]` | Previous or next command's prompt (needs [shell integration](#shell-integration)) |
+| `/` `?`, then `n` `N` | Find (down or up) with the find bar, then the next or previous match |
+
+A number before a move repeats it: `5j`, `3w`, `2[`.
+
+| Keys | Select and copy |
+|---|---|
+| `v`, `V`, `Ctrl+V` | Start a selection of characters, whole lines or a block; the same key again ends it |
+| `y` or Enter | Copy the selection and leave |
+| `Y` | Copy the line under the cursor and leave |
+| Esc | Drop the selection; with none, leave (`q`, `i` and Ctrl+C also leave) |
+
+Clicking moves the cursor there, and a mouse selection can be copied with `y`
+too. Copying also fills the primary selection on Linux, so middle-click pastes
+it. Leaving scrolls back to the bottom.
 
 ## Config
 
@@ -159,7 +195,7 @@ Actions: `new-tab`, `close-pane`, `split-right`, `split-down`, `next-tab`,
 `prev-tab`, `tab-1` … `tab-9`, `next-pane`, `focus-left`, `focus-right`,
 `focus-up`, `focus-down`, `toggle-zoom`, `command-palette`, `next-theme`,
 `increase-font`, `decrease-font`, `reset-font`, `copy`, `paste`, `find`,
-`prev-command`, `next-command`, `copy-last-output`, `quit`.
+`prev-command`, `next-command`, `copy-last-output`, `select-mode`, `quit`.
 
 ## Shell integration
 
@@ -330,6 +366,7 @@ socket API is on.
 | `src/input.rs`         | Keystroke → escape-sequence encoding                      |
 | `src/links.rs`         | URL and OSC 8 hyperlink detection                         |
 | `src/search.rs`        | Find in scrollback: matching, navigation, highlights      |
+| `src/vi.rs`            | Keyboard select mode: keys, motions, selections           |
 | `src/glyphs.rs`        | Per-character glyph cache used to draw the grid           |
 | `src/boxdraw.rs`       | Box-drawing, block and powerline characters as shapes     |
 | `src/mouse.rs`         | Mouse event encoding for programs in mouse mode           |
@@ -349,7 +386,7 @@ cargo test
 
 ## Next up
 
-- Keyboard selection mode, keyboard link hints
+- Keyboard link hints
 - Plugins built on the socket API: a plugin host with manifests and permissions
 - Notifications when a long command finishes; a quick-terminal dropdown
 - IME input, cursor blink, background blur/opacity setting

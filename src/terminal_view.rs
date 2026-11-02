@@ -33,7 +33,8 @@ use crate::mouse::{self, Action as MouseAction, Button as ReportButton};
 use crate::pty::{GridSize, Pty};
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
 use crate::theme::{Theme, alpha, indexed};
-use crate::{Copy, CopyLastOutput, Find, NextPrompt, Paste, PrevPrompt, input};
+use crate::vi::{self, Outcome, ViState};
+use crate::{Copy, CopyLastOutput, Find, NextPrompt, Paste, PrevPrompt, ToggleSelectMode, input};
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -79,6 +80,12 @@ pub struct TerminalView {
     marks_rescan: Option<Task<()>>,
     /// Prompt last jumped to, highlighted until you type.
     jump_target: Option<String>,
+    /// Keyboard select mode: keys typed toward a count or `gg`.
+    vi: ViState,
+    /// The last find, kept for `n`/`N` in select mode after the bar closes.
+    last_search: Option<Search>,
+    /// The find bar was opened with `?`: `n` goes up.
+    search_backward: bool,
     _events: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -160,6 +167,9 @@ impl TerminalView {
             exits: Rc::default(),
             marks_rescan: None,
             jump_target: None,
+            vi: ViState::default(),
+            last_search: None,
+            search_backward: false,
             _events: events,
             _subs: subs,
         }
@@ -364,6 +374,13 @@ impl TerminalView {
             cx.notify();
             return;
         }
+        if vi::active(&self.pty.term.lock()) {
+            let outcome = vi::key(&mut self.pty.term.lock(), &mut self.vi, ks);
+            self.vi_outcome(outcome, cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if m.shift && !m.control && !m.alt && (ks.key == "pageup" || ks.key == "pagedown") {
             let scroll = if ks.key == "pageup" { Scroll::PageUp } else { Scroll::PageDown };
             self.pty.term.lock().scroll_display(scroll);
@@ -462,6 +479,9 @@ impl TerminalView {
             _ => SelectionType::Lines,
         };
         let mut term = self.pty.term.lock();
+        if vi::active(&term) {
+            term.vi_goto_point(point);
+        }
         match (&mut term.selection, ev.modifiers.shift) {
             (Some(sel), true) => sel.update(point, side),
             _ => term.selection = Some(Selection::new(ty, point, side)),
@@ -537,6 +557,44 @@ impl TerminalView {
         let _ = cx;
     }
 
+    fn toggle_select_mode(&mut self, _: &ToggleSelectMode, _: &mut Window, cx: &mut Context<Self>) {
+        vi::toggle(&mut self.pty.term.lock(), &mut self.vi);
+        cx.notify();
+    }
+
+    /// Carry out what a key in select mode asked for.
+    fn vi_outcome(&mut self, outcome: Outcome, cx: &mut Context<Self>) {
+        match outcome {
+            Outcome::Handled => {}
+            Outcome::Copy(text) => {
+                #[cfg(target_os = "linux")]
+                cx.write_to_primary(ClipboardItem::new_string(text.clone()));
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                vi::toggle(&mut self.pty.term.lock(), &mut self.vi);
+            }
+            Outcome::Exit => vi::toggle(&mut self.pty.term.lock(), &mut self.vi),
+            Outcome::Search { backward } => {
+                self.search_backward = backward;
+                self.open_search(cx);
+            }
+            Outcome::SearchAgain { reverse } => {
+                let older = self.search_backward != reverse;
+                let search = match self.search.as_mut() {
+                    Some(s) => s,
+                    None => match self.last_search.as_mut() {
+                        Some(s) => {
+                            // Output may have arrived since; find matches afresh.
+                            s.rescan(&self.pty.term.lock());
+                            s
+                        }
+                        None => return,
+                    },
+                };
+                search.step(&mut self.pty.term.lock(), older);
+            }
+        }
+    }
+
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = self.pty.term.lock().selection_to_string() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -554,6 +612,11 @@ impl TerminalView {
     }
 
     fn find(&mut self, _: &Find, _: &mut Window, cx: &mut Context<Self>) {
+        self.search_backward = false;
+        self.open_search(cx);
+    }
+
+    fn open_search(&mut self, cx: &mut Context<Self>) {
         if self.search.is_some() {
             return;
         }
@@ -571,7 +634,7 @@ impl TerminalView {
     }
 
     fn close_search(&mut self, cx: &mut Context<Self>) {
-        self.search = None;
+        self.last_search = self.search.take().filter(|s| !s.query.is_empty());
         self.search_rescan = None;
         cx.notify();
     }
@@ -882,6 +945,36 @@ fn search_bar(search: &Search, theme: &Theme) -> gpui::AnyElement {
         .into_any_element()
 }
 
+/// The pill at the bottom of a pane in keyboard select mode, with what the
+/// next keys do.
+fn select_badge(text: String, theme: &Theme) -> gpui::AnyElement {
+    div()
+        .absolute()
+        .bottom(px(6.0))
+        .right(px(6.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .h(px(26.0))
+        .px(px(10.0))
+        .font_family(UI_FONT)
+        .text_size(px(12.0))
+        .text_color(theme.muted)
+        .bg(theme.raised)
+        .border_1()
+        .border_color(alpha(theme.accent, 0.45))
+        .rounded(px(8.0))
+        .shadow(vec![gpui::BoxShadow {
+            color: alpha(gpui::black(), 0.3),
+            offset: point(px(0.0), px(4.0)),
+            blur_radius: px(12.0),
+            spread_radius: px(0.0),
+        }])
+        .child(div().size(px(7.0)).rounded(px(4.0)).bg(theme.accent))
+        .child(text)
+        .into_any_element()
+}
+
 fn caret(color: Hsla) -> gpui::Div {
     div().w(px(2.0)).h(px(16.0)).mx(px(1.0)).rounded(px(1.0)).bg(color)
 }
@@ -994,6 +1087,10 @@ impl Render for TerminalView {
             .map(|s| s.visible(&self.pty.term.lock()))
             .unwrap_or_default();
         let search_bar = self.search.as_ref().map(|s| search_bar(s, &theme));
+        let select_badge = {
+            let term = self.pty.term.lock();
+            vi::active(&term).then(|| select_badge(vi::status(&term, &self.vi), &theme))
+        };
         let exits = self.exits.clone();
         let jump_target = self.jump_target.clone();
 
@@ -1045,6 +1142,8 @@ impl Render for TerminalView {
             let selection = content.selection;
             let colors = content.colors;
             let cursor = content.cursor;
+            // Select mode's cursor is the accent colour, so it's clearly not the shell's.
+            let vi_cursor = content.mode.contains(TermMode::VI);
             let cursor_row = cursor.point.line.0 + offset;
             let show_cursor = cursor.shape != CursorShape::Hidden
                 && cursor_row >= 0
@@ -1320,7 +1419,7 @@ impl Render for TerminalView {
                 marks,
                 decorations,
                 cursor,
-                cursor_color: theme.cursor,
+                cursor_color: if vi_cursor { theme.accent } else { theme.cursor },
                 link_label,
             }
         };
@@ -1446,8 +1545,10 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::prev_prompt))
             .on_action(cx.listener(Self::next_prompt))
             .on_action(cx.listener(Self::copy_last_output))
+            .on_action(cx.listener(Self::toggle_select_mode))
             .relative()
             .child(canvas(prepaint, paint).size_full())
             .children(search_bar)
+            .children(select_badge)
     }
 }

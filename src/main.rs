@@ -18,6 +18,7 @@ mod settings;
 mod shell_integration;
 mod terminal_view;
 mod theme;
+mod vi;
 mod workspace;
 
 use std::borrow::Cow;
@@ -58,6 +59,7 @@ actions!(
         PrevPrompt,
         NextPrompt,
         CopyLastOutput,
+        ToggleSelectMode,
         Quit,
     ]
 );

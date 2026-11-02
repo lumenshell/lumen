@@ -44,6 +44,7 @@ pub const ACTIONS: &[&str] = &[
     "prev-command",
     "next-command",
     "copy-last-output",
+    "select-mode",
     "quit",
 ];
 
@@ -79,6 +80,7 @@ pub fn action(name: &str) -> Option<Box<dyn Action>> {
         "prev-command" => Box::new(PrevPrompt),
         "next-command" => Box::new(NextPrompt),
         "copy-last-output" => Box::new(CopyLastOutput),
+        "select-mode" => Box::new(ToggleSelectMode),
         "quit" => Box::new(Quit),
         _ => return None,
     })
@@ -116,6 +118,7 @@ fn defaults() -> Vec<(String, &'static str)> {
         (m("cmd-up", "ctrl-shift-up"), "prev-command"),
         (m("cmd-down", "ctrl-shift-down"), "next-command"),
         (m("cmd-shift-o", "ctrl-shift-o"), "copy-last-output"),
+        (m("cmd-shift-space", "ctrl-shift-space"), "select-mode"),
         ("shift-insert".into(), "paste"),
         (m("cmd-q", "ctrl-shift-q"), "quit"),
     ];
