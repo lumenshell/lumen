@@ -602,9 +602,17 @@ impl Render for TerminalView {
             let line_height = (font_size * line_height_factor).round();
             let cols = ((bounds.size.width / cell_width).floor() as usize).max(2);
             let rows = ((bounds.size.height / line_height).floor() as usize).max(1);
+            // Centre the grid so the space left over by whole cells is shared
+            // evenly between opposite edges (whole pixels keep glyphs crisp).
+            let slack_x = (bounds.size.width - cell_width * cols as f32).max(px(0.0));
+            let slack_y = (bounds.size.height - line_height * rows as f32).max(px(0.0));
+            let origin = point(
+                (bounds.origin.x + slack_x / 2.0).round(),
+                (bounds.origin.y + slack_y / 2.0).round(),
+            );
 
             layout_cell.set(Some(GridLayout {
-                origin: bounds.origin,
+                origin,
                 cell_width,
                 line_height,
                 cols,
@@ -657,8 +665,8 @@ impl Render for TerminalView {
             let cell_bounds = |row: usize, col: usize, span: usize| {
                 Bounds::new(
                     point(
-                        bounds.origin.x + cell_width * col as f32,
-                        bounds.origin.y + line_height * row as f32,
+                        origin.x + cell_width * col as f32,
+                        origin.y + line_height * row as f32,
                     ),
                     size(cell_width * span as f32, line_height),
                 )

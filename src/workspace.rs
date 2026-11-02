@@ -22,6 +22,8 @@ use crate::*;
 
 const GAP: f32 = 8.0;
 const RADIUS: f32 = 10.0;
+/// Space between a pane's edge and its text, the same on every side.
+const PANE_PADDING: f32 = 12.0;
 const WINDOW_RADIUS: f32 = 12.0;
 pub const SHADOW_INSET: f32 = 10.0;
 /// Smallest a pane may be dragged to, in pixels along the split axis.
@@ -842,7 +844,7 @@ fn pane_frame(
         .shadow(shadows)
         .overflow_hidden()
         .child(
-            div().size_full().pl(px(14.0)).pr(px(10.0)).py(px(10.0)).child(
+            div().size_full().p(px(PANE_PADDING)).child(
                 // Reuse the pane's last frame unless it changed, so output in one
                 // pane (or hovering a tab) doesn't redraw every other pane.
                 AnyView::from(term.clone()).cached(StyleRefinement::default().size_full()),
