@@ -26,8 +26,9 @@ function __lumen_preexec --on-event fish_preexec
 end
 
 function __lumen_prompt --on-event fish_prompt
-    printf '\e]7;file://%s%s\a' $hostname (string replace -a ' ' '%20' -- (string replace -a '%' '%25' -- $PWD))
     printf '\e]133;A\a'
+    # URL-escaped (keeps /), so a directory name can't inject escape sequences.
+    printf '\e]7;file://%s%s\a' $hostname (string escape --style=url -- $PWD)
     # Mark the end of the prompt by wrapping fish_prompt, once the user's own
     # config has defined it.
     if not functions -q __lumen_user_prompt

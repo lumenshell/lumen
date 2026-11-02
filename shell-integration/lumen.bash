@@ -17,15 +17,29 @@ __lumen_loaded=1
 
 __lumen_ran=0
 
+# Percent-encode control characters, spaces and % in $1 into REPLY, so a
+# directory name can't end the OSC 7 early and inject escape sequences.
+__lumen_urlencode() {
+    local LC_ALL=C s=$1 c i
+    REPLY=
+    for (( i = 0; i < ${#s}; i++ )); do
+        c=${s:i:1}
+        case $c in
+            [[:cntrl:]]|' '|%) printf -v c '%%%02X' "'$c" ;;
+        esac
+        REPLY+=$c
+    done
+}
+
 __lumen_precmd() {
-    local st=$?
+    local st=$? REPLY
     if (( __lumen_ran )); then
         printf '\e]133;D;%s\a' "$st"
     fi
     __lumen_ran=0
-    local path=${PWD//%/%25}
-    printf '\e]7;file://%s%s\a' "${HOSTNAME-}" "${path// /%20}"
     printf '\e]133;A\a'
+    __lumen_urlencode "$PWD"
+    printf '\e]7;file://%s%s\a' "${HOSTNAME-}" "$REPLY"
 }
 
 # Runs after any other prompt commands, so themes that rebuild PS1 each time

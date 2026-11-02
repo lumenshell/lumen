@@ -140,6 +140,11 @@ pub struct Rewriter {
     ran: bool,
     /// Exit status of that command (OSC 133;D).
     exit: Option<i32>,
+    /// The shell has sent a prompt mark (OSC 133;A).
+    prompted: bool,
+    /// A command is running: between OSC 133;C and the next D or A. Its
+    /// output, not the shell, is writing to the terminal.
+    running: bool,
     shared: Arc<Mutex<Shared>>,
     host: String,
 }
@@ -184,7 +189,7 @@ impl Rewriter {
     }
 
     fn with_host(shared: Arc<Mutex<Shared>>, host: String) -> Self {
-        Self { state: State::Normal, body: Vec::new(), ran: false, exit: None, shared, host }
+        Self { state: State::Normal, body: Vec::new(), ran: false, exit: None, prompted: false, running: false, shared, host }
     }
 
     /// Could `body` (bytes after `ESC ]`) still become an OSC we capture?
@@ -287,13 +292,17 @@ impl Rewriter {
                     Self::link(out, &uri);
                     self.ran = false;
                     self.exit = None;
+                    self.prompted = true;
+                    self.running = false;
                 }
                 Some("B") => Self::link(out, INPUT),
                 Some("C") => {
                     Self::link(out, "");
                     self.ran = true;
+                    self.running = true;
                 }
                 Some("D") => {
+                    self.running = false;
                     if self.ran {
                         self.exit = parts.next().and_then(|c| c.trim().parse().ok());
                     }
@@ -301,6 +310,12 @@ impl Rewriter {
                 _ => {}
             }
         } else if let Some(url) = body.strip_prefix("7;") {
+            // Only believe the integrated shell, at its prompt. Anything else
+            // (a program's output, `cat` of a file, a remote host) could
+            // otherwise choose where the next pane opens.
+            if !self.prompted || self.running {
+                return;
+            }
             if let Some(rest) = url.strip_prefix("file://") {
                 let (host, path) = rest.find('/').map(|i| rest.split_at(i)).unwrap_or((rest, ""));
                 let local = host.is_empty() || host == "localhost" || host.eq_ignore_ascii_case(&self.host);
@@ -457,11 +472,25 @@ mod tests {
 
     #[test]
     fn cwd_from_osc7_for_this_host_only() {
-        let (out, shared) = rewrite(&[b"\x1b]7;file://myhost/home/me/My%20Docs\x07"]);
-        assert!(out.is_empty());
+        let (out, shared) = rewrite(&[b"\x1b]133;A\x07\x1b]7;file://myhost/home/me/My%20Docs\x07"]);
+        assert_eq!(text(&out), "⎋]8;;lumen:prompt⎋\\");
         assert_eq!(shared.lock().unwrap().cwd, Some(PathBuf::from("/home/me/My Docs")));
-        let (_, shared) = rewrite(&[b"\x1b]7;file://elsewhere/srv\x1b\\"]);
+        let (_, shared) = rewrite(&[b"\x1b]133;A\x07\x1b]7;file://elsewhere/srv\x1b\\"]);
         assert_eq!(shared.lock().unwrap().cwd, None);
+    }
+
+    #[test]
+    fn osc7_ignored_unless_the_shell_is_at_its_prompt() {
+        let cwd = |chunks: &[&[u8]]| rewrite(chunks).1.lock().unwrap().cwd.clone();
+        // No integration: nothing vouches for it.
+        assert_eq!(cwd(&[b"\x1b]7;file://localhost/tmp\x07"]), None);
+        // Printed by a running command.
+        assert_eq!(cwd(&[b"\x1b]133;A\x07\x1b]133;C\x07\x1b]7;file://localhost/tmp\x07"]), None);
+        // Back at the prompt after the command finished.
+        assert_eq!(
+            cwd(&[b"\x1b]133;A\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]7;file://localhost/tmp\x07"]),
+            Some(PathBuf::from("/tmp"))
+        );
     }
 
     #[test]
