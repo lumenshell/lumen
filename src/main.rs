@@ -113,6 +113,7 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         load_fonts(cx);
         cx.set_global(Settings::load());
+        Settings::watch(cx);
         cx.bind_keys(keybindings());
 
         cx.on_action(|_: &Quit, cx| cx.quit());

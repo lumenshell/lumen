@@ -64,10 +64,13 @@ pub struct Pty {
 }
 
 impl Pty {
-    pub fn spawn(cwd: Option<PathBuf>) -> anyhow::Result<(Self, UnboundedReceiver<Event>)> {
+    pub fn spawn(
+        cwd: Option<PathBuf>,
+        shell: Option<&[String]>,
+        config: Config,
+    ) -> anyhow::Result<(Self, UnboundedReceiver<Event>)> {
         let (tx, rx) = unbounded();
         let size = GridSize { cols: 80, rows: 24, cell_width: 8, cell_height: 16 };
-        let config = Config { scrolling_history: 10_000, ..Default::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &size, Listener(tx.clone()))));
 
         let mut env = HashMap::new();
@@ -76,7 +79,9 @@ impl Pty {
         env.insert("TERM_PROGRAM".into(), "lumen".into());
 
         let options = tty::Options {
-            shell: None,
+            shell: shell
+                .and_then(|s| s.split_first())
+                .map(|(program, args)| tty::Shell::new(program.clone(), args.to_vec())),
             working_directory: cwd.filter(|p| p.is_dir()),
             drain_on_exit: false,
             env,

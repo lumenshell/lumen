@@ -3039,6 +3039,7 @@ dependencies = [
  "gpui",
  "serde",
  "serde_json",
+ "toml_edit 0.22.27",
  "x11rb",
 ]
 

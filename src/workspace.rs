@@ -22,8 +22,6 @@ use crate::*;
 
 const GAP: f32 = 8.0;
 const RADIUS: f32 = 10.0;
-/// Space between a pane's edge and its text, the same on every side.
-const PANE_PADDING: f32 = 12.0;
 const WINDOW_RADIUS: f32 = 12.0;
 pub const SHADOW_INSET: f32 = 10.0;
 /// Smallest a pane may be dragged to, in pixels along the split axis.
@@ -581,7 +579,7 @@ impl Workspace {
         match node {
             PaneNode::Leaf(term) => {
                 let focused = *term == tab.active;
-                pane_frame(term, focused, multi, theme)
+                pane_frame(term, focused, multi, theme, Settings::get(cx).padding)
             }
             PaneNode::Split { axis, children, ratios } => {
                 let row = *axis == Axis::Row;
@@ -814,11 +812,54 @@ impl Workspace {
     }
 }
 
+/// Problems in the config file, shown at the bottom of the window until fixed.
+fn problem_banner(problems: &[String], theme: &Theme) -> impl IntoElement {
+    let path = settings::config_path()
+        .map(|p| p.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~"))
+        .unwrap_or_else(|| "config.toml".into());
+    div()
+        .absolute()
+        .bottom(px(GAP * 2.0))
+        .left_0()
+        .right_0()
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .max_w(px(720.0))
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .px(px(14.0))
+                .py(px(9.0))
+                .rounded(px(10.0))
+                .bg(theme.raised)
+                .border_1()
+                .border_color(alpha(theme.ansi[1], 0.5))
+                .font_family(UI_FONT)
+                .text_size(px(12.5))
+                .text_color(theme.text)
+                .shadow(vec![BoxShadow {
+                    color: alpha(gpui::black(), 0.35),
+                    offset: point(px(0.0), px(6.0)),
+                    blur_radius: px(18.0),
+                    spread_radius: px(0.0),
+                }])
+                .child(
+                    div()
+                        .text_color(theme.ansi[1])
+                        .child(format!("Problem in {path} (other settings still apply)")),
+                )
+                .children(problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone()))),
+        )
+}
+
 fn pane_frame(
     term: &Entity<TerminalView>,
     focused: bool,
     multi: bool,
     theme: &Theme,
+    padding: f32,
 ) -> AnyElement {
     let mut shadows = vec![BoxShadow {
         color: alpha(gpui::black(), if theme.is_light { 0.08 } else { 0.30 }),
@@ -844,7 +885,7 @@ fn pane_frame(
         .shadow(shadows)
         .overflow_hidden()
         .child(
-            div().size_full().p(px(PANE_PADDING)).child(
+            div().size_full().p(px(padding)).child(
                 // Reuse the pane's last frame unless it changed, so output in one
                 // pane (or hovering a tab) doesn't redraw every other pane.
                 AnyView::from(term.clone()).cached(StyleRefinement::default().size_full()),
@@ -980,6 +1021,13 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
             }
         })
         .collect();
+    if let Some(path) = settings::config_path() {
+        items.push(PaletteItem {
+            label: "Open Config File".into(),
+            detail: path.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~").into(),
+            run: Rc::new(move |_, cx| cx.open_url(&format!("file://{}", path.display()))),
+        });
+    }
     let settings = Settings::get(cx);
     for (i, theme) in settings.themes.iter().enumerate() {
         items.push(PaletteItem {
@@ -1028,10 +1076,11 @@ impl Render for Workspace {
             Axis::Column => CursorStyle::ResizeUpDown,
         });
 
+        let problems = Settings::get(cx).problems.clone();
         let content = self.tabs.get(self.active_tab).map(|tab| {
             let multi = tab.leaves().len() > 1;
             if tab.zoomed {
-                pane_frame(&tab.active, true, false, &theme)
+                pane_frame(&tab.active, true, false, &theme, Settings::get(cx).padding)
             } else {
                 self.render_node(&tab.root, Vec::new(), tab, multi, &theme, cx)
             }
@@ -1125,7 +1174,8 @@ impl Render for Workspace {
                         )
                         .child(palette),
                 )
-            });
+            })
+            .when(!problems.is_empty(), |d| d.child(problem_banner(&problems, &theme)));
 
         // Outer frame: transparent margin used for the drop shadow and resize handles.
         div()

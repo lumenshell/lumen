@@ -93,7 +93,10 @@ fn default_title() -> String {
 
 impl TerminalView {
     pub fn new(cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (pty, mut rx) = Pty::spawn(cwd).expect("failed to spawn shell");
+        let settings = Settings::get(cx);
+        let mut applied = term_config(settings);
+        let (pty, mut rx) = Pty::spawn(cwd, settings.shell.as_deref(), applied.clone())
+            .expect("failed to spawn shell");
         let focus = cx.focus_handle();
 
         let events = cx.spawn(async move |this, cx| {
@@ -120,6 +123,14 @@ impl TerminalView {
                 cx.emit(TerminalEvent::Focused)
             }),
             cx.on_blur(&focus, window, |this, _, _| this.report_focus(false)),
+            // Apply scrollback and cursor changes from the config file live.
+            cx.observe_global::<Settings>(move |this, cx| {
+                let config = term_config(Settings::get(cx));
+                if !same_term_config(&applied, &config) {
+                    applied = config.clone();
+                    this.pty.term.lock().set_options(config);
+                }
+            }),
         ];
 
         Self {
@@ -651,6 +662,19 @@ fn extend_run<S: PartialEq>(
     *run = style.map(|s| (row, col, col + span, s));
 }
 
+/// Terminal emulation options derived from the settings.
+fn term_config(settings: &Settings) -> alacritty_terminal::term::Config {
+    alacritty_terminal::term::Config {
+        scrolling_history: settings.scrollback,
+        default_cursor_style: settings.cursor_style(),
+        ..Default::default()
+    }
+}
+
+fn same_term_config(a: &alacritty_terminal::term::Config, b: &alacritty_terminal::term::Config) -> bool {
+    a.scrolling_history == b.scrolling_history && a.default_cursor_style == b.default_cursor_style
+}
+
 /// The find bar floating at the top right of the pane.
 fn search_bar(search: &Search, theme: &Theme) -> gpui::AnyElement {
     let has_query = !search.query.is_empty();
@@ -819,6 +843,7 @@ impl Render for TerminalView {
         let settings = Settings::get(cx);
         let theme = settings.theme().clone();
         let font_size = settings.font_size();
+        let font_family = settings.font_family.clone();
         let line_height_factor = settings.line_height;
         let focused = self.focus.is_focused(window);
         let term = self.pty.term.clone();
@@ -837,7 +862,7 @@ impl Render for TerminalView {
 
         let prepaint = move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| -> Frame {
             let text_system = window.text_system().clone();
-            let base_font = font(MONO_FONT);
+            let base_font = font(font_family.clone());
             let font_id = text_system.resolve_font(&base_font);
             let cell_width = text_system
                 .advance(font_id, font_size, 'm')
@@ -901,7 +926,7 @@ impl Render for TerminalView {
             // Consecutive operator characters, drawn together so ligatures form.
             let mut join: Option<Join> = None;
 
-            let cache = GlyphCache::get(cx, font_size);
+            let cache = GlyphCache::get(cx, &font_family, font_size);
             let (ascent, descent) = cache.metrics(&text_system, &fonts[0]);
             let baseline = (line_height - ascent - descent) / 2.0 + ascent;
             let underline_y = baseline + descent * 0.618;

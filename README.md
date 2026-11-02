@@ -71,13 +71,30 @@ Esc closes it.
 
 ## Config
 
-`~/.config/lumen/config` (written whenever you change theme or font size):
+Settings live in `~/.config/lumen/config.toml`, created with comments on first
+run (open it from the command palette with **Open Config File**). Changes apply
+as soon as you save; no restart needed.
 
-```
-theme = Tokyo Night
+```toml
+theme = "Rosé Pine"            # or "Rosé Pine Moon", "Catppuccin Mocha", "Tokyo Night", "Rosé Pine Dawn"
+font-family = "JetBrains Mono" # any installed monospace font; JetBrains Mono is built in
 font-size = 14
-line-height = 1.35
+line-height = 1.35             # multiple of the font size
+padding = 12                   # pixels between a pane's edge and its text
+scrollback = 10000             # lines of history per pane
+cursor-style = "block"         # "block", "beam" or "underline", until a program picks one
+shell = "/usr/bin/fish --login" # program for new panes; defaults to $SHELL
 ```
+
+Delete a line to go back to its default. Mistakes (a typo'd key, a bad value, a
+font that isn't installed) are listed in a banner at the bottom of the window
+while the rest of the file still applies; a file that can't be parsed at all
+keeps the previous settings. Switching theme or zooming the font from inside
+Lumen edits just those keys and keeps your comments.
+
+`shell` applies to new panes; everything else applies to open ones too. Older
+versions used `~/.config/lumen/config`; its values are carried over the first
+time `config.toml` is created.
 
 ## Session
 

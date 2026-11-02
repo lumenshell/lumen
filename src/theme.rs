@@ -2,7 +2,7 @@
 
 use gpui::{Hsla, Rgba, rgb};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Theme {
     pub name: &'static str,
     pub is_light: bool,

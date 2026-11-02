@@ -37,6 +37,8 @@ const MAX_ENTRIES: usize = 8192;
 
 #[derive(Default)]
 pub struct GlyphCache {
+    /// Font family and size the cache was built for.
+    key: Option<(SharedString, Pixels)>,
     size: Option<Pixels>,
     /// Ascent and descent of the primary font, for placing the baseline.
     metrics: Option<(Pixels, Pixels)>,
@@ -48,10 +50,11 @@ pub struct GlyphCache {
 impl Global for GlyphCache {}
 
 impl GlyphCache {
-    pub fn get(cx: &mut App, font_size: Pixels) -> &mut Self {
+    pub fn get<'a>(cx: &'a mut App, family: &SharedString, font_size: Pixels) -> &'a mut Self {
         let cache = cx.default_global::<Self>();
-        if cache.size != Some(font_size) {
-            *cache = Self { size: Some(font_size), ..Default::default() };
+        let key = (family.clone(), font_size);
+        if cache.key.as_ref() != Some(&key) {
+            *cache = Self { key: Some(key), size: Some(font_size), ..Default::default() };
         }
         cache
     }
