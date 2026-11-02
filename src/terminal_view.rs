@@ -27,11 +27,13 @@ use crate::boxdraw;
 use crate::glyphs::{self, Glyph, GlyphCache};
 use crate::links::{self, Link, LinkFinder};
 use crate::search::Search;
+use crate::shell_integration;
+use crate::marks;
 use crate::mouse::{self, Action as MouseAction, Button as ReportButton};
 use crate::pty::{GridSize, Pty};
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
 use crate::theme::{Theme, alpha, indexed};
-use crate::{Copy, Find, Paste, input};
+use crate::{Copy, CopyLastOutput, Find, NextPrompt, Paste, PrevPrompt, input};
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -72,6 +74,11 @@ pub struct TerminalView {
     /// Pending rescan after new output, so heavy output rescans a few times a
     /// second rather than on every chunk.
     search_rescan: Option<Task<()>>,
+    /// Exit status of each command, by prompt link id (shell integration).
+    exits: Rc<std::collections::HashMap<String, Option<i32>>>,
+    marks_rescan: Option<Task<()>>,
+    /// Prompt last jumped to, highlighted until you type.
+    jump_target: Option<String>,
     _events: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -95,7 +102,8 @@ impl TerminalView {
     pub fn new(cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = Settings::get(cx);
         let mut applied = term_config(settings);
-        let (pty, mut rx) = Pty::spawn(cwd, settings.shell.as_deref(), applied.clone())
+        let (pty, mut rx) =
+            Pty::spawn(cwd, settings.shell.as_deref(), settings.shell_integration, applied.clone())
             .expect("failed to spawn shell");
         let focus = cx.focus_handle();
 
@@ -148,6 +156,9 @@ impl TerminalView {
             last_report_cell: None,
             search: None,
             search_rescan: None,
+            exits: Rc::default(),
+            marks_rescan: None,
+            jump_target: None,
             _events: events,
             _subs: subs,
         }
@@ -161,6 +172,7 @@ impl TerminalView {
         match event {
             Event::Wakeup => {
                 self.schedule_search_rescan(cx);
+                self.schedule_marks_rescan(cx);
                 // Output may have moved or replaced the text under the pointer.
                 if self.hovered_link.is_some() {
                     self.update_hovered_link(cx);
@@ -321,6 +333,7 @@ impl TerminalView {
         }
         let mode = *self.pty.term.lock().mode();
         if let Some(bytes) = input::to_esc(ks, mode) {
+            self.jump_target = None;
             {
                 let mut term = self.pty.term.lock();
                 term.scroll_display(Scroll::Bottom);
@@ -531,6 +544,86 @@ impl TerminalView {
         cx.notify();
     }
 
+    fn schedule_marks_rescan(&mut self, cx: &mut Context<Self>) {
+        if self.marks_rescan.is_some() || !self.pty.shell_state.lock().unwrap().active {
+            return;
+        }
+        self.marks_rescan = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+            let _ = this.update(cx, |this, cx| {
+                this.marks_rescan = None;
+                this.rescan_marks();
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Find every prompt again and refresh the exit statuses shown in the margin.
+    fn rescan_marks(&mut self) -> Vec<marks::Prompt> {
+        let prompts = marks::prompts(&self.pty.term.lock());
+        self.exits = Rc::new(marks::exits(&prompts));
+        prompts
+    }
+
+    fn prev_prompt(&mut self, _: &PrevPrompt, _: &mut Window, cx: &mut Context<Self>) {
+        self.jump(true, cx);
+    }
+
+    fn next_prompt(&mut self, _: &NextPrompt, _: &mut Window, cx: &mut Context<Self>) {
+        self.jump(false, cx);
+    }
+
+    /// Scroll so the previous or next prompt is at the top of the pane.
+    fn jump(&mut self, older: bool, cx: &mut Context<Self>) {
+        let prompts = self.rescan_marks();
+        let mut term = self.pty.term.lock();
+        let offset = term.grid().display_offset() as i32;
+        let anchor = self.jump_target.as_ref().and_then(|id| prompts.iter().position(|p| &p.id == id));
+        let target = match anchor {
+            Some(i) if older => i.checked_sub(1),
+            Some(i) => Some(i + 1).filter(|&j| j < prompts.len()),
+            // At the bottom, start from the prompt you're typing at.
+            None if offset == 0 && older => prompts.len().checked_sub(2),
+            None if offset == 0 => None,
+            // Scrolled up by hand: start from the top of the view.
+            None if older => prompts.iter().rposition(|p| p.line.0 < -offset),
+            None => prompts.iter().position(|p| p.line.0 > -offset),
+        };
+        match target {
+            Some(i) => {
+                let max = alacritty_terminal::grid::Dimensions::history_size(term.grid()) as i32;
+                let wanted = (-prompts[i].line.0).clamp(0, max);
+                term.scroll_display(Scroll::Delta(wanted - offset));
+                self.jump_target = Some(prompts[i].id.clone());
+            }
+            None if !older => {
+                term.scroll_display(Scroll::Bottom);
+                self.jump_target = None;
+            }
+            None => {}
+        }
+        drop(term);
+        cx.notify();
+    }
+
+    /// Copy what the last finished command printed, and select it.
+    fn copy_last_output(&mut self, _: &CopyLastOutput, _: &mut Window, cx: &mut Context<Self>) {
+        let prompts = self.rescan_marks();
+        let mut term = self.pty.term.lock();
+        let Some((start, end)) = marks::last_output(&term, &prompts) else { return };
+        let text = term.bounds_to_string(start, end);
+        let text = text.trim_end();
+        if text.is_empty() {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+        let mut selection = Selection::new(SelectionType::Lines, start, Side::Left);
+        selection.update(end, Side::Right);
+        term.selection = Some(selection);
+        drop(term);
+        cx.notify();
+    }
+
     fn schedule_search_rescan(&mut self, cx: &mut Context<Self>) {
         if self.search_rescan.is_some() || self.search.as_ref().is_none_or(|s| s.query.is_empty()) {
             return;
@@ -612,6 +705,8 @@ struct Frame {
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
     glyphs: Vec<GlyphDraw>,
     shapes: Vec<(boxdraw::Shape, Hsla)>,
+    /// Shell-integration marks in the left margin.
+    marks: Vec<(Bounds<Pixels>, Hsla)>,
     decorations: Vec<Decoration>,
     cursor: Option<(Bounds<Pixels>, CursorShape)>,
     cursor_color: Hsla,
@@ -859,6 +954,8 @@ impl Render for TerminalView {
             .map(|s| s.visible(&self.pty.term.lock()))
             .unwrap_or_default();
         let search_bar = self.search.as_ref().map(|s| search_bar(s, &theme));
+        let exits = self.exits.clone();
+        let jump_target = self.jump_target.clone();
 
         let prepaint = move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| -> Frame {
             let text_system = window.text_system().clone();
@@ -916,6 +1013,8 @@ impl Render for TerminalView {
             let mut backgrounds: Vec<(Bounds<Pixels>, Hsla)> = Vec::new();
             let mut glyphs: Vec<GlyphDraw> = Vec::new();
             let mut shapes: Vec<(boxdraw::Shape, Hsla)> = Vec::new();
+            // First visible row of each prompt, with its link id.
+            let mut prompt_rows: Vec<(usize, String)> = Vec::new();
             let mut underlines: Vec<Run<UnderlineStyle>> = Vec::new();
             let mut strikes: Vec<Run<StrikethroughStyle>> = Vec::new();
             let mut cursor_wide = false;
@@ -971,6 +1070,12 @@ impl Render for TerminalView {
                     continue;
                 }
                 let cell = indexed_cell.cell;
+                if let Some(link) = cell.hyperlink()
+                    && link.uri().starts_with(shell_integration::PROMPT)
+                    && prompt_rows.last().is_none_or(|(_, id): &(usize, String)| id != link.id())
+                {
+                    prompt_rows.push((row, link.id().to_string()));
+                }
                 let flags = cell.flags;
                 if flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
                     continue;
@@ -1104,6 +1209,24 @@ impl Render for TerminalView {
             if let Some((r, start, end, c)) = bg_run.take() {
                 backgrounds.push((cell_bounds(r, start, end - start), c));
             }
+            // Margin marks beside each prompt: muted for success, red for failure.
+            let mut marks = Vec::new();
+            for (row, id) in &prompt_rows {
+                let top = cell_bounds(*row, 0, 1).origin;
+                if jump_target.as_deref() == Some(id) {
+                    backgrounds.insert(0, (cell_bounds(*row, 0, cols), alpha(theme.accent, 0.14)));
+                }
+                let color = match exits.get(id) {
+                    Some(Some(0)) => alpha(theme.muted, 0.55),
+                    Some(Some(_)) => theme.ansi[1],
+                    _ => continue,
+                };
+                let inset = (line_height * 0.2).round();
+                marks.push((
+                    Bounds::new(point(top.x - px(8.0), top.y + inset), size(px(3.0), line_height - inset * 2.0)),
+                    color,
+                ));
+            }
             underlines.extend(underline_run.take());
             strikes.extend(strike_run.take());
             let place = |(r, start, end): (usize, usize, usize), y: Pixels| {
@@ -1154,6 +1277,7 @@ impl Render for TerminalView {
                 backgrounds,
                 glyphs,
                 shapes,
+                marks,
                 decorations,
                 cursor,
                 cursor_color: theme.cursor,
@@ -1182,6 +1306,9 @@ impl Render for TerminalView {
                     && focused
                 {
                     window.paint_quad(fill(b, cursor_color).corner_radii(px(2.0)));
+                }
+                for (b, color) in &frame.marks {
+                    window.paint_quad(fill(*b, *color).corner_radii(px(1.5)));
                 }
                 for (shape, color) in frame.shapes {
                     paint_shape(window, shape, color);
@@ -1276,6 +1403,9 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::find))
+            .on_action(cx.listener(Self::prev_prompt))
+            .on_action(cx.listener(Self::next_prompt))
+            .on_action(cx.listener(Self::copy_last_output))
             .relative()
             .child(canvas(prepaint, paint).size_full())
             .children(search_bar)

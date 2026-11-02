@@ -2,12 +2,14 @@ mod boxdraw;
 mod glyphs;
 mod input;
 mod links;
+mod marks;
 mod mouse;
 mod palette;
 mod pty;
 mod search;
 mod session;
 mod settings;
+mod shell_integration;
 mod terminal_view;
 mod theme;
 mod workspace;
@@ -47,6 +49,9 @@ actions!(
         Copy,
         Paste,
         Find,
+        PrevPrompt,
+        NextPrompt,
+        CopyLastOutput,
         Quit,
     ]
 );
@@ -85,6 +90,9 @@ fn keybindings() -> Vec<KeyBinding> {
         KeyBinding::new(&m("cmd-c", "ctrl-shift-c"), Copy, None),
         KeyBinding::new(&m("cmd-v", "ctrl-shift-v"), Paste, None),
         KeyBinding::new(&m("cmd-f", "ctrl-shift-f"), Find, None),
+        KeyBinding::new(&m("cmd-up", "ctrl-shift-up"), PrevPrompt, None),
+        KeyBinding::new(&m("cmd-down", "ctrl-shift-down"), NextPrompt, None),
+        KeyBinding::new(&m("cmd-shift-o", "ctrl-shift-o"), CopyLastOutput, None),
         KeyBinding::new("shift-insert", Paste, None),
         KeyBinding::new(&m("cmd-q", "ctrl-shift-q"), Quit, None),
     ];

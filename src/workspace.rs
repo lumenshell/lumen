@@ -1007,6 +1007,9 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
         action::<Copy>("Copy"),
         action::<Paste>("Paste"),
         action::<Find>("Find in Scrollback"),
+        action::<PrevPrompt>("Jump to Previous Command"),
+        action::<NextPrompt>("Jump to Next Command"),
+        action::<CopyLastOutput>("Copy Last Command Output"),
         action::<Quit>("Quit"),
     ];
     let mut items: Vec<PaletteItem> = actions

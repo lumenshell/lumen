@@ -1,0 +1,14 @@
+# Lumen starts zsh with ZDOTDIR pointing here so this file runs first. Put
+# ZDOTDIR back, run the user's own .zshenv, then load the integration; zsh
+# then reads the user's .zprofile and .zshrc as usual.
+if (( ${+LUMEN_ZDOTDIR} )); then
+    ZDOTDIR=$LUMEN_ZDOTDIR
+    unset LUMEN_ZDOTDIR
+else
+    unset ZDOTDIR
+fi
+[[ -f ${ZDOTDIR:-$HOME}/.zshenv ]] && source ${ZDOTDIR:-$HOME}/.zshenv
+if [[ -o interactive && -n ${LUMEN_SHELL_INTEGRATION-} ]]; then
+    source $LUMEN_SHELL_INTEGRATION/lumen.zsh
+fi
+unset LUMEN_SHELL_INTEGRATION

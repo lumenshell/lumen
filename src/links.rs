@@ -88,7 +88,8 @@ fn in_grid<T>(term: &Term<T>, point: Point) -> bool {
 /// Extend an OSC 8 hyperlink in both directions over cells sharing it.
 fn hyperlink_at<T>(term: &Term<T>, point: Point) -> Option<Link> {
     let grid = term.grid();
-    let link = grid[point].hyperlink()?;
+    // Shell-integration marks are hidden links; never show or open them.
+    let link = grid[point].hyperlink().filter(|l| !l.uri().starts_with(crate::shell_integration::SCHEME))?;
     let same = |p: Point| grid[p].hyperlink().as_ref() == Some(&link);
     // Cap the walk so a pathological screen full of one link stays cheap.
     let limit = term.columns() * 64;

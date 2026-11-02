@@ -3037,6 +3037,7 @@ dependencies = [
  "anyhow",
  "futures",
  "gpui",
+ "polling",
  "serde",
  "serde_json",
  "toml_edit 0.22.27",

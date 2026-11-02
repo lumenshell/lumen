@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener, Notify, OnResize, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
@@ -13,6 +13,8 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::tty;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+
+use crate::shell_integration::{self, MarkedPty, Shared};
 
 #[derive(Clone)]
 pub struct Listener(UnboundedSender<Event>);
@@ -61,12 +63,15 @@ pub struct Pty {
     notifier: Notifier,
     pub size: GridSize,
     child_pid: u32,
+    /// What the shell has told us through shell integration.
+    pub shell_state: Arc<Mutex<Shared>>,
 }
 
 impl Pty {
     pub fn spawn(
         cwd: Option<PathBuf>,
         shell: Option<&[String]>,
+        integrate: bool,
         config: Config,
     ) -> anyhow::Result<(Self, UnboundedReceiver<Event>)> {
         let (tx, rx) = unbounded();
@@ -78,9 +83,17 @@ impl Pty {
         env.insert("COLORTERM".into(), "truecolor".into());
         env.insert("TERM_PROGRAM".into(), "lumen".into());
 
+        let shell = shell.map(<[String]>::to_vec).unwrap_or_else(shell_integration::default_shell);
+        let shell = if integrate {
+            let (cmd, extra) = shell_integration::inject(&shell);
+            env.extend(extra);
+            cmd
+        } else {
+            shell
+        };
         let options = tty::Options {
             shell: shell
-                .and_then(|s| s.split_first())
+                .split_first()
                 .map(|(program, args)| tty::Shell::new(program.clone(), args.to_vec())),
             working_directory: cwd.filter(|p| p.is_dir()),
             drain_on_exit: false,
@@ -90,11 +103,13 @@ impl Pty {
         };
         let pty = tty::new(&options, size.window_size(), 0)?;
         let child_pid = pty.child().id();
+        let shell_state = Arc::new(Mutex::new(Shared::default()));
+        let pty = MarkedPty::new(pty, shell_state.clone())?;
         let event_loop = EventLoop::new(term.clone(), Listener(tx), pty, false, false)?;
         let notifier = Notifier(event_loop.channel());
         event_loop.spawn();
 
-        Ok((Self { term, notifier, size, child_pid }, rx))
+        Ok((Self { term, notifier, size, child_pid, shell_state }, rx))
     }
 
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
@@ -115,7 +130,11 @@ impl Pty {
     }
 
     /// Best-effort working directory of the shell, used so new panes open where you are.
+    /// Prefers what the shell reported (OSC 7), which also works on macOS.
     pub fn cwd(&self) -> Option<PathBuf> {
+        if let Some(cwd) = self.shell_state.lock().unwrap().cwd.clone().filter(|p| p.is_dir()) {
+            return Some(cwd);
+        }
         #[cfg(target_os = "linux")]
         {
             std::fs::read_link(format!("/proc/{}/cwd", self.child_pid)).ok()

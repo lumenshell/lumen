@@ -39,6 +39,8 @@ pub struct Settings {
     pub cursor_shape: CursorShape,
     /// Program and arguments for new panes; `None` uses `$SHELL`.
     pub shell: Option<Vec<String>>,
+    /// Load Lumen's shell integration into bash, zsh and fish.
+    pub shell_integration: bool,
     /// Problems found in the config file, shown until it's fixed.
     pub problems: Vec<String>,
 }
@@ -57,6 +59,7 @@ impl Default for Settings {
             scrollback: 10_000,
             cursor_shape: CursorShape::Block,
             shell: None,
+            shell_integration: true,
             problems: Vec::new(),
         }
     }
@@ -188,6 +191,13 @@ impl Settings {
                     }
                     _ => Some(bad("a command in quotes, such as \"/usr/bin/fish --login\"")),
                 },
+                "shell-integration" => match item.as_bool() {
+                    Some(v) => {
+                        s.shell_integration = v;
+                        None
+                    }
+                    None => Some(bad("true or false")),
+                },
                 other => Some(format!("unknown setting `{other}`")),
             };
             s.problems.extend(problem);
@@ -251,7 +261,11 @@ impl Settings {
              cursor-style = \"{cursor}\"\n\
              \n\
              # Program (and arguments) to run in new panes. Uses $SHELL when unset.\n\
-             {shell}\n",
+             {shell}\n\
+             \n\
+             # Let bash, zsh and fish mark prompts and commands, for jumping between\n\
+             # commands, copying output and marking failures. Applies to new panes.\n\
+             shell-integration = {integration}\n",
             themes = names.join(", "),
             theme = self.theme().name,
             family = self.font_family,
@@ -259,6 +273,7 @@ impl Settings {
             line_height = self.line_height,
             padding = self.padding,
             scrollback = self.scrollback,
+            integration = self.shell_integration,
         )
     }
 
