@@ -4,10 +4,12 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
 [GPUI](https://gpui.rs) (Zed's GPU UI framework) and
 [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
 
-## Features (MVP)
+## Features
 
 - GPU-rendered terminal grid: truecolor, bold/italic, underline/undercurl,
-  strikethrough, wide (CJK) glyphs, colour emoji, 10k lines of scrollback
+  strikethrough, wide (CJK) glyphs, colour emoji, configurable scrollback
+- Box-drawing, block and powerline characters drawn as shapes, so lines and
+  prompt segments join without gaps
 - Tabs in a custom title bar, with pane counts and inherited working directory
 - Split panes on a padded canvas: rounded frames, an accent focus halo, and
   dimmed unfocused panes; Focus Mode zooms the active pane
@@ -16,6 +18,10 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
   working directory, which pane had focus, and the window's size, position and
   maximized state
 - Command palette (fuzzy search over every action and theme)
+- Find in scrollback, with optional case-sensitive and regex matching
+- Shell integration for bash, zsh and fish: jump between commands, copy the last
+  command's output, a red mark beside commands that failed, and new panes that
+  open in the shell's directory (see [Shell integration](#shell-integration))
 - Themes that recolour both the terminal and the chrome: Rosé Pine, Rosé Pine
   Moon, Catppuccin Mocha, Tokyo Night, Rosé Pine Dawn (light)
 - Mouse selection (drag, double-click word, triple-click line), primary-selection
@@ -30,7 +36,7 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
 - Programs may set the clipboard (OSC 52, used by tmux and vim over SSH) but
   can't read it
 - Bundled JetBrains Mono and Inter, so it looks the same everywhere
-- Settings persist to `~/.config/lumen/config`
+- A commented `config.toml` that applies changes as soon as you save it
 
 ## Build
 
@@ -55,19 +61,25 @@ On macOS you only need Xcode command-line tools.
 | Focus pane         | Alt+Shift+Arrows     | ⌘⌥Arrows         |
 | Next pane          | Ctrl+Shift+N         | ⌘]               |
 | Focus Mode (zoom)  | Ctrl+Shift+Enter     | ⌘⇧Enter          |
-| Next / prev tab    | Ctrl+Tab / Ctrl+PgDn | ⌘⇧] / ⌘⇧[        |
+| Next tab           | Ctrl+Tab / Ctrl+PgDn | ⌘⇧]              |
+| Previous tab       | Ctrl+Shift+Tab / Ctrl+PgUp | ⌘⇧[        |
 | Go to tab N        | Alt+1…9              | ⌘1…9             |
 | Cycle theme        | Ctrl+Shift+Y         | ⌘⇧Y              |
 | Font size          | Ctrl+= / Ctrl+- / 0  | ⌘= / ⌘- / ⌘0     |
-| Copy / paste       | Ctrl+Shift+C / V     | ⌘C / ⌘V          |
+| Copy / paste       | Ctrl+Shift+C / V, Shift+Insert | ⌘C / ⌘V |
 | Scroll a page      | Shift+PgUp / PgDn    | Shift+PgUp / PgDn|
 | Open link          | Ctrl+click           | ⌘+click          |
 | Find in scrollback | Ctrl+Shift+F         | ⌘F               |
+| Prev / next command | Ctrl+Shift+↑ / ↓    | ⌘↑ / ⌘↓          |
+| Copy last output   | Ctrl+Shift+O         | ⌘⇧O              |
+| Quit               | Ctrl+Shift+Q         | ⌘Q               |
 
 In the find bar, Enter or ↑ goes to the older match and Shift+Enter or ↓ to
 the newer one. Alt+C toggles case-sensitive matching (otherwise case is ignored
 unless the query has a capital letter), Alt+R toggles regular expressions, and
 Esc closes it.
+
+The command jumps and Copy last output need [shell integration](#shell-integration).
 
 ## Config
 
@@ -84,6 +96,7 @@ padding = 12                   # pixels between a pane's edge and its text
 scrollback = 10000             # lines of history per pane
 cursor-style = "block"         # "block", "beam" or "underline", until a program picks one
 shell = "/usr/bin/fish --login" # program for new panes; defaults to $SHELL
+shell-integration = true       # mark prompts and commands in bash, zsh and fish
 ```
 
 Delete a line to go back to its default. Mistakes (a typo'd key, a bad value, a
@@ -92,9 +105,43 @@ while the rest of the file still applies; a file that can't be parsed at all
 keeps the previous settings. Switching theme or zooming the font from inside
 Lumen edits just those keys and keeps your comments.
 
-`shell` applies to new panes; everything else applies to open ones too. Older
+`shell` is split on spaces, so an argument can't contain a space (wrap it in a
+script instead). `shell` and `shell-integration` apply to new panes; everything
+else applies to open ones too. Older
 versions used `~/.config/lumen/config`; its values are carried over the first
 time `config.toml` is created.
+
+## Shell integration
+
+When a pane runs bash, zsh or fish, Lumen loads a small script into it that
+marks where each prompt, command and its output begins, and reports the
+shell's directory. That gives you:
+
+- **Jump between commands** with Ctrl+Shift+↑ / ↓ (⌘↑ / ⌘↓). The prompt you
+  jumped to stays highlighted until you type; jumping past the newest one
+  returns to the bottom.
+- **Copy the last command's output** with Ctrl+Shift+O (⌘⇧O). It's selected
+  too, so you can see what was copied.
+- **Failure marks**: a bar in the left margin beside each prompt, red if the
+  command run there failed and grey if it succeeded.
+- **New panes open where you are**, using the directory the shell reports. This
+  works on macOS too; without it, Lumen reads it from `/proc` on Linux only.
+
+Your own startup files (`~/.bashrc`, `~/.zshrc`, `~/.config/fish`) still load
+as usual. The scripts are copied to `~/.local/share/lumen/shell-integration`
+(`$XDG_DATA_HOME`, or `~/Library/Application Support/lumen/shell-integration`
+on macOS) and loaded with `--rcfile`
+for bash, `ZDOTDIR` for zsh and `XDG_DATA_DIRS` for fish.
+
+It doesn't load for other shells, or for bash started as a login shell
+(`bash -l`), because `--rcfile` doesn't apply there. To use it in those cases,
+or on a remote machine over SSH, source the script yourself: add
+`source /path/to/lumen.bash` to the end of `~/.bashrc`, source `lumen.zsh` from
+`~/.zshrc`, or copy `lumen.fish` into `~/.config/fish/conf.d/`. The scripts are
+in [`shell-integration/`](shell-integration). Directories reported by a remote
+host are ignored, so new panes still open locally.
+
+Set `shell-integration = false` in the config to turn it off.
 
 ## Session
 
@@ -129,9 +176,20 @@ come back.
 | `src/theme.rs`         | Theme palettes and 256-colour table                       |
 | `src/settings.rs`      | Settings global and config file                           |
 | `src/session.rs`       | Saved pane layout (JSON) and loading/sanitising it        |
+| `src/shell_integration.rs` | Loading the shell scripts; turning their OSC 133/7 marks into hidden links |
+| `src/marks.rs`         | Finding prompts, exit statuses and command output in the grid |
+| `shell-integration/`   | The bash, zsh and fish scripts                            |
+
+## Tests
+
+```sh
+cargo test
+```
 
 ## Next up
 
-- Drawers, workspaces
+- Configurable keybindings, keyboard selection mode, keyboard link hints
+- A plugin API (socket and `lumen msg` first)
+- Notifications when a long command finishes; a quick-terminal dropdown
 - IME input, cursor blink, background blur/opacity setting
 - Ghostty theme file import
