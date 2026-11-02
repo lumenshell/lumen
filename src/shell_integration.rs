@@ -113,7 +113,9 @@ pub struct Shared {
     pub active: bool,
     /// When the command now running started (OSC 133;C), if one is.
     pub running_since: Option<Instant>,
-    /// Commands that finished since the UI last looked, oldest first.
+    /// Commands that finished since the UI last looked, oldest first. The
+    /// UI sends the `command-finished` event, since it can read the command
+    /// text off the screen.
     pub finished: Vec<Finished>,
 }
 
@@ -347,10 +349,6 @@ impl Rewriter {
                                 shared.finished.push(Finished { exit: self.exit, duration });
                             }
                         }
-                        self.emit(
-                            "command-finished",
-                            serde_json::json!({ "exit": self.exit, "duration_ms": duration.as_millis() as u64 }),
-                        );
                     }
                 }
                 _ => {}

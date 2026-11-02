@@ -278,12 +278,16 @@ after it finishes. A new pane starts in the directory of the pane it was split
 from (or the current one, for tabs) unless `--cwd` says otherwise. Tab titles
 set this way aren't kept between sessions.
 
+More complete scripts (a project layout, run-and-wait, git branch tab titles,
+broadcasting, grabbing another pane's output, and a Python client using the
+socket directly) are in [`examples/`](examples/).
+
 For example, a notification whenever a command fails in any pane (needs
 [`jq`](https://jqlang.org)):
 
 ```sh
 lumen msg watch command-finished |
-  jq --unbuffered -r 'select(.exit != 0) | "exit \(.exit) in pane \(.pane)"' |
+  jq --unbuffered -r 'select(.exit != 0) | "\(.command): exit \(.exit)"' |
   while read -r msg; do lumen msg notify "Command failed" "$msg"; done
 ```
 
@@ -297,7 +301,7 @@ lumen msg watch command-finished |
 | `cwd-changed` | `pane`, `cwd` | The shell changes directory\* |
 | `bell` | `pane` | A program rings the bell |
 | `command-started` | `pane` | A command starts running\* |
-| `command-finished` | `pane`, `exit`, `duration_ms` | A command finishes, with its exit status and how long it ran\* |
+| `command-finished` | `pane`, `command`, `exit`, `duration_ms` | A command finishes: what was typed, its exit status and how long it ran\* |
 
 \* Needs [shell integration](#shell-integration).
 
@@ -388,6 +392,7 @@ socket API is on.
 | `src/shell_integration.rs` | Loading the shell scripts; turning their OSC 133/7 marks into hidden links |
 | `src/marks.rs`         | Finding prompts, exit statuses and command output in the grid |
 | `shell-integration/`   | The bash, zsh and fish scripts                            |
+| `examples/`            | Scripts using `lumen msg` and the socket API              |
 
 ## Tests
 

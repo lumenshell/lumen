@@ -65,8 +65,24 @@ pub fn exits(prompts: &[Prompt]) -> std::collections::HashMap<String, Option<i32
 /// The command typed at the newest prompt that has one, as shown on screen
 /// (wrapped lines joined).
 pub fn last_command<T>(term: &Term<T>, prompts: &[Prompt]) -> Option<String> {
+    recent_commands(term, prompts, 1, 0).pop().flatten()
+}
+
+/// The last `n` commands typed, oldest first, after skipping the newest
+/// `skip` (say, one still running). Padded at the front with `None` when
+/// fewer are on screen.
+pub fn recent_commands<T>(term: &Term<T>, prompts: &[Prompt], n: usize, skip: usize) -> Vec<Option<String>> {
+    let mut found: Vec<Option<String>> =
+        prompts.iter().rev().filter_map(|p| command_at(term, p)).skip(skip).take(n).map(Some).collect();
+    found.resize(n, None);
+    found.reverse();
+    found
+}
+
+/// The command typed at prompt `p`, if any.
+fn command_at<T>(term: &Term<T>, p: &Prompt) -> Option<String> {
     let grid = term.grid();
-    prompts.iter().rev().find_map(|p| {
+    {
         let mut text = String::new();
         for line in (p.line.0..=p.input_end.0).map(Line) {
             for col in 0..term.columns() {
@@ -80,7 +96,7 @@ pub fn last_command<T>(term: &Term<T>, prompts: &[Prompt]) -> Option<String> {
         }
         let text = text.trim().to_string();
         (!text.is_empty()).then_some(text)
-    })
+    }
 }
 
 /// Lines of output from the most recent finished command, if it printed any.
@@ -141,6 +157,9 @@ mod tests {
 
         assert_eq!(last_command(&t, &p).as_deref(), Some("false"));
         assert_eq!(last_command(&t, &p[..1]).as_deref(), Some("ls"));
+        assert_eq!(recent_commands(&t, &p, 2, 0), vec![Some("ls".into()), Some("false".into())]);
+        assert_eq!(recent_commands(&t, &p, 1, 1), vec![Some("ls".into())]);
+        assert_eq!(recent_commands(&t, &p, 3, 0)[0], None);
         // `false` printed nothing; the last output is empty.
         assert_eq!(last_output(&t, &p), None);
         // Before that, `ls` printed two lines.

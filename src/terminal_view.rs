@@ -221,12 +221,27 @@ impl TerminalView {
             }
             (shared.running_since.is_some(), std::mem::take(&mut shared.finished))
         };
-        if running && self.running_command.is_none() {
+        // Name each finished command: the one noted while it ran, else read
+        // back from the screen (skipping the prompt of one already running).
+        let recent = if finished.is_empty() {
+            Vec::new()
+        } else {
             let term = self.pty.term.lock();
-            self.running_command = marks::last_command(&term, &marks::prompts(&term));
-        }
-        for done in finished {
-            let command = self.running_command.take();
+            marks::recent_commands(&term, &marks::prompts(&term), finished.len(), usize::from(running))
+        };
+        let pane = cx.entity_id().as_u64();
+        for (i, done) in finished.into_iter().enumerate() {
+            let noted = if i == 0 { self.running_command.take() } else { None };
+            let command = noted.or_else(|| recent[i].clone());
+            crate::api::emit(
+                "command-finished",
+                serde_json::json!({
+                    "pane": pane,
+                    "exit": done.exit,
+                    "duration_ms": done.duration.as_millis() as u64,
+                    "command": command,
+                }),
+            );
             let after = Settings::get(cx).notify_after;
             if after == 0 || done.duration < std::time::Duration::from_secs(after) || (self.focused && self.window_active) {
                 continue;
@@ -243,6 +258,10 @@ impl TerminalView {
                     eprintln!("lumen: {e}");
                 }
             });
+        }
+        if running && self.running_command.is_none() {
+            let term = self.pty.term.lock();
+            self.running_command = marks::last_command(&term, &marks::prompts(&term));
         }
     }
 
