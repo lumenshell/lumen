@@ -44,6 +44,9 @@ pub struct Settings {
     pub shell_integration: bool,
     /// Let scripts control Lumen over a socket (`lumen msg`).
     pub socket_api: bool,
+    /// Notify when a command that ran at least this many seconds finishes
+    /// out of sight; 0 turns it off.
+    pub notify_after: u64,
     /// Shortcuts from `[keys]`: normalized keys and the action they run
     /// (`None` frees the key), in file order.
     pub keys: Vec<(String, Option<String>)>,
@@ -67,6 +70,7 @@ impl Default for Settings {
             shell: None,
             shell_integration: true,
             socket_api: true,
+            notify_after: 10,
             keys: Vec::new(),
             problems: Vec::new(),
         }
@@ -210,6 +214,13 @@ impl Settings {
                     }
                     None => Some(bad("true or false")),
                 },
+                "notify-after" => match item.as_integer() {
+                    Some(v) if (0..=86_400).contains(&v) => {
+                        s.notify_after = v as u64;
+                        None
+                    }
+                    _ => Some(bad("a number of seconds from 0 (off) to 86400")),
+                },
                 "socket-api" => match item.as_bool() {
                     Some(v) => {
                         s.socket_api = v;
@@ -307,6 +318,10 @@ impl Settings {
              # commands, copying output and marking failures. Applies to new panes.\n\
              shell-integration = {integration}\n\
              \n\
+             # Notify when a command that ran this many seconds or longer finishes while\n\
+             # you're not looking at its pane (needs shell integration). 0 turns it off.\n\
+             notify-after = {notify_after}\n\
+             \n\
              # Let scripts and plugins control Lumen with `lumen msg` (a socket only you\n\
              # can open). Turning it on takes a restart; turning it off applies at once.\n\
              socket-api = {socket_api}\n\
@@ -327,6 +342,7 @@ impl Settings {
             scrollback = self.scrollback,
             integration = self.shell_integration,
             socket_api = self.socket_api,
+            notify_after = self.notify_after,
             actions = wrap_comment(&keymap::ACTIONS.join(", "), 80),
             keys = self.keys_template(),
         )

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{OnResize, WindowSize};
 use alacritty_terminal::tty::{ChildEvent, EventedPty, EventedReadWrite, Pty};
@@ -110,6 +111,17 @@ pub struct Shared {
     pub cwd: Option<PathBuf>,
     /// The shell has sent at least one mark, so integration is working.
     pub active: bool,
+    /// When the command now running started (OSC 133;C), if one is.
+    pub running_since: Option<Instant>,
+    /// Commands that finished since the UI last looked, oldest first.
+    pub finished: Vec<Finished>,
+}
+
+/// A command that finished, for long-command notifications.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Finished {
+    pub exit: Option<i32>,
+    pub duration: Duration,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -319,13 +331,26 @@ impl Rewriter {
                     Self::link(out, "");
                     self.ran = true;
                     self.running = true;
+                    self.shared.lock().unwrap().running_since = Some(Instant::now());
                     self.emit("command-started", serde_json::json!({}));
                 }
                 Some("D") => {
                     let was_running = std::mem::take(&mut self.running);
+                    let started = self.shared.lock().unwrap().running_since.take();
                     if self.ran && was_running {
                         self.exit = parts.next().and_then(|c| c.trim().parse().ok());
-                        self.emit("command-finished", serde_json::json!({ "exit": self.exit }));
+                        let duration = started.map(|t| t.elapsed()).unwrap_or_default();
+                        {
+                            let mut shared = self.shared.lock().unwrap();
+                            // Only the UI drains this; don't grow without bound if it can't.
+                            if shared.finished.len() < 64 {
+                                shared.finished.push(Finished { exit: self.exit, duration });
+                            }
+                        }
+                        self.emit(
+                            "command-finished",
+                            serde_json::json!({ "exit": self.exit, "duration_ms": duration.as_millis() as u64 }),
+                        );
                     }
                 }
                 _ => {}
@@ -470,6 +495,22 @@ mod tests {
             "⎋]8;;lumen:prompt⎋\\$ ⎋]8;;lumen:input⎋\\false\r\n⎋]8;;⎋\\⎋]8;;lumen:prompt?exit=1⎋\\$ "
         );
         assert!(shared.lock().unwrap().active);
+    }
+
+    #[test]
+    fn finished_commands_are_queued_with_their_duration() {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let mut r = Rewriter::with_host(shared.clone(), "h".into());
+        let mut out = Vec::new();
+        r.feed(b"\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07", &mut out);
+        assert!(shared.lock().unwrap().running_since.is_some());
+        std::thread::sleep(Duration::from_millis(20));
+        r.feed(b"\x1b]133;D;3\x07\x1b]133;A\x07", &mut out);
+        let s = shared.lock().unwrap();
+        assert!(s.running_since.is_none());
+        assert_eq!(s.finished.len(), 1);
+        assert_eq!(s.finished[0].exit, Some(3));
+        assert!(s.finished[0].duration >= Duration::from_millis(20));
     }
 
     #[test]

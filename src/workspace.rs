@@ -329,6 +329,7 @@ impl Workspace {
         let term = cx.new(|cx| TerminalView::new(cwd, window, cx));
         api::emit("pane-opened", json!({ "pane": term.entity_id().as_u64() }));
         let sub = cx.subscribe_in(&term, window, |this, term, event, window, cx| match event {
+            TerminalEvent::Attention => cx.notify(),
             TerminalEvent::TitleChanged => {
                 api::emit(
                     "title-changed",
@@ -718,6 +719,13 @@ impl Workspace {
             let title: SharedString =
                 tab.title.clone().unwrap_or_else(|| tab.active.read(cx).title.clone()).into();
             let panes = tab.leaves().len();
+            // A long command finished in a pane you haven't looked at since.
+            let attention = tab
+                .leaves()
+                .iter()
+                .filter_map(|l| l.read(cx).attention)
+                .reduce(|a, b| a && b)
+                .map(|ok| if ok { theme.ansi[2] } else { theme.ansi[1] });
             div()
                 .id(("tab", i))
                 .group("tab")
@@ -755,6 +763,9 @@ impl Workspace {
                         .text_color(if active { theme.accent } else { theme.muted })
                         .child(format!("{}", i + 1)),
                 )
+                .when_some(attention, |d, color| {
+                    d.child(div().flex_none().size(px(7.0)).rounded(px(4.0)).bg(color))
+                })
                 .child(
                     div()
                         .min_w_0()

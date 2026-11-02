@@ -38,6 +38,8 @@ use crate::{Copy, CopyLastOutput, Find, NextPrompt, Paste, PrevPrompt, ToggleSel
 
 pub enum TerminalEvent {
     TitleChanged,
+    /// A long command finished out of sight, or its badge was seen.
+    Attention,
     Exited,
     Focused,
 }
@@ -86,6 +88,14 @@ pub struct TerminalView {
     last_search: Option<Search>,
     /// The find bar was opened with `?`: `n` goes up.
     search_backward: bool,
+    /// Keyboard focus is in this pane, and the window is the active one.
+    focused: bool,
+    window_active: bool,
+    /// The command now running, read off the screen once it started.
+    running_command: Option<String>,
+    /// A long command finished while you weren't here: whether it succeeded.
+    /// Shown as a dot on the tab until the pane is focused.
+    pub attention: Option<bool>,
     _events: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -136,9 +146,20 @@ impl TerminalView {
         let subs = vec![
             cx.on_focus(&focus, window, |this, _, cx| {
                 this.report_focus(true);
+                this.focused = true;
+                this.seen(cx);
                 cx.emit(TerminalEvent::Focused)
             }),
-            cx.on_blur(&focus, window, |this, _, _| this.report_focus(false)),
+            cx.on_blur(&focus, window, |this, _, _| {
+                this.report_focus(false);
+                this.focused = false;
+            }),
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.window_active = window.is_window_active();
+                if this.window_active && this.focused {
+                    this.seen(cx);
+                }
+            }),
             // Apply scrollback and cursor changes from the config file live.
             cx.observe_global::<Settings>(move |this, cx| {
                 let config = term_config(Settings::get(cx));
@@ -170,6 +191,10 @@ impl TerminalView {
             vi: ViState::default(),
             last_search: None,
             search_backward: false,
+            focused: false,
+            window_active: window.is_window_active(),
+            running_command: None,
+            attention: None,
             _events: events,
             _subs: subs,
         }
@@ -177,6 +202,48 @@ impl TerminalView {
 
     pub fn cwd(&self) -> Option<PathBuf> {
         self.pty.cwd()
+    }
+
+    /// Clear the tab badge once you've looked at the pane.
+    fn seen(&mut self, cx: &mut Context<Self>) {
+        if self.attention.take().is_some() {
+            cx.emit(TerminalEvent::Attention);
+        }
+    }
+
+    /// Note the command that's running, and tell you about long ones that
+    /// finished while you were elsewhere (shell integration).
+    fn check_commands(&mut self, cx: &mut Context<Self>) {
+        let (running, finished) = {
+            let mut shared = self.pty.shell_state.lock().unwrap();
+            if !shared.active {
+                return;
+            }
+            (shared.running_since.is_some(), std::mem::take(&mut shared.finished))
+        };
+        if running && self.running_command.is_none() {
+            let term = self.pty.term.lock();
+            self.running_command = marks::last_command(&term, &marks::prompts(&term));
+        }
+        for done in finished {
+            let command = self.running_command.take();
+            let after = Settings::get(cx).notify_after;
+            if after == 0 || done.duration < std::time::Duration::from_secs(after) || (self.focused && self.window_active) {
+                continue;
+            }
+            let ok = done.exit.is_none_or(|c| c == 0);
+            if !self.focused {
+                // Red wins over green until the pane is visited.
+                self.attention = Some(ok && self.attention != Some(false));
+                cx.emit(TerminalEvent::Attention);
+            }
+            let (title, body) = notification_text(command.as_deref(), done.exit, done.duration, self.cwd());
+            std::thread::spawn(move || {
+                if let Err(e) = crate::api::notify(&title, &body) {
+                    eprintln!("lumen: {e}");
+                }
+            });
+        }
     }
 
     /// Type `text` into the pane, as if pasted without bracketing.
@@ -219,6 +286,7 @@ impl TerminalView {
     fn handle_event(&mut self, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::Wakeup => {
+                self.check_commands(cx);
                 self.schedule_search_rescan(cx);
                 self.schedule_marks_rescan(cx);
                 // Output may have moved or replaced the text under the pointer.
@@ -945,6 +1013,38 @@ fn search_bar(search: &Search, theme: &Theme) -> gpui::AnyElement {
         .into_any_element()
 }
 
+/// Title and body for a finished-command notification.
+fn notification_text(
+    command: Option<&str>,
+    exit: Option<i32>,
+    took: std::time::Duration,
+    cwd: Option<PathBuf>,
+) -> (String, String) {
+    let mut command = command.unwrap_or("Command").to_string();
+    if command.chars().count() > 60 {
+        command = command.chars().take(59).chain(['…']).collect();
+    }
+    let secs = took.as_secs();
+    let took = match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m {}s", secs / 60, secs % 60),
+        _ => format!("{}h {}m", secs / 3600, secs % 3600 / 60),
+    };
+    let (mark, how) = match exit {
+        Some(0) | None => ("✓", format!("Finished in {took}")),
+        Some(code) => ("✗", format!("Failed with exit {code} after {took}")),
+    };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let place = cwd.map(|p| {
+        let p = p.display().to_string();
+        match p.strip_prefix(&home) {
+            Some(rest) if !home.is_empty() => format!(" · ~{rest}"),
+            _ => format!(" · {p}"),
+        }
+    });
+    (format!("{mark} {command}"), format!("{how}{}", place.unwrap_or_default()))
+}
+
 /// The pill at the bottom of a pane in keyboard select mode, with what the
 /// next keys do.
 fn select_badge(text: String, theme: &Theme) -> gpui::AnyElement {
@@ -1550,5 +1650,24 @@ impl Render for TerminalView {
             .child(canvas(prepaint, paint).size_full())
             .children(search_bar)
             .children(select_badge)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn notification_wording() {
+        let home = PathBuf::from(std::env::var("HOME").unwrap()).join("proj");
+        let (t, b) = notification_text(Some("cargo build"), Some(0), Duration::from_secs(134), Some(home));
+        assert_eq!((t.as_str(), b.as_str()), ("✓ cargo build", "Finished in 2m 14s · ~/proj"));
+        let (t, b) = notification_text(Some("make test"), Some(2), Duration::from_secs(45), None);
+        assert_eq!((t.as_str(), b.as_str()), ("✗ make test", "Failed with exit 2 after 45s"));
+        let (t, b) = notification_text(None, None, Duration::from_secs(3720), Some("/srv".into()));
+        assert_eq!((t.as_str(), b.as_str()), ("✓ Command", "Finished in 1h 2m · /srv"));
+        let long = "x".repeat(80);
+        assert_eq!(notification_text(Some(&long), Some(0), Duration::ZERO, None).0.chars().count(), 62);
     }
 }

@@ -30,6 +30,8 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
 - Shell integration for bash, zsh and fish: jump between commands, copy the last
   command's output, a red mark beside commands that failed, and new panes that
   open in the shell's directory (see [Shell integration](#shell-integration))
+- A desktop notification when a long command finishes while you're looking
+  elsewhere, and a green or red dot on its tab until you go back to it
 - Themes that recolour both the terminal and the chrome: Rosé Pine, Rosé Pine
   Moon, Catppuccin Mocha, Tokyo Night, Rosé Pine Dawn (light)
 - Mouse selection (drag, double-click word, triple-click line, Shift+click to
@@ -51,9 +53,9 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
 ## Build
 
 ```sh
-# Debian/Ubuntu build dependencies
+# Debian/Ubuntu build dependencies (libnotify-bin is for notifications)
 sudo apt install libxkbcommon-x11-dev libxcb1-dev libfreetype-dev libfontconfig-dev \
-                 libwayland-dev libvulkan1
+                 libwayland-dev libvulkan1 libnotify-bin
 
 cargo run --release
 
@@ -155,6 +157,7 @@ scrollback = 10000             # lines of history per pane
 cursor-style = "block"         # "block", "beam" or "underline", until a program picks one
 shell = "/usr/bin/fish --login" # program for new panes; defaults to $SHELL
 shell-integration = true       # mark prompts and commands in bash, zsh and fish
+notify-after = 10              # seconds a command must run to notify when it ends; 0 = off
 socket-api = true              # let scripts control Lumen with `lumen msg`
 ```
 
@@ -210,6 +213,14 @@ shell's directory. That gives you:
   too, so you can see what was copied.
 - **Failure marks**: a bar in the left margin beside each prompt, red if the
   command run there failed and grey if it succeeded.
+- **Notifications for long commands**: when a command that ran for at least
+  `notify-after` seconds (10 by default) finishes and you're not looking at
+  its pane (another pane or tab is focused, or Lumen isn't the active window),
+  you get a desktop notification such as "✗ make test — Failed with exit 2
+  after 3m 12s · ~/proj". If its pane isn't focused, its tab also gets a dot,
+  green for success and red for failure, until you visit it. On Linux this
+  uses `notify-send` (`sudo apt install libnotify-bin`); on macOS,
+  Notification Center. Set `notify-after = 0` to turn it off.
 - **New panes open where you are**, using the directory the shell reports. This
   works on macOS too; without it, Lumen reads it from `/proc` on Linux only.
 
@@ -286,7 +297,7 @@ lumen msg watch command-finished |
 | `cwd-changed` | `pane`, `cwd` | The shell changes directory\* |
 | `bell` | `pane` | A program rings the bell |
 | `command-started` | `pane` | A command starts running\* |
-| `command-finished` | `pane`, `exit` | A command finishes, with its exit status\* |
+| `command-finished` | `pane`, `exit`, `duration_ms` | A command finishes, with its exit status and how long it ran\* |
 
 \* Needs [shell integration](#shell-integration).
 

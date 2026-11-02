@@ -62,6 +62,27 @@ pub fn exits(prompts: &[Prompt]) -> std::collections::HashMap<String, Option<i32
         .collect()
 }
 
+/// The command typed at the newest prompt that has one, as shown on screen
+/// (wrapped lines joined).
+pub fn last_command<T>(term: &Term<T>, prompts: &[Prompt]) -> Option<String> {
+    let grid = term.grid();
+    prompts.iter().rev().find_map(|p| {
+        let mut text = String::new();
+        for line in (p.line.0..=p.input_end.0).map(Line) {
+            for col in 0..term.columns() {
+                let cell = &grid[line][Column(col)];
+                if cell.hyperlink().is_some_and(|l| l.uri() == INPUT)
+                    && !cell.flags.contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
+                {
+                    text.push(cell.c);
+                }
+            }
+        }
+        let text = text.trim().to_string();
+        (!text.is_empty()).then_some(text)
+    })
+}
+
 /// Lines of output from the most recent finished command, if it printed any.
 pub fn last_output<T>(term: &Term<T>, prompts: &[Prompt]) -> Option<(Point, Point)> {
     // The newest prompt is the one waiting for input; its predecessor is the
@@ -118,6 +139,8 @@ mod tests {
         assert_eq!(exits[&p[1].id], Some(1));
         assert_eq!(exits[&p[2].id], None);
 
+        assert_eq!(last_command(&t, &p).as_deref(), Some("false"));
+        assert_eq!(last_command(&t, &p[..1]).as_deref(), Some("ls"));
         // `false` printed nothing; the last output is empty.
         assert_eq!(last_output(&t, &p), None);
         // Before that, `ls` printed two lines.
