@@ -422,7 +422,7 @@ Methods: `hello` (protocol version, Lumen version, actions and events),
 `cwd`, `run`, `focus`, `size`, `plugin_pane`), `focus`, `close`, `send-text`
 (`pane`, `text`), `read-screen` (`pane`, `lines`), `set-title` (`pane`,
 `title`), `set-tab-style` (`pane`, `badge`, `color`; a field left out stays,
-`null` clears it), `move-tab` (`pane`, `index`, counting from 0), `write`
+`null` clears it; a plugin's go when it stops, a socket client's stay), `move-tab` (`pane`, `index`, counting from 0), `write`
 (`pane`, `text`; plugin panes only), `notify` (`title`, `body`),
 `run-action` (`action`, `pane`) and `subscribe` (`events`, a list; omit for
 all). `pane` is optional everywhere and means the focused pane, in the active
@@ -576,7 +576,9 @@ Problems in a `plugin.toml` are listed in the banner at the bottom of the
 window; fix them and choose **Reload Plugins** (which also picks up new and
 changed plugins). To learn from: the built-in plugins in [`plugins/`](plugins/)
 (all Python), and [`examples/plugins/`](examples/plugins/): `hello` (bash
-speaking the raw protocol) and `snippets` (a snippet library).
+speaking the raw protocol), `snippets` (a snippet library), `exit-colors`
+(tabs tinted by exit status), `todo` (a todo list in a plugin pane) and
+`snake` (a game).
 
 ## Session
 

@@ -187,10 +187,16 @@ gives a whole tab to it.
 short badge beside the tab's title and tints the tab, which you can see from
 any tab. Colours are `red`, `green`, `yellow`, `blue`, `magenta` and `cyan`
 from your theme (so they suit it), or `"#rrggbb"`. Pass `None` to remove one;
-what you leave out stays as it is.
+what you leave out stays as it is. They're removed when your plugin stops, so a
+plugin that crashes or is reloaded leaves no stale badge behind.
 
 The built-in [Pomodoro Timer](../plugins/pomodoro/main.py) uses both, in
-about 300 lines.
+about 300 lines. Smaller ones are in [`examples/`](../examples/): a
+[todo list](../examples/plugins/todo/main.py) that takes typed text, a
+[snake game](../examples/plugins/snake/main.py) that animates,
+[tabs tinted by exit status](../examples/plugins/exit-colors/main.py), and
+[`watch_pane.py`](../examples/watch_pane.py), a script (not a plugin) with a
+pane of its own.
 
 ## Permissions
 

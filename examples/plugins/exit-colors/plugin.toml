@@ -1,0 +1,4 @@
+description = "Tint each tab green or red by how its last command went"
+version = "1.0.0"
+command = "python3 main.py"
+permissions = ["panes"]

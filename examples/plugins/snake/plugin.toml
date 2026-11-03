@@ -1,0 +1,4 @@
+description = "A game of snake in a tab of its own"
+version = "1.0.0"
+command = "python3 main.py"
+permissions = ["panes"]

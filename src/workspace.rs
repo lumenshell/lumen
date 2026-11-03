@@ -263,6 +263,10 @@ struct Tab {
     badge: Option<String>,
     /// A colour tinting the tab, set over the socket API. Not saved.
     color: Option<TabColor>,
+    /// The plugin connection that set the badge and colour: they go when it
+    /// does, so a stopped plugin leaves no stale countdown. (A script's stay:
+    /// `lumen msg` disconnects straight away.)
+    style_owner: Option<u64>,
 }
 
 /// What a new pane runs: your shell (in a folder), or nothing, for a plugin
@@ -433,6 +437,7 @@ impl Workspace {
                 title: tab.title.filter(|t| !t.trim().is_empty()),
                 badge: None,
                 color: None,
+                style_owner: None,
             });
         }
         self.active_tab = saved.active_tab.min(self.tabs.len() - 1);
@@ -587,6 +592,7 @@ impl Workspace {
                 title: None,
                 badge: None,
                 color: None,
+                style_owner: None,
             },
         );
         self.active_tab = insert_at;
@@ -1968,8 +1974,14 @@ impl Workspace {
                     Some(Value::String(c)) => Some(TabColor::parse(c).map_err(ApiError::invalid_params)?),
                     Some(_) => return Err(ApiError::invalid_params("`color` should be a string or null")),
                 };
-                self.tabs[tab].badge = badge;
-                self.tabs[tab].color = color;
+                let owner = match caller {
+                    api::Caller::Plugin { .. } => origin.map(|o| o.conn),
+                    api::Caller::Socket => None,
+                };
+                let t = &mut self.tabs[tab];
+                t.style_owner = if badge.is_none() && color.is_none() { None } else { owner };
+                t.badge = badge;
+                t.color = color;
                 cx.notify();
                 Ok(json!({}))
             }
@@ -2000,6 +2012,12 @@ impl Workspace {
                 for id in orphans {
                     self.close_pane_entity(id, window, cx);
                 }
+                for tab in &mut self.tabs {
+                    if conn.is_some() && tab.style_owner == conn {
+                        (tab.badge, tab.color, tab.style_owner) = (None, None, None);
+                    }
+                }
+                cx.notify();
                 Ok(json!({}))
             }
             "run-action" => {

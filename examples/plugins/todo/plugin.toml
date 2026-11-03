@@ -1,0 +1,4 @@
+description = "A todo list in a pane beside your work, with what's left on the tab"
+version = "1.0.0"
+command = "python3 main.py"
+permissions = ["panes"]
