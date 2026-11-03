@@ -71,4 +71,7 @@ chmod 644 "$apps/lumen.desktop"
 
 refresh
 echo "Installed Lumen's menu entry ($apps/lumen.desktop) and icons ($icons)."
-echo "Restart Lumen to see its icon in the taskbar and switcher."
+# install.sh --restart sets this, since it restarts Lumen itself.
+if [ -z "${LUMEN_INSTALL_RESTARTS:-}" ]; then
+    echo "Restart Lumen to see its icon in the taskbar and switcher."
+fi

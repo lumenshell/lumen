@@ -43,7 +43,11 @@ cargo install --locked --path .
 case "$(uname -s)" in
     Linux)
         echo "==> Adding Lumen to the app menu"
-        scripts/install-linux.sh
+        if [ "$restart" = 1 ]; then
+            LUMEN_INSTALL_RESTARTS=1 scripts/install-linux.sh
+        else
+            scripts/install-linux.sh
+        fi
         ;;
     Darwin)
         echo "==> Making Lumen.app"

@@ -93,7 +93,8 @@ pub fn action(name: &str) -> Option<Box<dyn Action>> {
 }
 
 /// The built-in shortcuts as (keys, action name). macOS uses cmd; Linux uses
-/// ctrl-shift so plain ctrl keys reach the shell.
+/// ctrl-shift so plain ctrl keys reach the shell, except a few everyone
+/// expects from a terminal app (Ctrl+T, Ctrl+1–9).
 fn defaults() -> Vec<(String, &'static str)> {
     let mac = cfg!(target_os = "macos");
     let m = |mac_key: &str, linux_key: &str| if mac { mac_key } else { linux_key }.to_string();
@@ -130,6 +131,9 @@ fn defaults() -> Vec<(String, &'static str)> {
         (m("cmd-q", "ctrl-shift-q"), "quit"),
     ];
     const TABS: [&str; 9] = ["tab-1", "tab-2", "tab-3", "tab-4", "tab-5", "tab-6", "tab-7", "tab-8", "tab-9"];
+    if !mac {
+        b.push(("ctrl-t".into(), "new-tab"));
+    }
     for (i, name) in TABS.iter().enumerate() {
         if mac {
             b.push((format!("cmd-{}", i + 1), name));
@@ -318,7 +322,8 @@ mod tests {
         // Ctrl+Tab is freed; next-tab keeps no key, since its other default was rebound.
         assert!(keys_of(&b, "next-tab").is_empty());
         assert!(keys_of(&b, "new-tab").contains(&"ctrl-alt-t".to_string()));
-        assert_eq!(keys_of(&b, "new-tab").len(), 2, "the default key still works");
+        let defaults = if cfg!(target_os = "macos") { 1 } else { 2 };
+        assert_eq!(keys_of(&b, "new-tab").len(), defaults + 1, "the default keys still work");
         assert!(keys_of(&b, "find").contains(&normalize_keys(next).unwrap()));
     }
 }

@@ -103,7 +103,7 @@ switcher; drag it into Applications. Its binary is
 | Action             | Linux                | macOS            |
 |--------------------|----------------------|------------------|
 | Command palette    | Ctrl+Shift+P         | ⌘⇧P              |
-| New tab            | Ctrl+Shift+T         | ⌘T               |
+| New tab            | Ctrl+T / Ctrl+Shift+T | ⌘T              |
 | Split right / down | Ctrl+Shift+D / E     | ⌘D / ⌘⇧D         |
 | Close pane         | Ctrl+Shift+W         | ⌘W               |
 | Focus pane         | Alt+Shift+Arrows     | ⌘⌥Arrows         |
@@ -223,6 +223,7 @@ binds a key to an action by name, and applies as soon as you save:
 [keys]
 ctrl-alt-t = "new-tab"      # an extra key for New Tab; Ctrl+Shift+T still works
 ctrl-tab = "none"           # free Ctrl+Tab for the desktop or the shell
+ctrl-t = "none"             # give Ctrl+T back to the shell (bash swaps letters, fzf finds files)
 "ctrl-=" = "increase-font"  # keys with symbols need quotes
 ```
 
