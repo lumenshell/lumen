@@ -28,5 +28,10 @@ panic = "abort"
 # GPUI's XIM client panics on text its compound-text decoder rejects (plain
 # Latin-1 such as "é" from ibus, Chinese and Korean charsets). This copy
 # decodes those and never fails. See vendor/xim-ctext/README-lumen.md.
+#
+# GPUI on X11 draws only on its refresh timer, so terminal output waited up
+# to a frame to appear. This copy draws as soon as a window is dirtied. See
+# vendor/gpui/README-lumen.md.
 [patch.crates-io]
 xim-ctext = { path = "vendor/xim-ctext" }
+gpui = { path = "vendor/gpui" }

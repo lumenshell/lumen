@@ -1,0 +1,41 @@
+# GPUI, patched for Lumen
+
+A copy of [gpui 0.2.2](https://crates.io/crates/gpui) (Apache-2.0, by Zed
+Industries; see `LICENSE-APACHE`), used through `[patch.crates-io]` in
+Lumen's `Cargo.toml`. The examples and tests are left out (and their entries
+removed from `Cargo.toml`). `lumen.patch` is the diff of the source changes
+against the published crate.
+
+## Draw as soon as a window changes (X11)
+
+On X11, GPUI draws only when its refresh timer ticks, once per display frame.
+New terminal output waited for the next tick, which added up to a frame
+(8 ms at 120 Hz) to every echoed keypress.
+
+- `src/window.rs`: the window's invalidator calls a callback when the window
+  goes from clean to dirty.
+- `src/platform.rs`: `PlatformWindow::frame_requester` supplies that callback;
+  by default there is none.
+- `src/platform/linux/x11/{window,client}.rs`: each X11 window registers a
+  calloop ping. The callback pings it, and the handler (`draw_now`) draws the
+  window straight away, at most once per refresh interval. Anything dirtied
+  again sooner is left to the timer, so a flood of output still draws at the
+  display rate. Hidden windows wait for the timer as before.
+
+Measured from writing to the pty until the pixels change on screen, at 120 Hz
+under Cinnamon: median 7.4–11.4 ms before, 4.9–5.9 ms after. Throughput and
+CPU use under heavy output were unchanged.
+
+Wayland and macOS already draw on the compositor's frame callback or the
+display link, so they are unchanged.
+
+## Build fix
+
+`src/taffy.rs`: two float literals given an explicit `f32` type. Newer Rust
+warns that the old form will become an error.
+
+## Upgrading
+
+When moving to a newer gpui, check whether it draws on demand on X11. If it
+doesn't, reapply `lumen.patch` to a fresh copy; otherwise drop this copy and
+the `[patch.crates-io]` entry.

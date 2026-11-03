@@ -678,6 +678,7 @@ socket API is on.
 | `plugins/`             | The built-in plugins (built into Lumen; turned on in the Plugin Gallery), and tests |
 | `docs/plugins.md`      | Guide and reference for writing plugins in Python         |
 | `vendor/xim-ctext/`    | A patched copy of the decoder GPUI's X11 input-method client uses, so input methods can't crash Lumen ([why](vendor/xim-ctext/README-lumen.md)) |
+| `vendor/gpui/`         | A patched copy of GPUI that draws on X11 as soon as output arrives, instead of waiting for the next frame ([why](vendor/gpui/README-lumen.md)) |
 
 ## Tests
 

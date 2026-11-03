@@ -1,0 +1,213 @@
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -95,6 +95,8 @@
+     pub dirty: bool,
+     pub draw_phase: DrawPhase,
+     pub dirty_views: FxHashSet<EntityId>,
++    // Lumen: called when the window goes from clean to dirty.
++    on_dirty: Option<Box<dyn Fn()>>,
+ }
+ 
+ #[derive(Clone)]
+@@ -109,6 +111,7 @@
+                 dirty: true,
+                 draw_phase: DrawPhase::None,
+                 dirty_views: FxHashSet::default(),
++                on_dirty: None,
+             })),
+         }
+     }
+@@ -117,7 +120,11 @@
+         let mut inner = self.inner.borrow_mut();
+         inner.dirty_views.insert(entity);
+         if inner.draw_phase == DrawPhase::None {
+-            inner.dirty = true;
++            if !std::mem::replace(&mut inner.dirty, true)
++                && let Some(on_dirty) = &inner.on_dirty
++            {
++                on_dirty();
++            }
+             cx.push_effect(Effect::Notify { emitter: entity });
+             true
+         } else {
+@@ -130,7 +137,17 @@
+     }
+ 
+     pub fn set_dirty(&self, dirty: bool) {
+-        self.inner.borrow_mut().dirty = dirty
++        let mut inner = self.inner.borrow_mut();
++        if !std::mem::replace(&mut inner.dirty, dirty)
++            && dirty
++            && let Some(on_dirty) = &inner.on_dirty
++        {
++            on_dirty();
++        }
++    }
++
++    pub fn set_on_dirty(&self, on_dirty: Option<Box<dyn Fn()>>) {
++        self.inner.borrow_mut().on_dirty = on_dirty;
+     }
+ 
+     pub fn set_phase(&self, phase: DrawPhase) {
+@@ -987,6 +1004,7 @@
+         let appearance = platform_window.appearance();
+         let text_system = Arc::new(WindowTextSystem::new(cx.text_system().clone()));
+         let invalidator = WindowInvalidator::new();
++        invalidator.set_on_dirty(platform_window.frame_requester());
+         let active = Rc::new(Cell::new(platform_window.is_active()));
+         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
+         let needs_present = Rc::new(Cell::new(false));
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -499,6 +499,11 @@
+     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
+     fn draw(&self, scene: &Scene);
+     fn completed_frame(&self) {}
++    /// Lumen: a callback the window calls when it becomes dirty, so the platform
++    /// can draw straight away instead of waiting for its next frame tick.
++    fn frame_requester(&self) -> Option<Box<dyn Fn()>> {
++        None
++    }
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
+ 
+     // macOS specific methods
+--- a/src/platform/linux/x11/window.rs
++++ b/src/platform/linux/x11/window.rs
+@@ -273,6 +273,8 @@
+     edge_constraints: Option<EdgeConstraints>,
+     pub handle: AnyWindowHandle,
+     last_insets: [u32; 4],
++    // Lumen: wakes the event loop to draw as soon as the window is dirtied.
++    pub(crate) frame_ping: Option<calloop::ping::Ping>,
+ }
+ 
+ impl X11WindowState {
+@@ -689,6 +691,7 @@
+                 client_side_decorations_supported,
+                 decorations: WindowDecorations::Server,
+                 last_insets: [0, 0, 0, 0],
++                frame_ping: None,
+                 edge_constraints: None,
+                 counter_id: sync_request_counter,
+                 last_sync_counter: None,
+@@ -1475,6 +1478,11 @@
+         inner.renderer.draw(scene);
+     }
+ 
++    fn frame_requester(&self) -> Option<Box<dyn Fn()>> {
++        let ping = self.0.state.borrow().frame_ping.clone()?;
++        Some(Box::new(move || ping.ping()))
++    }
++
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+         let inner = self.0.state.borrow();
+         inner.renderer.sprite_atlas().clone()
+--- a/src/platform/linux/x11/client.rs
++++ b/src/platform/linux/x11/client.rs
+@@ -84,6 +84,10 @@
+     expose_event_received: bool,
+     last_visibility: Visibility,
+     is_mapped: bool,
++    // Lumen: the source that draws as soon as the window is dirtied, and when
++    // it last did, so it draws at most once per refresh interval.
++    frame_ping_token: Option<RegistrationToken>,
++    last_immediate_frame: Option<Instant>,
+ }
+ 
+ impl WindowRef {
+@@ -232,12 +236,16 @@
+         };
+         let mut state = client.0.borrow_mut();
+ 
+-        if let Some(window_ref) = state.windows.remove(&x_window)
+-            && let Some(RefreshState::PeriodicRefresh {
++        if let Some(window_ref) = state.windows.remove(&x_window) {
++            if let Some(token) = window_ref.frame_ping_token {
++                state.loop_handle.remove(token);
++            }
++            if let Some(RefreshState::PeriodicRefresh {
+                 event_loop_token, ..
+             }) = window_ref.refresh_state
+-        {
+-            state.loop_handle.remove(event_loop_token);
++            {
++                state.loop_handle.remove(event_loop_token);
++            }
+         }
+         if state.mouse_focused_window == Some(x_window) {
+             state.mouse_focused_window = None;
+@@ -1485,12 +1493,28 @@
+         .log_err();
+         xcb_flush(&state.xcb_connection);
+ 
++        // Lumen: GPUI otherwise draws only on the refresh timer, so new terminal
++        // output waited up to a whole frame before being drawn.
++        let frame_ping_token = calloop::ping::make_ping()
++            .context("X11: failed to create the frame ping")
++            .and_then(|(ping, source)| {
++                let token = state
++                    .loop_handle
++                    .insert_source(source, move |_, _, client| client.draw_now(x_window))
++                    .map_err(|e| anyhow!("X11: failed to register the frame ping: {e}"))?;
++                window.0.state.borrow_mut().frame_ping = Some(ping);
++                Ok(token)
++            })
++            .log_err();
++
+         let window_ref = WindowRef {
+             window: window.0.clone(),
+             refresh_state: None,
+             expose_event_received: false,
+             last_visibility: Visibility::UNOBSCURED,
+             is_mapped: false,
++            frame_ping_token,
++            last_immediate_frame: None,
+         };
+ 
+         state.windows.insert(x_window, window_ref);
+@@ -2489,3 +2513,34 @@
+ fn valid_scale_factor(scale_factor: f32) -> bool {
+     scale_factor.is_sign_positive() && scale_factor.is_normal()
+ }
++
++impl X11Client {
++    /// Lumen: draw a window now that it has been dirtied, rather than at the next
++    /// tick of its refresh timer. At most once per refresh interval; anything
++    /// dirtied sooner is left to the timer, so a flood of output still draws at
++    /// the display rate. Hidden windows wait for the timer too.
++    fn draw_now(&self, x_window: xproto::Window) {
++        let mut state = self.0.borrow_mut();
++        let Some(window_ref) = state.windows.get_mut(&x_window) else {
++            return;
++        };
++        let Some(RefreshState::PeriodicRefresh { refresh_rate, .. }) = window_ref.refresh_state
++        else {
++            return;
++        };
++        let now = Instant::now();
++        if window_ref
++            .last_immediate_frame
++            .is_some_and(|last| now.duration_since(last) < refresh_rate)
++        {
++            return;
++        }
++        window_ref.last_immediate_frame = Some(now);
++        let window = window_ref.window.clone();
++        drop(state);
++        window.refresh(RequestFrameOptions {
++            require_presentation: false,
++            force_render: false,
++        });
++    }
++}
+--- a/src/taffy.rs
++++ b/src/taffy.rs
+@@ -309,7 +309,7 @@
+             unit: &Option<u16>,
+         ) -> Vec<taffy::GridTemplateComponent<T>> {
+             // grid-template-columns: repeat(<number>, minmax(0, 1fr));
+-            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
++            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
+                 .unwrap_or_default()
+         }
+ 
