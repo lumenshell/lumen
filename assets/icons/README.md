@@ -8,4 +8,4 @@
   `scripts/bundle-macos.sh` (`CFBundleIconFile` = `Lumen`).
 - `macos/lumen-1024.png`: on Apple's icon grid (824 px body, transparent margin).
 - `source/`: the SVG masters, macOS and Linux, full and small. Sizes 32 px and
-  below use the small version (thicker strokes, no grain or glow).
+  below use the small version (a bolder prompt, no shadow or fine crease line).
