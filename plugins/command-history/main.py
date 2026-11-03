@@ -4,7 +4,9 @@ session, with its exit status, how long it took and where it ran.
 - Search Command History (Ctrl+Shift+H, ⌘⇧H on macOS): pick one and it's
   typed into the pane, without pressing Enter.
 - Rerun Last Failed Command (Ctrl+Shift+R, ⌘⇧R): the last command that failed
-  in this pane (or anywhere, if none did here), run again in its folder.
+  in this pane (or anywhere, if none did here), shown with its folder to
+  confirm, then run again there. (It asks because a program's output can
+  fake a "command", for instance a file shown with `cat`.)
 - Clear Command History: forget everything.
 
 Commands starting with a space aren't kept, as in bash and zsh. The history
@@ -13,11 +15,10 @@ file is readable only by you. Needs shell integration.
 
 import json
 import os
-import shlex
 import sys
 import time
 
-from lumen_plugin import Plugin
+from lumen_plugin import Plugin, quote
 
 app = Plugin()
 MAC = sys.platform == "darwin"
@@ -183,9 +184,16 @@ async def rerun(pane):
     if not await ready(pane):
         return
     command = entry["command"]
-    if entry.get("cwd") and entry["cwd"] != cwds.get(pane.id) and os.path.isdir(entry["cwd"]):
-        command = f"cd -- {shlex.quote(entry['cwd'])} && {command}"
-    await pane.run(command)
+    where = entry.get("cwd")
+    if where and where != cwds.get(pane.id) and os.path.isdir(where):
+        command = f"cd -- {quote(where)} && {command}"
+    message = f"`{entry['command']}` failed (exit {entry['exit']}) in {tilde(where)} {ago(time.time() - entry['at'])}."
+    if not await app.confirm("Run it again?", message=message, yes="Run it again", no="Cancel"):
+        return
+    try:
+        await pane.run(command)
+    except ValueError:  # control characters: never type those
+        await app.notify("Command History", "That command can't be typed safely.")
 
 
 @app.command("Clear Command History")

@@ -30,9 +30,11 @@ import glob
 import inspect
 import json
 import os
-import shlex
+import re
+import stat
 import sys
 import traceback
+import unicodedata
 
 __all__ = ["Plugin", "Pane", "Event", "LumenError", "quote", "EVENTS"]
 __version__ = "1.0.0"
@@ -49,9 +51,38 @@ EVENTS = (
     "command-finished",
 )
 
-#: Quote one word for the shell. Use it on anything you put in a command you
-#: didn't write yourself (a file or branch name, text from the screen).
-quote = shlex.quote
+_PLAIN = re.compile(r"[A-Za-z0-9_./:,@+-]+")
+
+
+def _control(text: str) -> bool:
+    """Has control characters (newlines, escapes...), which would press keys
+    in the shell rather than be typed as text."""
+    return any(unicodedata.category(c) == "Cc" for c in text)
+
+
+def quote(word) -> str:
+    """Quote one word for the shell: safe in bash, zsh and fish alike. Use it
+    on anything you put in a command you didn't write yourself (a file or
+    branch name, text from the screen). Raises ValueError for a word with
+    control characters, which no quoting makes safe to type.
+
+    (shlex.quote isn't enough: fish reads \\' inside single quotes as an
+    escaped quote. Here backslashes and quotes never appear inside single
+    quotes, so every shell reads the word the same way.)"""
+    word = str(word)
+    if _control(word):
+        raise ValueError(f"can't safely type {word!r}: it contains control characters")
+    if _PLAIN.fullmatch(word):
+        return word
+    out = []
+    for c in word:
+        if c == "'":
+            out.append("'\"'\"'")
+        elif c == "\\":
+            out.append("'\"\\\\\"'")
+        else:
+            out.append(c)
+    return "'" + "".join(out) + "'"
 
 # Replies can be large (read-screen); the default 64 KiB line limit isn't enough.
 _LINE_LIMIT = 64 * 1024 * 1024
@@ -73,10 +104,15 @@ def _dir(path):
 
 
 def _command_text(command) -> str:
-    """A command as typed: a string as-is, a list with each word quoted."""
+    """A command as typed: a string as-is, a list with each word quoted.
+    Either way, control characters are refused: they'd press keys (a
+    carriage return runs what's typed so far) instead of being text."""
     if isinstance(command, (list, tuple)):
-        return shlex.join([str(c) for c in command])
-    return str(command)
+        return " ".join(quote(c) for c in command)
+    command = str(command)
+    if _control(command):
+        raise ValueError(f"can't safely type {command!r}: it contains control characters")
+    return command
 
 
 class Pane:
@@ -116,7 +152,8 @@ class Pane:
     async def run(self, command) -> None:
         """Type a command and press Enter. A list is quoted word by word, so
         `pane.run(["git", "switch", "--", branch])` is safe for any branch
-        name; a string is typed as-is. Needs `input`."""
+        name; a string is typed as-is. Text with control characters raises
+        ValueError (use send_text to send keys on purpose). Needs `input`."""
         await self.send_text(_command_text(command) + "\r")
 
     async def read_screen(self, lines: int | None = None) -> str:
@@ -454,8 +491,20 @@ class Plugin:
         task.add_done_callback(self._tasks.discard)
 
 
+def _private_to_me(path: str, kind) -> bool:
+    """Is `path` (not followed if it's a link) of this kind, ours, and closed
+    to everyone else? Another user could otherwise set up the folder (in a
+    shared /tmp) and listen in Lumen's place."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return kind(st.st_mode) and st.st_uid == os.getuid() and st.st_mode & 0o077 == 0
+
+
 async def _open_socket():
-    """$LUMEN_SOCKET, else the most recently started Lumen that answers."""
+    """$LUMEN_SOCKET, else the most recently started Lumen that answers, in
+    the folder Lumen uses, which must be private to you as Lumen makes it."""
     path = os.environ.get("LUMEN_SOCKET")
     if path:
         return await asyncio.open_unix_connection(path, limit=_LINE_LIMIT)
@@ -463,8 +512,11 @@ async def _open_socket():
     if runtime:
         folder = os.path.join(runtime, "lumen")
     else:
-        folder = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"lumen-{os.getuid()}")
-    sockets = sorted(glob.glob(os.path.join(folder, "lumen-*.sock")), key=os.path.getmtime, reverse=True)
+        folder = os.path.join(os.environ.get("TMPDIR") or "/tmp", f"lumen-{os.getuid()}")
+    if not _private_to_me(folder, stat.S_ISDIR):
+        raise ConnectionError(f"{folder} isn't a private folder owned by you; not connecting")
+    sockets = [p for p in glob.glob(os.path.join(folder, "lumen-*.sock")) if _private_to_me(p, stat.S_ISSOCK)]
+    sockets.sort(key=os.path.getmtime, reverse=True)
     for path in sockets:
         try:
             return await asyncio.open_unix_connection(path, limit=_LINE_LIMIT)

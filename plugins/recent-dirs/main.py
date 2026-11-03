@@ -133,8 +133,13 @@ async def jump(pane):
         return
     if pane is None or pane.id in busy:
         await app.new_tab(cwd=chosen)
-    else:
+        return
+    try:
         await pane.run(["cd", "--", chosen])
+    except ValueError:
+        # A folder name with control characters can't be typed safely;
+        # open it without the shell instead.
+        await app.new_tab(cwd=chosen)
 
 
 app.run()

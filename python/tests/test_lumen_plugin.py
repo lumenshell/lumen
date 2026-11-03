@@ -7,6 +7,7 @@ side of the conversation over its stdin and stdout (or a Unix socket).
 import json
 import os
 import select
+import shutil
 import socket
 import subprocess
 import sys
@@ -195,7 +196,65 @@ class PluginModeTests(unittest.TestCase):
         self.assertIn("command-finished", printed)
 
 
+class QuotingTests(unittest.TestCase):
+    """Words typed into a shell must come out exactly as given, in any shell."""
+
+    NASTY = ["plain", "a b", "it's", "x\\", "x\\'; touch pwned; echo '", "$HOME", "`id`", "$(id)",
+             "%self", "=ls", "~", "", "naïve 日本", "-rf", "a;b|c&d", "*?[x]", "{a,b}", "!!"]
+
+    def setUp(self):
+        sys.path.insert(0, PACKAGE_DIR)
+        from lumen_plugin import quote
+        self.quote = quote
+
+    def test_posix_shells_read_the_word_back_exactly(self):
+        for shell in ("bash", "dash", "zsh"):
+            if not shutil.which(shell):
+                continue
+            for word in self.NASTY:
+                out = subprocess.run([shell, "-c", "printf %s " + self.quote(word)], capture_output=True, text=True)
+                self.assertEqual(out.stdout, word, f"{shell}: {word!r} quoted as {self.quote(word)}")
+
+    def test_no_escapes_inside_single_quotes_so_fish_agrees(self):
+        # fish (unlike POSIX shells) treats \\ and \\' as escapes inside single
+        # quotes; the quoting never puts either there.
+        for word in self.NASTY:
+            q = self.quote(word)
+            inside, quoted = False, []
+            i = 0
+            while i < len(q):
+                c = q[i]
+                if c == "'" and not inside:
+                    inside, i = True, i + 1
+                    continue
+                if c == "'" and inside:
+                    inside = False
+                elif inside:
+                    self.assertNotEqual(c, "\\", f"backslash inside quotes in {q}")
+                i += 1
+            if shutil.which("fish"):
+                out = subprocess.run(["fish", "-c", "printf %s " + q], capture_output=True, text=True)
+                self.assertEqual(out.stdout, word)
+
+    def test_control_characters_are_refused(self):
+        for bad in ["a\nb", "a\rb", "\x1b[A", "x\x7f", "\x9b", "\t"]:
+            with self.assertRaises(ValueError):
+                self.quote(bad)
+
+
 class SocketModeTests(unittest.TestCase):
+    def test_a_folder_that_isnt_private_is_refused(self):
+        folder = tempfile.mkdtemp()
+        os.chmod(folder, 0o755)
+        env = dict(os.environ, XDG_RUNTIME_DIR=folder, PYTHONPATH=PACKAGE_DIR)
+        os.mkdir(os.path.join(folder, "lumen"), 0o755)
+        env.pop("LUMEN_SOCKET", None)
+        env.pop("LUMEN_PLUGIN", None)
+        script = "from lumen_plugin import Plugin\napp = Plugin()\nasync def main(): pass\napp.run(main)"
+        out = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("isn't a private folder owned by you", out.stderr)
+
     def test_scripts_talk_over_the_socket(self):
         folder = tempfile.mkdtemp()
         path = os.path.join(folder, "lumen-1.sock")

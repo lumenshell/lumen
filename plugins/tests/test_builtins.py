@@ -164,7 +164,8 @@ class ProjectLayoutTests(unittest.TestCase):
         title, panes = p["load"](path)
         self.assertEqual((title, [x["of"] for x in panes], panes[1]["cwd"]), ("api", [0, 1, 1], f"{d}/sub"))
         for bad in ['[[pane]]\n[[pane]]\nsplit="up"\n', '[[pane]]\n[[pane]]\nof=2\n', 'title="x"\n',
-                    '[[pane]]\nrun=3\n']:
+                    '[[pane]]\nrun=3\n', '[[pane]]\nrun="echo hi\\rrm -rf ~"\n',
+                    '[[pane]]\nrun=["echo", "\\u001b[2Khidden"]\n']:
             with open(path, "w") as f:
                 f.write(bad)
             with self.assertRaises(ValueError, msg=bad):

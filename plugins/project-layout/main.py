@@ -24,15 +24,15 @@ shown every command and asked before anything runs.
 """
 
 import os
-import shlex
 import sys
+import unicodedata
 
 try:
     import tomllib
 except ImportError:  # Python < 3.11
     tomllib = None
 
-from lumen_plugin import Plugin
+from lumen_plugin import Plugin, quote
 
 app = Plugin()
 KEYS = "cmd-shift-l" if sys.platform == "darwin" else "ctrl-shift-l"
@@ -70,6 +70,11 @@ def load(path):
         run = p.get("run")
         if run is not None and not isinstance(run, (str, list)):
             raise ValueError(f"pane {i}: run should be a string or a list")
+        words = [run] if isinstance(run, str) else [str(w) for w in run or []]
+        # A carriage return or escape code would press keys, and could hide
+        # part of a command from the confirmation; refuse the layout.
+        if any(unicodedata.category(c) == "Cc" for w in words for c in w):
+            raise ValueError(f"pane {i}: run contains control characters")
         out.append({"split": p.get("split", "right"), "of": of, "cwd": cwd, "run": run})
     return data.get("title"), out
 
@@ -90,7 +95,8 @@ async def open_layout(pane):
         await app.notify("Open Project Layout", f"{path}: {e}")
         return
 
-    commands = [p["run"] if isinstance(p["run"], str) else shlex.join(p["run"]) for p in panes if p["run"]]
+    # Shown exactly as they'll be typed.
+    commands = [p["run"] if isinstance(p["run"], str) else " ".join(quote(w) for w in p["run"]) for p in panes if p["run"]]
     if commands:
         where = path.replace(os.path.expanduser("~"), "~", 1)
         listing = f"{where} runs: " + "  ·  ".join(f"`{c}`" for c in commands)

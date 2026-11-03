@@ -127,8 +127,14 @@ await pane.run(f"git switch {branch}")            # NOT safe: `x;rm -rf ~` is a 
 ```
 
 The same goes for `run=` in `new_tab` and `split`. If you build a string
-yourself, use `lumen_plugin.quote` (`shlex.quote`) on anything you didn't
-write.
+yourself, use `lumen_plugin.quote` on anything you didn't write. It's safe in
+bash, zsh and fish; Python's `shlex.quote` isn't safe in fish, where `\'`
+inside single quotes is an escaped quote.
+
+Text with control characters (newlines, carriage returns, escape codes) is
+refused with `ValueError` by `run`, `quote` and `run=`: a carriage return
+would press Enter partway through, and no quoting makes them safe to type. If
+you mean to send keys, use `pane.send_text`.
 
 **Your plugin's files.** `app.dir` is the plugin's folder, for settings and
 files that ship with it (the `snippets` example reads `snippets.toml` from
@@ -166,7 +172,8 @@ A plugin is a program running as you.
 The same package drives Lumen from a script in a pane, a cron job or another
 program, through Lumen's [socket](../README.md#protocol). Scripts don't get
 commands (those are for plugins), and they aren't held to permissions (the
-socket is yours alone). Pass `run` an async function for a one-off script; it
+socket is yours alone; the package only connects through a folder that's
+private to you, as Lumen makes it). Pass `run` an async function for a one-off script; it
 ends when the function returns:
 
 ```python
@@ -244,6 +251,12 @@ else uses the most recently started Lumen.
 `event.name` is the event, `event.pane` the `Pane` it's about (or None), and
 the other fields read like a dict: `event["exit"]`, `event.get("command")`,
 `event.data` for all of them.
+
+### quote
+
+`quote(word)` quotes one word for the shell (bash, zsh or fish) and raises
+`ValueError` if it has control characters. Lists given to `run` and `run=`
+are quoted with it.
 
 ### Errors
 

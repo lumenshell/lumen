@@ -379,7 +379,7 @@ approval the first time).
 | Plugin | What it does | Permissions |
 |---|---|---|
 | **Recent Directories** (`recent-dirs`) | Remembers the folders your shells visit. **Go to Recent Directory** (Ctrl+Shift+J, ⌘⇧J) lists them, most used and most recent first, and `cd`s the pane to the one you pick (or opens it in a new tab if the pane is busy). | `input`, `panes` |
-| **Command History** (`command-history`) | Keeps every command from every pane and session with its exit status, duration and folder. **Search Command History** (Ctrl+Shift+H, ⌘⇧H) types the one you pick without pressing Enter; **Rerun Last Failed Command** (Ctrl+Shift+R, ⌘⇧R) runs the last failure again, in its folder; **Clear Command History** forgets it all. Commands starting with a space aren't kept. | `screen`, `input` |
+| **Command History** (`command-history`) | Keeps every command from every pane and session with its exit status, duration and folder. **Search Command History** (Ctrl+Shift+H, ⌘⇧H) types the one you pick without pressing Enter; **Rerun Last Failed Command** (Ctrl+Shift+R, ⌘⇧R) shows the last failure and its folder and, once you confirm, runs it again there; **Clear Command History** forgets it all. Commands starting with a space aren't kept. | `screen`, `input` |
 | **Switch Git Branch** (`git-branch`) | Alt+B lists the branches of the pane's repository, newest first, and switches to the one you pick. | `input` |
 | **SSH to Host** (`ssh-hosts`) | Ctrl+Shift+S (⌘⇧S) lists the hosts in `~/.ssh/config` (and files it `Include`s) and opens the one you pick in a new tab named after it. | `panes` |
 | **Project Layouts** (`project-layout`) | Ctrl+Shift+L (⌘⇧L) finds `.lumen-layout.toml` in the pane's folder or above, shows you every command it would run, and opens its tab and splits ([format](plugins/project-layout/main.py)). | `panes` |
@@ -473,8 +473,11 @@ would any other program.
 
 When a plugin types into a shell with `send-text`, anything it didn't write
 itself (a branch or file name, text from the screen) must be quoted for the
-shell first, e.g. with Python's `shlex.quote`. Git branch names, for one, can
-contain `$`, `;` and backticks.
+shell first, and must not contain control characters (a carriage return
+presses Enter). Git branch names, for one, can contain `$`, `;` and backticks.
+Quote in a way fish also understands: POSIX single quotes aren't enough there,
+since fish reads `\'` inside them as an escaped quote (`lumen_plugin.quote`
+handles this; so does avoiding the shell, e.g. `new-tab`'s `cwd`).
 
 Problems in a `plugin.toml` are listed in the banner at the bottom of the
 window; fix them and choose **Reload Plugins** (which also picks up new and
