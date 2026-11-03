@@ -256,7 +256,7 @@ impl Workspace {
             root.leaves(&mut leaves);
             let active = leaves[tab.active.min(leaves.len() - 1)].clone();
             let zoomed = tab.zoomed && leaves.len() > 1;
-            self.tabs.push(Tab { root, active, zoomed, title: None });
+            self.tabs.push(Tab { root, active, zoomed, title: tab.title.filter(|t| !t.trim().is_empty()) });
         }
         self.active_tab = saved.active_tab.min(self.tabs.len() - 1);
         self.focus_active(window, cx);
@@ -313,6 +313,7 @@ impl Workspace {
                 root: tab.root.to_state(cx),
                 active: tab.leaves().iter().position(|l| *l == tab.active).unwrap_or(0),
                 zoomed: tab.zoomed,
+                title: tab.title.clone(),
             })
             .collect();
         Session::new(self.window_state, self.active_tab, tabs)
@@ -494,6 +495,36 @@ impl Workspace {
         self.activate_tab((self.active_tab + n - 1) % n, window, cx);
     }
 
+    fn rename_tab_action(&mut self, _: &RenameTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.rename_tab(self.active_tab, window, cx);
+    }
+
+    /// Ask for a new name for tab `index`; an empty name goes back to the
+    /// program's title.
+    fn rename_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(index) else { return };
+        let current = tab.title.clone().unwrap_or_default();
+        let automatic = tab.active.read(cx).title.clone();
+        let target = tab.active.downgrade();
+        let ws = cx.entity().downgrade();
+        let submit: crate::palette::SubmitFn = Rc::new(move |name, _window, cx| {
+            let _ = ws.update(cx, |ws, cx| {
+                // Find the tab again by its pane: tabs may have moved meanwhile.
+                let Some(tab) = ws.tabs.iter_mut().find(|t| t.leaves().iter().any(|l| l.downgrade() == target)) else {
+                    return;
+                };
+                tab.title = if name.is_empty() { None } else { Some(name) };
+                cx.notify();
+            });
+        });
+        let palette = cx.new(|cx| {
+            CommandPalette::prompt(format!("Name tab {}", index + 1).into(), current, submit, cx).with_message(format!(
+                "Enter to rename. Leave it empty to go back to the automatic title (\"{automatic}\")."
+            ))
+        });
+        self.open_palette(palette, window, cx);
+    }
+
     fn activate_tab_action(&mut self, a: &ActivateTab, window: &mut Window, cx: &mut Context<Self>) {
         self.activate_tab(a.0, window, cx);
     }
@@ -575,8 +606,9 @@ impl Workspace {
         drop(palette);
         self.focus_active(window, cx);
         cx.notify();
+        // Run after this update: the hook may update the workspace itself.
         if let Some(cancel) = cancel {
-            cancel(window, cx);
+            window.defer(cx, move |window, cx| cancel(window, cx));
         }
     }
 
@@ -936,9 +968,12 @@ impl Workspace {
                 .when(!active, |d| d.hover(|d| d.bg(alpha(theme.raised, 0.55))))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
+                    cx.listener(move |this, ev: &gpui::MouseDownEvent, window, cx| {
                         cx.stop_propagation();
                         this.activate_tab(i, window, cx);
+                        if ev.click_count == 2 {
+                            this.rename_tab(i, window, cx);
+                        }
                     }),
                 )
                 .child(
@@ -1454,6 +1489,7 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
         action::<NextPane>("Focus Next Pane"),
         action::<NextTab>("Next Tab"),
         action::<PrevTab>("Previous Tab"),
+        action::<RenameTab>("Rename Tab"),
         action::<NextTheme>("Cycle Theme"),
         action::<IncreaseFont>("Increase Font Size"),
         action::<DecreaseFont>("Decrease Font Size"),
@@ -1632,6 +1668,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::split_down))
             .on_action(cx.listener(Self::close_pane))
             .on_action(cx.listener(Self::next_tab))
+            .on_action(cx.listener(Self::rename_tab_action))
             .on_action(cx.listener(Self::prev_tab))
             .on_action(cx.listener(Self::activate_tab_action))
             .on_action(cx.listener(Self::next_pane))

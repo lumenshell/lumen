@@ -46,6 +46,9 @@ pub struct TabState {
     /// Index of the focused pane in depth-first order.
     pub active: usize,
     pub zoomed: bool,
+    /// A name you gave the tab, shown instead of the program's title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq)]

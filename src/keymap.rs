@@ -27,6 +27,7 @@ pub const ACTIONS: &[&str] = &[
     "tab-7",
     "tab-8",
     "tab-9",
+    "rename-tab",
     "next-pane",
     "focus-left",
     "focus-right",
@@ -67,6 +68,7 @@ pub fn action(name: &str) -> Option<Box<dyn Action>> {
         "split-down" => Box::new(SplitDown),
         "next-tab" => Box::new(NextTab),
         "prev-tab" => Box::new(PrevTab),
+        "rename-tab" => Box::new(RenameTab),
         "next-pane" => Box::new(NextPane),
         "focus-left" => Box::new(FocusLeft),
         "focus-right" => Box::new(FocusRight),
@@ -104,6 +106,7 @@ fn defaults() -> Vec<(String, &'static str)> {
         ("ctrl-shift-tab".into(), "prev-tab"),
         (m("cmd-shift-]", "ctrl-pagedown"), "next-tab"),
         (m("cmd-shift-[", "ctrl-pageup"), "prev-tab"),
+        (m("cmd-,", "ctrl-,"), "rename-tab"),
         (m("cmd-]", "ctrl-shift-n"), "next-pane"),
         (m("cmd-alt-left", "alt-shift-left"), "focus-left"),
         (m("cmd-alt-right", "alt-shift-right"), "focus-right"),
@@ -128,7 +131,12 @@ fn defaults() -> Vec<(String, &'static str)> {
     ];
     const TABS: [&str; 9] = ["tab-1", "tab-2", "tab-3", "tab-4", "tab-5", "tab-6", "tab-7", "tab-8", "tab-9"];
     for (i, name) in TABS.iter().enumerate() {
-        b.push((if mac { format!("cmd-{}", i + 1) } else { format!("alt-{}", i + 1) }, name));
+        if mac {
+            b.push((format!("cmd-{}", i + 1), name));
+        } else {
+            b.push((format!("ctrl-{}", i + 1), name));
+            b.push((format!("alt-{}", i + 1), name));
+        }
     }
     b
 }
@@ -263,6 +271,16 @@ mod tests {
             assert!(ACTIONS.contains(&name), "{name}");
         }
         assert_eq!(bindings(&[], &[]).len(), defaults().len());
+    }
+
+    #[test]
+    fn number_keys_go_to_tabs() {
+        let keys: Vec<String> = defaults().into_iter().filter(|(_, a)| *a == "tab-3").map(|(k, _)| k).collect();
+        if cfg!(target_os = "macos") {
+            assert_eq!(keys, ["cmd-3"]);
+        } else {
+            assert_eq!(keys, ["ctrl-3", "alt-3"]);
+        }
     }
 
     #[test]

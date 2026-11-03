@@ -11,15 +11,16 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
 - Box-drawing, block and powerline characters drawn as shapes, so lines and
   prompt segments join without gaps
 - Tabs in a custom title bar, with pane counts and inherited working directory.
-  A tab shows the title its program sets; **+** opens a tab and a tab's **×**
+  A tab shows the title its program sets until you rename it (double-click the
+  tab, or Ctrl+, / ⌘,); **+** opens a tab and a tab's **×**
   closes it with all its panes. Drag the title bar to move the window and
   double-click it to maximize. Closing the last pane quits Lumen
 - Split panes on a padded canvas: rounded frames, an accent focus halo, and
   dimmed unfocused panes; Focus Mode zooms the active pane
 - Drag the gap between panes to resize a split; double-click it to even the split out
 - Your layout comes back next launch: tabs, splits and their sizes, each pane's
-  working directory, which pane had focus, and the window's size, position and
-  maximized state
+  working directory, which pane had focus, tab names you gave, and the window's
+  size, position and maximized state
 - Command palette (fuzzy search over every action and theme)
 - Find in scrollback, with optional case-sensitive and regex matching
 - Keyboard select mode: move through the screen and scrollback with vi keys,
@@ -63,7 +64,7 @@ sudo apt install libxkbcommon-x11-dev libxcb1-dev libfreetype-dev libfontconfig-
 cargo run --release
 
 # or install it, which also puts `lumen msg` on your PATH (~/.cargo/bin)
-cargo install --path .
+cargo install --locked --path .
 ```
 
 `lumen` opens a window; `lumen msg ...` controls a running one (see
@@ -84,7 +85,8 @@ On macOS you only need Xcode command-line tools.
 | Focus Mode (zoom)  | Ctrl+Shift+Enter     | ⌘⇧Enter          |
 | Next tab           | Ctrl+Tab / Ctrl+PgDn | ⌘⇧]              |
 | Previous tab       | Ctrl+Shift+Tab / Ctrl+PgUp | ⌘⇧[        |
-| Go to tab N        | Alt+1…9              | ⌘1…9             |
+| Go to tab N        | Ctrl+1…9 or Alt+1…9  | ⌘1…9             |
+| Rename tab         | Ctrl+, or double-click the tab | ⌘, or double-click |
 | Cycle theme        | Ctrl+Shift+Y         | ⌘⇧Y              |
 | Font size          | Ctrl+= / Ctrl+- / 0  | ⌘= / ⌘- / ⌘0     |
 | Copy / paste       | Ctrl+Shift+C / V, Shift+Insert | ⌘C / ⌘V |
@@ -107,8 +109,14 @@ The command palette searches every action above plus **Open Config File**, one
 **Theme:** entry per theme, the commands plugins add, **Plugin Log:** (or
 **Allow Plugin:**) for each plugin and **Reload Plugins**, showing each
 action's current shortcut. Type
-to filter, ↑/↓ or Tab to choose, Enter to run, Esc or a click outside to close.
+to filter (Ctrl+U clears it), ↑/↓ or Tab to choose, Enter to run, Esc or a click
+outside to close.
 Focus left/right/up/down and Go to tab N are keyboard-only.
+
+Rename Tab (Ctrl+, / ⌘, or double-click a tab) asks for a name in the palette,
+filled in with the name you gave it, if any. Enter renames it, Ctrl+U clears the
+line, Esc keeps the old name, and an empty name goes back to the title the program sets. Names are saved with
+the session; `lumen msg set-title` sets the same name from a script.
 
 Every shortcut can be changed in the config (see [Key bindings](#key-bindings))
 except Shift+PgUp/PgDn, Ctrl+click and the keys inside the find bar, palette
@@ -204,7 +212,7 @@ Plugin commands can be bound too, as `plugin:<plugin>:<command id>`, e.g.
 asked for.
 
 Actions: `new-tab`, `close-pane`, `split-right`, `split-down`, `next-tab`,
-`prev-tab`, `tab-1` … `tab-9`, `next-pane`, `focus-left`, `focus-right`,
+`prev-tab`, `tab-1` … `tab-9`, `rename-tab`, `next-pane`, `focus-left`, `focus-right`,
 `focus-up`, `focus-down`, `toggle-zoom`, `command-palette`, `next-theme`,
 `increase-font`, `decrease-font`, `reset-font`, `copy`, `paste`, `find`,
 `prev-command`, `next-command`, `copy-last-output`, `select-mode`, `quit`.
@@ -251,9 +259,9 @@ Set `shell-integration = false` in the config to turn it off.
 
 ## Scripting (`lumen msg`)
 
-Lumen can be driven from scripts, shell aliases and (later) plugins. `lumen msg`
+Lumen can be driven from scripts, shell aliases and plugins. `lumen msg`
 is the same `lumen` binary, so it needs to be on your PATH (`cargo install
---path .` does that). Inside a Lumen pane, `lumen msg` talks to that Lumen and acts on that pane by default;
+--locked --path .` does that). Inside a Lumen pane, `lumen msg` talks to that Lumen and acts on that pane by default;
 from anywhere else it finds the most recently started Lumen.
 
 ```sh
@@ -422,8 +430,8 @@ changed plugins). Two examples to copy from are in
 
 The pane layout is saved to `~/.local/state/lumen/session.json`
 (`$XDG_STATE_HOME`, or `~/Library/Application Support/lumen` on macOS) when you
-quit or close the window, and every few seconds while Lumen runs. Shells start
-fresh in their saved directories; scrollback isn't kept. If you `exit` every
+quit or close the window, and every few seconds while Lumen runs. Tab names you
+gave are kept. Shells start fresh in their saved directories; scrollback isn't kept. If you `exit` every
 shell, the session is cleared and the next launch starts with one tab. Delete
 the file to reset.
 

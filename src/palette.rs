@@ -14,6 +14,9 @@ use crate::theme::alpha;
 /// Something the palette runs: a choice, or what happens on cancel.
 pub type PaletteFn = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// What a text prompt does with what you typed.
+pub type SubmitFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
 #[derive(Clone)]
 pub struct PaletteItem {
     pub label: SharedString,
@@ -39,6 +42,9 @@ pub struct CommandPalette {
     pub done: bool,
     /// Text shown under the input, for prompts that need explaining.
     message: Option<SharedString>,
+    /// Set for a text prompt: Enter hands it the typed text instead of
+    /// choosing an item.
+    submit: Option<SubmitFn>,
 }
 
 impl EventEmitter<PaletteEvent> for CommandPalette {}
@@ -92,7 +98,16 @@ impl CommandPalette {
             on_cancel,
             done: false,
             message: None,
+            submit: None,
         }
+    }
+
+    /// A prompt for a line of text, starting with `initial`.
+    pub fn prompt(placeholder: SharedString, initial: String, submit: SubmitFn, cx: &mut Context<Self>) -> Self {
+        let mut p = Self::picker(Vec::new(), placeholder, None, cx);
+        p.query = initial;
+        p.submit = Some(submit);
+        p
     }
 
     /// Explain what's being asked, under the input.
@@ -120,11 +135,20 @@ impl CommandPalette {
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(submit) = self.submit.clone() {
+            let text = self.query.trim().to_string();
+            self.done = true;
+            cx.emit(PaletteEvent::Dismiss);
+            window.defer(cx, move |window, cx| submit(text, window, cx));
+            return;
+        }
         let Some(&idx) = self.filtered.get(self.selected) else { return };
         let run = self.items[idx].run.clone();
         self.done = true;
         cx.emit(PaletteEvent::Dismiss);
-        run(window, cx);
+        // Run once this palette is closed and no longer being updated: a choice
+        // may open another palette, which reads this one to close it.
+        window.defer(cx, move |window, cx| run(window, cx));
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -143,6 +167,11 @@ impl CommandPalette {
             }
             "backspace" => {
                 self.query.pop();
+                self.refilter();
+            }
+            // Clear the line, as in a shell.
+            "u" if ks.modifiers.control && !ks.modifiers.shift => {
+                self.query.clear();
                 self.refilter();
             }
             _ => {
@@ -262,7 +291,7 @@ impl Render for CommandPalette {
                 )
             })
             .child(div().pt(px(6.0)).flex().flex_col().children(rows))
-            .when(self.filtered.is_empty(), |d| {
+            .when(self.filtered.is_empty() && self.submit.is_none(), |d| {
                 d.child(div().px(px(18.0)).py(px(10.0)).text_color(theme.muted).child("No matches"))
             })
     }

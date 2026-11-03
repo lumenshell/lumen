@@ -61,6 +61,7 @@ actions!(
         NextPrompt,
         CopyLastOutput,
         ToggleSelectMode,
+        RenameTab,
         Quit,
     ]
 );
