@@ -6,6 +6,8 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
 [GPUI](https://gpui.rs) (Zed's GPU UI framework) and
 [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
 
+<img src="assets/screenshot.png" alt="Lumen with three panes: lumen info beside a pixel flame, a git log, and a passing test run">
+
 ## Features
 
 - GPU-rendered terminal grid: truecolor, bold/italic, underline/undercurl,
@@ -594,6 +596,7 @@ socket API is on.
 | `shell-integration/`   | The bash, zsh and fish scripts                            |
 | `assets/icons/`        | The app icon: Linux `hicolor` sizes, macOS `Lumen.icns`, SVG sources |
 | `assets/linux/`        | The `.desktop` menu entry                                 |
+| `assets/screenshot.png` | The screenshot at the top of this README                |
 | `install.sh`           | Build and install this checkout for testing (menu entry, icon, `Lumen.app`) |
 | `scripts/`             | `install-linux.sh` (menu entry and icons), `bundle-macos.sh` (`Lumen.app`) |
 | `examples/`            | Scripts using `lumen msg` and the socket API, and example plugins |
