@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<defs><radialGradient id="bg" cx="512" cy="430" r="580" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1f1d2e"/><stop offset="1" stop-color="#191724"/></radialGradient>
+<radialGradient id="glow" cx="406" cy="528" r="260" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#f6c177" stop-opacity="0.26"/><stop offset="0.45" stop-color="#eb6f92" stop-opacity="0.09"/><stop offset="1" stop-color="#eb6f92" stop-opacity="0"/></radialGradient>
+<linearGradient id="flame" x1="406" y1="656" x2="406" y2="400" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fffbf2"/><stop offset="0.22" stop-color="#fde9c4"/><stop offset="0.52" stop-color="#f6c177"/><stop offset="1" stop-color="#eb6f92"/></linearGradient>
+<clipPath id="clip"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+<filter id="grain" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" stitchTiles="stitch" seed="7"/><feColorMatrix type="saturate" values="0"/></filter></defs>
+<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+<g clip-path="url(#clip)"><circle cx="406" cy="528" r="260" fill="url(#glow)"/><rect x="100" y="100" width="824" height="824" filter="url(#grain)" style="opacity:0.14;mix-blend-mode:soft-light"/></g>
+<rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="3"/>
+<polyline points="356,428 456,528 356,628" fill="none" stroke="url(#flame)" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+<line x1="536" y1="628" x2="676" y2="628" stroke="url(#flame)" stroke-width="56" stroke-linecap="round"/>
+</svg>

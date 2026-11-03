@@ -1,3 +1,5 @@
+<img src="assets/icons/linux/hicolor/128x128/apps/lumen.png" alt="Lumen's icon: a glowing prompt" width="96" height="96">
+
 # Lumen
 
 A fast, good-looking terminal for Linux and macOS, built with Rust,
@@ -73,10 +75,28 @@ cargo run --release
 cargo install --locked --path .
 ```
 
+To try the latest changes for real, `./install.sh` does it all: it builds this
+checkout, installs it, adds the app menu entry and icon on Linux (or
+`~/Applications/Lumen.app` on macOS), and says which commit you're on.
+`./install.sh --restart` also closes the running Lumen and starts the new one
+(closing the shells open in it).
+
 `lumen` opens a window; `lumen msg ...` controls a running one (see
 [Scripting](#scripting-lumen-msg)); `lumen --help` lists both.
 
-On macOS you only need Xcode command-line tools.
+**Linux app menu and icon.** After `cargo install`, run
+`scripts/install-linux.sh` to add Lumen to your app menu with its icon, for
+your user only. The taskbar and Alt+Tab switcher then show the icon too (they
+match Lumen's windows to the menu entry); restart Lumen if it was open.
+`scripts/install-linux.sh --uninstall` takes it out again. Packagers: the
+entry is `assets/linux/lumen.desktop` and the icons are a `hicolor` theme
+tree in `assets/icons/linux/`.
+
+**macOS.** You only need Xcode command-line tools. `scripts/bundle-macos.sh`
+builds `target/release/Lumen.app` with Lumen's icon for the Dock and app
+switcher; drag it into Applications. Its binary is
+`Lumen.app/Contents/MacOS/lumen`, which you can link onto your PATH for
+`lumen msg`.
 
 ## Shortcuts
 
@@ -532,6 +552,7 @@ come back.
 | Settings       | `~/.config/lumen/config.toml` (`$XDG_CONFIG_HOME`) | same                                             |
 | Session        | `~/.local/state/lumen/session.json` (`$XDG_STATE_HOME`) | `~/Library/Application Support/lumen/session.json` |
 | Shell scripts  | `~/.local/share/lumen/shell-integration/` (`$XDG_DATA_HOME`) | `~/Library/Application Support/lumen/shell-integration/` |
+| Menu entry and icons (`scripts/install-linux.sh`) | `~/.local/share/applications/lumen.desktop`, `~/.local/share/icons/hicolor/*/apps/lumen.*` | in `Lumen.app` |
 | Socket         | `$XDG_RUNTIME_DIR/lumen/lumen-<pid>.sock`       | `$TMPDIR/lumen-<uid>/lumen-<pid>.sock`              |
 | Plugins        | `~/.config/lumen/plugins/<name>/` (`$XDG_CONFIG_HOME`) | same                                         |
 | Plugin logs and approvals | `~/.local/state/lumen/plugins/<name>.log`, `plugin-approvals.json` | `~/Library/Application Support/lumen/…` |
@@ -570,6 +591,10 @@ socket API is on.
 | `src/shell_integration.rs` | Loading the shell scripts; turning their OSC 133/7 marks into hidden links |
 | `src/marks.rs`         | Finding prompts, exit statuses and command output in the grid |
 | `shell-integration/`   | The bash, zsh and fish scripts                            |
+| `assets/icons/`        | The app icon: Linux `hicolor` sizes, macOS `Lumen.icns`, SVG sources |
+| `assets/linux/`        | The `.desktop` menu entry                                 |
+| `install.sh`           | Build and install this checkout for testing (menu entry, icon, `Lumen.app`) |
+| `scripts/`             | `install-linux.sh` (menu entry and icons), `bundle-macos.sh` (`Lumen.app`) |
 | `examples/`            | Scripts using `lumen msg` and the socket API, and example plugins |
 | `python/`              | `lumen_plugin`, the Python package for plugins (built into Lumen), and its tests |
 | `plugins/`             | The built-in plugins (built into Lumen; turned on in the Plugin Gallery), and tests |
