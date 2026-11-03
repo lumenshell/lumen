@@ -27,6 +27,9 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
 - Scriptable: `lumen msg` opens tabs and splits, types into panes, reads their
   screens and streams events such as "command finished with exit 1" (see
   [Scripting](#scripting-lumen-msg))
+- Plugins in any language: Lumen runs them, restarts them if they crash, and
+  lets them add palette commands, key bindings and pickers, limited to the
+  permissions you approve (see [Plugins](#plugins))
 - Shell integration for bash, zsh and fish: jump between commands, copy the last
   command's output, a red mark beside commands that failed, and new panes that
   open in the shell's directory (see [Shell integration](#shell-integration))
@@ -100,8 +103,10 @@ Esc closes it.
 
 The command jumps and Copy last output need [shell integration](#shell-integration).
 
-The command palette searches every action above plus **Open Config File** and
-one **Theme:** entry per theme, showing each action's current shortcut. Type
+The command palette searches every action above plus **Open Config File**, one
+**Theme:** entry per theme, the commands plugins add, **Plugin Log:** (or
+**Allow Plugin:**) for each plugin and **Reload Plugins**, showing each
+action's current shortcut. Type
 to filter, ↑/↓ or Tab to choose, Enter to run, Esc or a click outside to close.
 Focus left/right/up/down and Go to tab N are keyboard-only.
 
@@ -193,6 +198,10 @@ keep working, so to move one, bind the new key and set the old one to
 `cmd-k` (macOS), `f5`, `shift-insert` or `ctrl-pageup`. Multi-key sequences
 such as `ctrl-a n` aren't supported yet. Typos are listed in the banner, with a
 suggestion when an action name is close.
+
+Plugin commands can be bound too, as `plugin:<plugin>:<command id>`, e.g.
+`alt-g = "plugin:git-branch:switch"`; that also overrides a key the plugin
+asked for.
 
 Actions: `new-tab`, `close-pane`, `split-right`, `split-down`, `next-tab`,
 `prev-tab`, `tab-1` … `tab-9`, `next-pane`, `focus-left`, `focus-right`,
@@ -323,6 +332,8 @@ echo '{"jsonrpc":"2.0","id":1,"method":"split","params":{"direction":"down","run
 ```
 
 Methods: `hello` (protocol version, Lumen version, actions and events),
+`show-picker` (`items`: a list of `{id, label, detail}`, `placeholder`; answers
+`{"id": ...}` with the choice, or `null` if closed),
 `list`, `new-tab` (`cwd`, `run`), `split` (`pane`, `direction`, `cwd`, `run`,
 `focus`), `focus`, `close`, `send-text` (`pane`, `text`), `read-screen`
 (`pane`, `lines`), `set-title` (`pane`, `title`), `notify` (`title`, `body`),
@@ -337,6 +348,75 @@ up only when a change could break existing clients.
 The socket and its directory are readable only by you. Anything running as
 you can use it to type into panes and read their screens, so turn it off with
 `socket-api = false` if that's a concern.
+
+## Plugins
+
+A plugin is a program in its own folder under `~/.config/lumen/plugins/`
+(`$XDG_CONFIG_HOME/lumen/plugins`), written in any language. Lumen starts every
+plugin when it opens, restarts one that exits (waiting 1, 2, 5, 10, 30 and then
+60 seconds after quick crashes), and stops them all when it quits. Each runs
+as its own process, so a slow or crashing plugin can't freeze Lumen.
+
+```
+~/.config/lumen/plugins/git-branch/
+├── plugin.toml
+└── main.py
+```
+
+```toml
+# plugin.toml
+description = "Switch git branches from the palette"
+version = "1.0.0"
+command = "python3 -u main.py"   # run in the plugin's folder; or a list: ["node", "my plugin.js"]
+permissions = ["input"]           # any of "panes", "input", "screen"; leave out if none
+```
+
+A plugin talks to Lumen over its **stdin and stdout**, using the same
+JSON-RPC 2.0 messages as the [socket API](#protocol), one per line. Anything it
+writes to **stderr** goes to its log, which **Plugin Log: <name>** in the
+palette opens in a new tab. It should exit when stdin closes. It gets
+`LUMEN_PLUGIN` (its name) and `LUMEN_PLUGIN_DIR` in its environment.
+
+Besides the socket API's methods, plugins can:
+
+- **Add palette commands**: `register-command` with `id`, `title` and
+  optionally `keys` (e.g. `"alt-b"`). When you choose one, Lumen sends the
+  plugin `{"jsonrpc":"2.0","method":"command","params":{"id":"switch","pane":4294967298}}`,
+  where `pane` is the focused pane. Commands go away when the plugin stops.
+- **Ask you to choose**: `show-picker` opens the palette with the plugin's
+  items and answers with the one you pick (or `null` for Esc).
+
+**Permissions.** Without any, a plugin can list panes, subscribe to events,
+show notifications, add commands and show pickers. Anything more is declared
+in `plugin.toml` and needs your approval, asked once in the palette the first
+time Lumen sees the plugin (and again if its permissions or command change):
+
+| Permission | Allows |
+|---|---|
+| `panes` | `new-tab`, `split`, `focus`, `close`, `set-title` |
+| `input` | `send-text`, `run-action`: typing into panes, which can run any command |
+| `screen` | `read-screen`, and the command text in `command-finished` events |
+
+Your answers are kept in `~/.local/state/lumen/plugin-approvals.json`, outside
+the plugins folder so a plugin can't approve itself. Choose **Allow Plugin:
+<name>** in the palette to change your mind about one you refused; delete its
+entry from that file to be asked again. A plugin missing a permission gets a
+JSON-RPC error saying which one to add.
+
+Permissions limit what a plugin can do *through Lumen*; they aren't a sandbox.
+A plugin is a program running as you, so only install ones you trust, as you
+would any other program.
+
+When a plugin types into a shell with `send-text`, anything it didn't write
+itself (a branch or file name, text from the screen) must be quoted for the
+shell first, e.g. with Python's `shlex.quote`. Git branch names, for one, can
+contain `$`, `;` and backticks.
+
+Problems in a `plugin.toml` are listed in the banner at the bottom of the
+window; fix them and choose **Reload Plugins** (which also picks up new and
+changed plugins). Two examples to copy from are in
+[`examples/plugins/`](examples/plugins/): `hello` (bash, no permissions) and
+`git-branch` (Python: a branch picker on Alt+B).
 
 ## Session
 
@@ -361,6 +441,8 @@ come back.
 | Session        | `~/.local/state/lumen/session.json` (`$XDG_STATE_HOME`) | `~/Library/Application Support/lumen/session.json` |
 | Shell scripts  | `~/.local/share/lumen/shell-integration/` (`$XDG_DATA_HOME`) | `~/Library/Application Support/lumen/shell-integration/` |
 | Socket         | `$XDG_RUNTIME_DIR/lumen/lumen-<pid>.sock`       | `$TMPDIR/lumen-<uid>/lumen-<pid>.sock`              |
+| Plugins        | `~/.config/lumen/plugins/<name>/` (`$XDG_CONFIG_HOME`) | same                                         |
+| Plugin logs and approvals | `~/.local/state/lumen/plugins/<name>.log`, `plugin-approvals.json` | `~/Library/Application Support/lumen/…` |
 
 Shells started by Lumen get `TERM=xterm-256color`, `COLORTERM=truecolor` and
 `TERM_PROGRAM=lumen`, so scripts can tell they're running in Lumen, plus
@@ -375,6 +457,7 @@ socket API is on.
 | `src/keymap.rs`        | Default shortcuts and the `[keys]` table                  |
 | `src/api.rs`           | Socket API server: JSON-RPC requests and the event stream |
 | `src/cli.rs`           | The `lumen msg` command                                   |
+| `src/plugins.rs`       | Plugin manifests, approvals, running and restarting them  |
 | `src/workspace.rs`     | Title bar, tabs, pane tree, focus halo, palette overlay   |
 | `src/terminal_view.rs` | Grid rendering, cursor, selection, mouse and key input    |
 | `src/pty.rs`           | Shell process + `alacritty_terminal` state and event loop |
@@ -392,7 +475,7 @@ socket API is on.
 | `src/shell_integration.rs` | Loading the shell scripts; turning their OSC 133/7 marks into hidden links |
 | `src/marks.rs`         | Finding prompts, exit statuses and command output in the grid |
 | `shell-integration/`   | The bash, zsh and fish scripts                            |
-| `examples/`            | Scripts using `lumen msg` and the socket API              |
+| `examples/`            | Scripts using `lumen msg` and the socket API, and example plugins |
 
 ## Tests
 
@@ -403,7 +486,7 @@ cargo test
 ## Next up
 
 - Keyboard link hints
-- Plugins built on the socket API: a plugin host with manifests and permissions
+- A Python package for writing plugins, and in-process plugin hooks
 - Notifications when a long command finishes; a quick-terminal dropdown
 - IME input, cursor blink, background blur/opacity setting
 - Ghostty theme file import

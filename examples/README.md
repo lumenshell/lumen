@@ -14,6 +14,9 @@ and most use [`jq`](https://jqlang.org) to read JSON.
 | [`grab.sh`](grab.sh) `PANE [LINES]` | Prints another pane's screen (or its last LINES lines with history) and copies it to the clipboard | `read-screen` |
 | [`pane_log.py`](pane_log.py) | A live log of panes opening and closing and every command that finishes, with status, time and directory. Talks to the socket directly in Python, no `lumen msg` needed | The raw JSON-RPC protocol, `subscribe`, a second connection for requests |
 
+For plugins (which Lumen starts and supervises, and which can add palette
+commands and pickers), see [`plugins/`](plugins/).
+
 `run-below.sh`, `git-titles.sh` and `pane_log.py` rely on
 [shell integration](../README.md#shell-integration) for command and directory
 events.

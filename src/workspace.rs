@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::api::{self, ApiError, ApiResult};
 use crate::keymap;
-use crate::palette::{CommandPalette, PaletteEvent, PaletteItem};
+use crate::palette::{CommandPalette, PaletteEvent, PaletteFn, PaletteItem};
 use crate::session::{self, Axis, NodeState, Session, TabState, WindowState};
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
 use crate::terminal_view::{TerminalEvent, TerminalView};
@@ -188,6 +188,10 @@ pub struct Workspace {
     tabs: Vec<Tab>,
     active_tab: usize,
     palette: Option<Entity<CommandPalette>>,
+    /// Plugins waiting for you to allow their permissions, asked one at a time.
+    pending_approvals: Vec<crate::plugins::Manifest>,
+    /// Problems reading plugin manifests, shown in the banner.
+    plugin_problems: Vec<String>,
     /// Axis of the divider being dragged, for the window-wide resize cursor.
     dragging: Option<Axis>,
     /// Last layout written to disk, so autosave only writes on change.
@@ -204,6 +208,8 @@ impl Workspace {
             tabs: Vec::new(),
             active_tab: 0,
             palette: None,
+            pending_approvals: Vec::new(),
+            plugin_problems: Vec::new(),
             dragging: None,
             last_saved: None,
             saved_on_quit: false,
@@ -539,24 +545,203 @@ impl Workspace {
     }
 
     fn toggle_palette(&mut self, _: &TogglePalette, window: &mut Window, cx: &mut Context<Self>) {
-        if self.palette.take().is_some() {
-            self.focus_active(window, cx);
-            cx.notify();
+        if self.palette.is_some() {
+            self.dismiss_palette(window, cx);
             return;
         }
         let items = palette_items(window, cx);
         let palette = cx.new(|cx| CommandPalette::new(items, cx));
-        let sub = cx.subscribe_in(&palette, window, |this, _, event, window, cx| match event {
-            PaletteEvent::Dismiss => {
-                this.palette = None;
-                this.focus_active(window, cx);
-                cx.notify();
-            }
+        self.open_palette(palette, window, cx);
+    }
+
+    /// Show `palette`, replacing (and cancelling) any open one.
+    fn open_palette(&mut self, palette: Entity<CommandPalette>, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_palette(window, cx);
+        let sub = cx.subscribe_in(&palette, window, |this, palette, event, window, cx| match event {
+            // Only if it's still the open one: a choice may have opened another.
+            PaletteEvent::Dismiss if this.palette.as_ref() == Some(palette) => this.dismiss_palette(window, cx),
+            PaletteEvent::Dismiss => {}
         });
         self._subs.push(sub);
         window.focus(&palette.focus_handle(cx));
         self.palette = Some(palette);
         cx.notify();
+    }
+
+    /// Close the palette; one closed without a choice runs its cancel hook.
+    fn dismiss_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(palette) = self.palette.take() else { return };
+        let cancel = palette.read(cx).on_cancel();
+        drop(palette);
+        self.focus_active(window, cx);
+        cx.notify();
+        if let Some(cancel) = cancel {
+            cancel(window, cx);
+        }
+    }
+
+    // ---- plugins --------------------------------------------------------
+
+    /// Load the plugins folder: start what's allowed, and ask about the rest.
+    pub fn start_plugins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::plugins::{self, Decision};
+        let (manifests, problems) = plugins::discover();
+        self.plugin_problems = problems;
+        self.pending_approvals.clear();
+        for m in manifests {
+            match plugins::decision(&m) {
+                Decision::Allowed => plugins::start(m),
+                Decision::Refused => plugins::add_stopped(m, "not allowed"),
+                Decision::Ask => {
+                    plugins::add_stopped(m.clone(), "waiting for your approval");
+                    self.pending_approvals.push(m);
+                }
+            }
+        }
+        self.ask_next_approval(window, cx);
+        cx.notify();
+    }
+
+    fn reload_plugins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::plugins::stop_all();
+        crate::plugins::clear();
+        keymap::apply(cx);
+        self.start_plugins(window, cx);
+    }
+
+    /// Ask about the next plugin waiting for approval, in the palette.
+    fn ask_next_approval(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_approvals.is_empty() {
+            return;
+        }
+        let m = self.pending_approvals.remove(0);
+        let wants: Vec<String> = m.permissions.iter().map(|p| p.describe().to_string()).collect();
+        let what = if m.description.is_empty() { String::new() } else { format!(" ({})", m.description) };
+        let question: SharedString = format!("Allow the plugin \"{}\"?", m.name).into();
+        let home = std::env::var("HOME").unwrap_or_default();
+        let message = format!(
+            "\"{}\"{what} wants to {}. It runs `{}` in {}.",
+            m.name,
+            join_and(&wants),
+            m.command.join(" "),
+            m.dir.display().to_string().replacen(&home, "~", 1),
+        );
+        let ws = cx.entity().downgrade();
+        let choice = |allow: bool, m: crate::plugins::Manifest, ws: gpui::WeakEntity<Workspace>| -> PaletteFn {
+            Rc::new(move |window, cx| {
+                crate::plugins::record_decision(&m, allow);
+                if allow {
+                    crate::plugins::start(m.clone());
+                } else {
+                    crate::plugins::add_stopped(m.clone(), "not allowed");
+                }
+                let _ = ws.update(cx, |ws, cx| ws.ask_next_approval(window, cx));
+            })
+        };
+        let items = vec![
+            PaletteItem {
+                label: format!("Allow and start \"{}\"", m.name).into(),
+                detail: m.command.join(" ").into(),
+                run: choice(true, m.clone(), ws.clone()),
+            },
+            PaletteItem {
+                label: "Don't allow".into(),
+                detail: "it won't run; you can allow it later from the palette".into(),
+                run: choice(false, m.clone(), ws.clone()),
+            },
+        ];
+        // Esc: decide later (it's asked again next launch).
+        let later: PaletteFn = Rc::new(move |window, cx| {
+            let _ = ws.update(cx, |ws, cx| ws.ask_next_approval(window, cx));
+        });
+        let palette = cx.new(|cx| CommandPalette::picker(items, question, Some(later), cx).with_message(message));
+        self.open_palette(palette, window, cx);
+    }
+
+    /// `show-picker`: let a plugin or script offer a choice in the palette.
+    /// The answer is `{"id": ...}`, or `{"id": null}` if you close it.
+    pub fn show_picker(
+        &mut self,
+        params: &Value,
+        reply: futures::channel::oneshot::Sender<ApiResult>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        /// Answers once: with the choice, or with null when dropped unanswered.
+        struct Answer(std::cell::RefCell<Option<futures::channel::oneshot::Sender<ApiResult>>>);
+        impl Answer {
+            fn send(&self, id: Value) {
+                if let Some(tx) = self.0.borrow_mut().take() {
+                    let _ = tx.send(Ok(json!({ "id": id })));
+                }
+            }
+        }
+        impl Drop for Answer {
+            fn drop(&mut self) {
+                self.send(Value::Null);
+            }
+        }
+
+        let Some(list) = params.get("items").and_then(Value::as_array).filter(|l| !l.is_empty()) else {
+            let _ = reply.send(Err(ApiError::invalid_params("`items` should be a non-empty list of {id, label}")));
+            return;
+        };
+        let mut parsed = Vec::new();
+        for item in list.iter().take(5000) {
+            let id = item.get("id").cloned().filter(|v| v.is_string() || v.is_number());
+            let label = item.get("label").and_then(Value::as_str);
+            match (id, label) {
+                (Some(id), Some(label)) => parsed.push((
+                    id,
+                    label.to_string(),
+                    item.get("detail").and_then(Value::as_str).unwrap_or_default().to_string(),
+                )),
+                _ => {
+                    let _ = reply.send(Err(ApiError::invalid_params("each item needs an `id` and a `label`")));
+                    return;
+                }
+            }
+        }
+        let placeholder: SharedString =
+            params.get("placeholder").and_then(Value::as_str).unwrap_or("Choose…").to_string().into();
+        let answer = Rc::new(Answer(std::cell::RefCell::new(Some(reply))));
+        let items = parsed
+            .into_iter()
+            .map(|(id, label, detail)| {
+                let answer = answer.clone();
+                PaletteItem {
+                    label: label.into(),
+                    detail: detail.into(),
+                    run: Rc::new(move |_, _| answer.send(id.clone())),
+                }
+            })
+            .collect();
+        let cancel_answer = answer.clone();
+        drop(answer);
+        let cancel: PaletteFn = Rc::new(move |_, _| cancel_answer.send(Value::Null));
+        let palette = cx.new(|cx| CommandPalette::picker(items, placeholder, Some(cancel), cx));
+        self.open_palette(palette, window, cx);
+    }
+
+    fn run_plugin_command(&mut self, a: &RunPluginCommand, _: &mut Window, cx: &mut Context<Self>) {
+        let pane = self.active_terminal().map(|t| t.entity_id().as_u64());
+        if let Err(e) = crate::plugins::run_command(&a.plugin, &a.id, pane) {
+            eprintln!("lumen: {e}");
+        }
+        cx.notify();
+    }
+
+    /// Show a plugin's log in a new tab, following it.
+    fn open_plugin_log(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = crate::plugins::log_path(name) else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::OpenOptions::new().create(true).append(true).open(&path);
+        let quoted = format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
+        let term = self.open_tab(path.parent().map(std::path::Path::to_path_buf), window, cx);
+        term.read(cx).send_text(&format!("tail -n 200 -F {quoted}\r"));
+        self.tabs[self.active_tab].title = Some(format!("{name} log"));
     }
 
     // ---- split resizing -------------------------------------------------
@@ -870,7 +1055,7 @@ impl Workspace {
 }
 
 /// Problems in the config file, shown at the bottom of the window until fixed.
-fn problem_banner(problems: &[String], theme: &Theme) -> impl IntoElement {
+fn problem_banner(problems: &[String], plugin_problems: &[String], theme: &Theme) -> impl IntoElement {
     let path = settings::config_path()
         .map(|p| p.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~"))
         .unwrap_or_else(|| "config.toml".into());
@@ -902,12 +1087,18 @@ fn problem_banner(problems: &[String], theme: &Theme) -> impl IntoElement {
                     blur_radius: px(18.0),
                     spread_radius: px(0.0),
                 }])
-                .child(
-                    div()
-                        .text_color(theme.ansi[1])
-                        .child(format!("Problem in {path} (other settings still apply)")),
-                )
-                .children(problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone()))),
+                .when(!problems.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_color(theme.ansi[1])
+                            .child(format!("Problem in {path} (other settings still apply)")),
+                    )
+                    .children(problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone())))
+                })
+                .when(!plugin_problems.is_empty(), |d| {
+                    d.child(div().text_color(theme.ansi[1]).child("Plugins that couldn't be loaded (fix, then Reload Plugins)"))
+                        .children(plugin_problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone())))
+                }),
         )
 }
 
@@ -1108,7 +1299,14 @@ impl Workspace {
 
     /// Run one socket API request. Methods and their parameters are described
     /// in the README.
-    pub fn handle_api(&mut self, method: &str, params: &Value, window: &mut Window, cx: &mut Context<Self>) -> ApiResult {
+    pub fn handle_api(
+        &mut self,
+        caller: &api::Caller,
+        method: &str,
+        params: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ApiResult {
         let string = |name: &str| -> Result<Option<String>, ApiError> {
             match params.get(name) {
                 None | Some(Value::Null) => Ok(None),
@@ -1228,6 +1426,16 @@ impl Workspace {
                 window.dispatch_action(action, cx);
                 Ok(json!({}))
             }
+            "register-command" => {
+                let result = crate::plugins::register_command(caller, params)?;
+                keymap::apply(cx);
+                Ok(result)
+            }
+            // A plugin stopped; its commands and keys are gone.
+            "_plugin-commands-changed" => {
+                keymap::apply(cx);
+                Ok(json!({}))
+            }
             other => Err(ApiError(-32601, format!("unknown method \"{other}\""))),
         }
     }
@@ -1276,6 +1484,57 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
             label: "Open Config File".into(),
             detail: path.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~").into(),
             run: Rc::new(move |_, cx| cx.open_url(&format!("file://{}", path.display()))),
+        });
+    }
+    // Plugin commands, then a way to see each plugin's log, or to allow one.
+    for info in crate::plugins::list() {
+        for c in &info.commands {
+            let act = RunPluginCommand { plugin: info.manifest.name.clone(), id: c.id.clone() };
+            let shortcut = shortcut_label(&act, window);
+            items.push(PaletteItem {
+                label: c.title.clone().into(),
+                detail: if shortcut.is_empty() { info.manifest.name.clone().into() } else { shortcut },
+                run: Rc::new(move |window, cx| window.dispatch_action(Box::new(act.clone()), cx)),
+            });
+        }
+    }
+    let ws = window.root::<Workspace>().flatten().map(|w| w.downgrade());
+    for info in crate::plugins::list() {
+        let name = info.manifest.name.clone();
+        let ws = ws.clone();
+        if info.status == "not allowed" || info.status == "waiting for your approval" {
+            let m = info.manifest.clone();
+            items.push(PaletteItem {
+                label: format!("Allow Plugin: {name}").into(),
+                detail: info.status.clone().into(),
+                run: Rc::new(move |window, cx| {
+                    if let Some(ws) = &ws {
+                        let _ = ws.update(cx, |ws, cx| {
+                            ws.pending_approvals.push(m.clone());
+                            ws.ask_next_approval(window, cx);
+                        });
+                    }
+                }),
+            });
+        } else {
+            items.push(PaletteItem {
+                label: format!("Plugin Log: {name}").into(),
+                detail: info.status.clone().into(),
+                run: Rc::new(move |window, cx| {
+                    if let Some(ws) = &ws {
+                        let _ = ws.update(cx, |ws, cx| ws.open_plugin_log(&name, window, cx));
+                    }
+                }),
+            });
+        }
+    }
+    if let Some(ws) = ws.clone() {
+        items.push(PaletteItem {
+            label: "Reload Plugins".into(),
+            detail: "restart every plugin and re-read plugin.toml files".into(),
+            run: Rc::new(move |window, cx| {
+                let _ = ws.update(cx, |ws, cx| ws.reload_plugins(window, cx));
+            }),
         });
     }
     let settings = Settings::get(cx);
@@ -1327,6 +1586,7 @@ impl Render for Workspace {
         });
 
         let problems = Settings::get(cx).problems.clone();
+        let plugin_problems = self.plugin_problems.clone();
         let content = self.tabs.get(self.active_tab).map(|tab| {
             let multi = tab.leaves().len() > 1;
             if tab.zoomed {
@@ -1377,6 +1637,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::next_pane))
             .on_action(cx.listener(Self::toggle_zoom))
             .on_action(cx.listener(Self::toggle_palette))
+            .on_action(cx.listener(Self::run_plugin_command))
             .on_action(cx.listener(|this, _: &FocusLeft, w, cx| this.focus_pane(-1.0, 0.0, w, cx)))
             .on_action(cx.listener(|this, _: &FocusRight, w, cx| this.focus_pane(1.0, 0.0, w, cx)))
             .on_action(cx.listener(|this, _: &FocusUp, w, cx| this.focus_pane(0.0, -1.0, w, cx)))
@@ -1416,16 +1677,14 @@ impl Render for Workspace {
                         .when_some(tiling, |d, t| d.when(!t.is_tiled(), |d| d.rounded(px(WINDOW_RADIUS))))
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.palette = None;
-                                this.focus_active(window, cx);
-                                cx.notify();
-                            }),
+                            cx.listener(|this, _, window, cx| this.dismiss_palette(window, cx)),
                         )
                         .child(palette),
                 )
             })
-            .when(!problems.is_empty(), |d| d.child(problem_banner(&problems, &theme)));
+            .when(!problems.is_empty() || !plugin_problems.is_empty(), |d| {
+                d.child(problem_banner(&problems, &plugin_problems, &theme))
+            });
 
         // Outer frame: transparent margin used for the drop shadow and resize handles.
         div()
@@ -1484,5 +1743,14 @@ impl Render for Workspace {
                 })
             })
             .child(app)
+    }
+}
+
+/// "a", "a and b", "a, b and c".
+fn join_and(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }

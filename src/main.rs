@@ -11,6 +11,7 @@ mod links;
 mod marks;
 mod mouse;
 mod palette;
+mod plugins;
 mod pty;
 mod search;
 mod session;
@@ -67,6 +68,14 @@ actions!(
 #[derive(Clone, PartialEq, Debug, Action)]
 #[action(namespace = lumen, no_json)]
 pub struct ActivateTab(pub usize);
+
+/// A command a plugin added to the palette.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = lumen, no_json)]
+pub struct RunPluginCommand {
+    pub plugin: String,
+    pub id: String,
+}
 
 fn load_fonts(cx: &App) {
     let fonts: Vec<Cow<'static, [u8]>> = vec![
@@ -144,9 +153,16 @@ fn main() {
                 |window, cx| cx.new(|cx| Workspace::new(saved, window, cx)),
             )
             .expect("failed to open window");
+        api::start(window, cx);
         if let Some(listener) = listener {
-            api::serve(listener, window, cx);
+            api::serve(listener, cx);
         }
+        window.update(cx, |ws, window, cx| ws.start_plugins(window, cx)).ok();
+        cx.on_app_quit(|_| {
+            plugins::stop_all();
+            async {}
+        })
+        .detach();
         window
             .update(cx, |_, window, _| window.activate_window())
             .ok();

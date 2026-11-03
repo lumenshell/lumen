@@ -11,11 +11,14 @@ use gpui::{
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
 use crate::theme::alpha;
 
+/// Something the palette runs: a choice, or what happens on cancel.
+pub type PaletteFn = Rc<dyn Fn(&mut Window, &mut App)>;
+
 #[derive(Clone)]
 pub struct PaletteItem {
     pub label: SharedString,
     pub detail: SharedString,
-    pub run: Rc<dyn Fn(&mut Window, &mut App)>,
+    pub run: PaletteFn,
 }
 
 pub enum PaletteEvent {
@@ -28,6 +31,14 @@ pub struct CommandPalette {
     selected: usize,
     items: Vec<PaletteItem>,
     filtered: Vec<usize>,
+    /// Shown while nothing is typed.
+    placeholder: SharedString,
+    /// Run when the palette closes without a choice (pickers answer "none").
+    on_cancel: Option<PaletteFn>,
+    /// An item was chosen.
+    pub done: bool,
+    /// Text shown under the input, for prompts that need explaining.
+    message: Option<SharedString>,
 }
 
 impl EventEmitter<PaletteEvent> for CommandPalette {}
@@ -60,8 +71,39 @@ fn fuzzy_score(query: &str, text: &str) -> Option<usize> {
 
 impl CommandPalette {
     pub fn new(items: Vec<PaletteItem>, cx: &mut Context<Self>) -> Self {
+        Self::picker(items, "Type a command…".into(), None, cx)
+    }
+
+    /// A palette offering `items`, for plugins and prompts.
+    pub fn picker(
+        items: Vec<PaletteItem>,
+        placeholder: SharedString,
+        on_cancel: Option<PaletteFn>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filtered = (0..items.len()).collect();
-        Self { focus: cx.focus_handle(), query: String::new(), selected: 0, items, filtered }
+        Self {
+            focus: cx.focus_handle(),
+            query: String::new(),
+            selected: 0,
+            items,
+            filtered,
+            placeholder,
+            on_cancel,
+            done: false,
+            message: None,
+        }
+    }
+
+    /// Explain what's being asked, under the input.
+    pub fn with_message(mut self, message: impl Into<SharedString>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    /// What to run if the palette closes without a choice.
+    pub fn on_cancel(&self) -> Option<PaletteFn> {
+        if self.done { None } else { self.on_cancel.clone() }
     }
 
     fn refilter(&mut self) {
@@ -80,6 +122,7 @@ impl CommandPalette {
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(&idx) = self.filtered.get(self.selected) else { return };
         let run = self.items[idx].run.clone();
+        self.done = true;
         cx.emit(PaletteEvent::Dismiss);
         run(window, cx);
     }
@@ -127,7 +170,7 @@ impl Render for CommandPalette {
         let query: SharedString = if has_query {
             self.query.clone().into()
         } else {
-            "Type a command…".into()
+            self.placeholder.clone()
         };
 
         let rows = self.filtered.iter().take(12).enumerate().map(|(row, &idx)| {
@@ -149,9 +192,14 @@ impl Render for CommandPalette {
                     this.selected = row;
                     this.confirm(window, cx);
                 }))
-                .child(item.label.clone())
+                .gap(px(12.0))
+                .child(div().flex_none().child(item.label.clone()))
                 .child(
                     div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
                         .text_size(px(11.5))
                         .font_family(MONO_FONT)
                         .text_color(theme.muted)
@@ -201,6 +249,18 @@ impl Render for CommandPalette {
                             .when(has_query, |d| d.child(caret(theme.accent))),
                     ),
             )
+            .when_some(self.message.clone(), |d, message| {
+                d.child(
+                    div()
+                        .px(px(18.0))
+                        .pt(px(12.0))
+                        .pb(px(4.0))
+                        .text_size(px(13.0))
+                        .line_height(px(19.0))
+                        .text_color(theme.subtext)
+                        .child(message),
+                )
+            })
             .child(div().pt(px(6.0)).flex().flex_col().children(rows))
             .when(self.filtered.is_empty(), |d| {
                 d.child(div().px(px(18.0)).py(px(10.0)).text_color(theme.muted).child("No matches"))

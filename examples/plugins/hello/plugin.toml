@@ -1,0 +1,5 @@
+# The smallest useful plugin: one palette command, in bash.
+description = "Says hello from a palette command"
+version = "1.0.0"
+command = "bash hello.sh"
+# No permissions: it only adds a command and shows a notification.

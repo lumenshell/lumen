@@ -68,6 +68,8 @@ pub fn key<T: EventListener>(term: &mut Term<T>, state: &mut ViState, ks: &Keyst
         ks.key_char.as_deref().and_then(|s| {
             let mut chars = s.chars();
             let c = chars.next()?;
+            // Shift+v is `V` even if the platform reported the plain letter.
+            let c = if m.shift { c.to_ascii_uppercase() } else { c };
             chars.next().is_none().then_some(c)
         })
     };
@@ -273,6 +275,20 @@ mod tests {
             last = key(term, state, &ks);
         }
         last
+    }
+
+    #[test]
+    fn shift_with_a_plain_letter_is_the_capital() {
+        let mut t = term("one\ntwo\n");
+        let mut s = ViState::default();
+        toggle(&mut t, &mut s);
+        let ks = Keystroke {
+            modifiers: gpui::Modifiers { shift: true, ..Default::default() },
+            key: "v".into(),
+            key_char: Some("v".into()),
+        };
+        key(&mut t, &mut s, &ks);
+        assert_eq!(t.selection.as_ref().map(|s| s.ty), Some(SelectionType::Lines));
     }
 
     fn char_key(c: char) -> Keystroke {

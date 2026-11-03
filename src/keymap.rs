@@ -52,6 +52,10 @@ pub const ACTIONS: &[&str] = &[
 pub const NONE: &str = "none";
 
 pub fn action(name: &str) -> Option<Box<dyn Action>> {
+    if let Some(rest) = name.strip_prefix("plugin:") {
+        let (plugin, id) = rest.split_once(':').filter(|(p, i)| !p.is_empty() && !i.is_empty())?;
+        return Some(Box::new(RunPluginCommand { plugin: plugin.into(), id: id.into() }));
+    }
     if let Some(n) = name.strip_prefix("tab-") {
         let n: usize = n.parse().ok().filter(|n| (1..=9).contains(n))?;
         return Some(Box::new(ActivateTab(n - 1)));
@@ -168,7 +172,15 @@ pub fn normalize_keys(source: &str) -> Result<String, String> {
 
 /// Check an action name from `[keys]`: Ok(None) frees the key.
 pub fn check_action(name: &str) -> Result<Option<String>, String> {
-    let name = name.trim().to_ascii_lowercase();
+    let name = name.trim();
+    // Plugin commands keep their case: plugin:<plugin>:<command id>.
+    if name.starts_with("plugin:") {
+        return match action(name) {
+            Some(_) => Ok(Some(name.to_string())),
+            None => Err(format!("\"{name}\" should look like \"plugin:<plugin>:<command>\"")),
+        };
+    }
+    let name = name.to_ascii_lowercase();
     if name == NONE {
         return Ok(None);
     }
@@ -201,17 +213,19 @@ fn distance(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
-/// The bindings to install: defaults, minus keys the user rebound or freed,
-/// plus the user's own. `user` holds normalized keys and checked actions.
-fn bindings(user: &[(String, Option<String>)]) -> Vec<KeyBinding> {
+/// The bindings to install: defaults, then keys plugins asked for, minus
+/// keys the user rebound or freed, plus the user's own. `user` holds
+/// normalized keys and checked actions; `plugin` (keys, plugin, command).
+fn bindings(user: &[(String, Option<String>)], plugin: &[(String, String, String)]) -> Vec<KeyBinding> {
     let taken = |keys: &str| {
         let keys = normalize_keys(keys).unwrap_or_default();
         user.iter().any(|(k, _)| *k == keys)
     };
     defaults()
         .into_iter()
-        .filter(|(keys, _)| !taken(keys))
         .map(|(keys, name)| (keys, name.to_string()))
+        .chain(plugin.iter().map(|(k, p, id)| (k.clone(), format!("plugin:{p}:{id}"))))
+        .filter(|(keys, _)| !taken(keys))
         .chain(user.iter().filter_map(|(k, a)| Some((k.clone(), a.clone()?))))
         .filter_map(|(keys, name)| {
             KeyBinding::load(&keys, action(&name)?, None, false, None, &DummyKeyboardMapper).ok()
@@ -221,7 +235,7 @@ fn bindings(user: &[(String, Option<String>)]) -> Vec<KeyBinding> {
 
 /// Install the shortcuts for the current settings, replacing any before.
 pub fn apply(cx: &mut App) {
-    let bindings = bindings(&Settings::get(cx).keys);
+    let bindings = bindings(&Settings::get(cx).keys, &crate::plugins::key_bindings());
     cx.clear_key_bindings();
     cx.bind_keys(bindings);
 }
@@ -248,7 +262,7 @@ mod tests {
             assert!(normalize_keys(&keys).is_ok(), "{keys}");
             assert!(ACTIONS.contains(&name), "{name}");
         }
-        assert_eq!(bindings(&[]).len(), defaults().len());
+        assert_eq!(bindings(&[], &[]).len(), defaults().len());
     }
 
     #[test]
@@ -279,7 +293,10 @@ mod tests {
             (normalize_keys("ctrl-alt-t").unwrap(), Some("new-tab".to_string())),
             (normalize_keys(next).unwrap(), Some("find".to_string())),
         ];
-        let b = bindings(&user);
+        let b = bindings(&user, &[("alt-g".into(), "git".into(), "switch".into())]);
+        assert_eq!(keys_of(&b, "plugin:git:switch"), vec!["alt-g".to_string()]);
+        assert_eq!(check_action("plugin:git:Switch").unwrap(), Some("plugin:git:Switch".into()));
+        assert!(check_action("plugin:git").is_err());
         // Ctrl+Tab is freed; next-tab keeps no key, since its other default was rebound.
         assert!(keys_of(&b, "next-tab").is_empty());
         assert!(keys_of(&b, "new-tab").contains(&"ctrl-alt-t".to_string()));
