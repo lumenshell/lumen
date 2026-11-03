@@ -1,0 +1,22 @@
+# Your snippets. Choosing one types it into the pane without pressing Enter,
+# so you can check or finish it first. Edit freely; it's read every time.
+
+[[snippet]]
+name = "Disk usage, biggest first"
+text = "du -sh -- * .[!.]* 2>/dev/null | sort -rh | head -20"
+
+[[snippet]]
+name = "Find files changed today"
+text = "find . -type f -newermt today -not -path '*/.git/*'"
+
+[[snippet]]
+name = "What's listening on a port"
+text = "ss -ltnp | grep :"
+
+[[snippet]]
+name = "Git: undo last commit, keep changes"
+text = "git reset --soft HEAD~1"
+
+[[snippet]]
+name = "Git: prettier log"
+text = "git log --graph --oneline --decorate -20"

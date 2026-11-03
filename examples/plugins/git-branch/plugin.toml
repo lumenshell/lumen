@@ -1,5 +1,0 @@
-description = "Switch git branches from the palette"
-version = "1.0.0"
-command = "python3 -u main.py"
-# To type `git switch <branch>` into your pane.
-permissions = ["input"]

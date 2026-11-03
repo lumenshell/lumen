@@ -1,0 +1,4 @@
+description = "Open a project's tabs and splits from its .lumen-layout.toml (Ctrl+Shift+L, ⌘⇧L on macOS)"
+version = "1.0.0"
+command = "python3 main.py"
+permissions = ["panes"]

@@ -1,0 +1,5 @@
+description = "Pick a branch of the pane's repository and switch to it (Alt+B)"
+version = "1.0.0"
+command = "python3 main.py"
+# To type `git switch <branch>` into your pane.
+permissions = ["input"]

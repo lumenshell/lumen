@@ -50,6 +50,8 @@ pub struct Settings {
     /// Shortcuts from `[keys]`: normalized keys and the action they run
     /// (`None` frees the key), in file order.
     pub keys: Vec<(String, Option<String>)>,
+    /// Built-in plugins to run, by name (the Plugin Gallery edits this).
+    pub plugins: Vec<String>,
     /// Problems found in the config file, shown until it's fixed.
     pub problems: Vec<String>,
 }
@@ -72,6 +74,7 @@ impl Default for Settings {
             socket_api: true,
             notify_after: 10,
             keys: Vec::new(),
+            plugins: Vec::new(),
             problems: Vec::new(),
         }
     }
@@ -221,6 +224,26 @@ impl Settings {
                     }
                     _ => Some(bad("a number of seconds from 0 (off) to 86400")),
                 },
+                "plugins" => match item.as_array() {
+                    Some(list) => {
+                        let mut bad_names = Vec::new();
+                        for v in list {
+                            match v.as_str() {
+                                Some(n) if crate::plugins::builtin(n).is_some() => {
+                                    if !s.plugins.iter().any(|p| p == n) {
+                                        s.plugins.push(n.to_string());
+                                    }
+                                }
+                                other => bad_names.push(format!("\"{}\"", other.unwrap_or("?"))),
+                            }
+                        }
+                        (!bad_names.is_empty()).then(|| {
+                            let names: Vec<_> = crate::plugins::BUILTINS.iter().map(|b| format!("\"{}\"", b.name)).collect();
+                            format!("unknown built-in plugin {}; they are {}", bad_names.join(", "), names.join(", "))
+                        })
+                    }
+                    None => Some(bad("a list of built-in plugin names, like [\"recent-dirs\"]")),
+                },
                 "socket-api" => match item.as_bool() {
                     Some(v) => {
                         s.socket_api = v;
@@ -289,6 +312,8 @@ impl Settings {
             Some(parts) => format!("shell = \"{}\"", parts.join(" ")),
             None => "# shell = \"/usr/bin/fish --login\"".to_string(),
         };
+        let plugins_list =
+            format!("[{}]", self.plugins.iter().map(|p| format!("\"{p}\"")).collect::<Vec<_>>().join(", "));
         format!(
             "# Lumen settings. Changes apply as soon as you save this file.\n\
              # Delete a line to go back to its default.\n\
@@ -326,6 +351,10 @@ impl Settings {
              # can open). Turning it on takes a restart; turning it off applies at once.\n\
              socket-api = {socket_api}\n\
              \n\
+             # Built-in plugins to run; turn them on and off with Plugin Gallery in the\n\
+             # palette. Your own plugins go in the plugins folder next to this file.\n\
+             plugins = {plugins}\n\
+             \n\
              # Keyboard shortcuts. Each line binds a key to an action, replacing what that\n\
              # key did before; \"none\" frees a key so programs in the terminal get it.\n\
              # An action's other keys keep working. Keys look like ctrl-shift-t, alt-1,\n\
@@ -343,6 +372,7 @@ impl Settings {
             integration = self.shell_integration,
             socket_api = self.socket_api,
             notify_after = self.notify_after,
+            plugins = plugins_list,
             actions = wrap_comment(&keymap::ACTIONS.join(", "), 80),
             keys = self.keys_template(),
         )
@@ -378,6 +408,19 @@ impl Settings {
             } else {
                 value(self.font_size as f64)
             };
+            changed = true;
+        }
+        let listed: Vec<String> = doc
+            .get("plugins")
+            .and_then(Item::as_array)
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        if listed != self.plugins {
+            let mut list = toml_edit::Array::new();
+            for p in &self.plugins {
+                list.push(p.as_str());
+            }
+            doc["plugins"] = value(list);
             changed = true;
         }
         if changed {
@@ -481,6 +524,17 @@ fn legacy_to_toml(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_plugins_are_listed_by_name() {
+        let s = Settings::parse("plugins = [\"recent-dirs\", \"command-history\", \"recent-dirs\"]");
+        assert_eq!(s.plugins, ["recent-dirs", "command-history"]);
+        assert!(s.problems.is_empty(), "{:?}", s.problems);
+        let s = Settings::parse("plugins = [\"recent-dir\"]");
+        assert!(s.problems[0].contains("unknown built-in plugin \"recent-dir\""), "{:?}", s.problems);
+        assert!(s.problems[0].contains("\"recent-dirs\""));
+        assert!(!Settings::parse("plugins = \"recent-dirs\"").problems.is_empty());
+    }
 
     #[test]
     fn template_round_trips() {

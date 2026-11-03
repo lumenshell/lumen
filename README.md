@@ -28,9 +28,13 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
 - Scriptable: `lumen msg` opens tabs and splits, types into panes, reads their
   screens and streams events such as "command finished with exit 1" (see
   [Scripting](#scripting-lumen-msg))
+- Built-in plugins to turn on from the Plugin Gallery: jump to recent folders,
+  search every command you've run (and rerun the last failure), switch git
+  branches, SSH to a host, open project layouts, build status in the tab title
 - Plugins in any language: Lumen runs them, restarts them if they crash, and
   lets them add palette commands, key bindings and pickers, limited to the
-  permissions you approve (see [Plugins](#plugins))
+  permissions you approve. Python plugins get `lumen_plugin`, built in, with
+  nothing to install (see [Plugins](#plugins) and the [plugin guide](docs/plugins.md))
 - Shell integration for bash, zsh and fish: jump between commands, copy the last
   command's output, a red mark beside commands that failed, and new panes that
   open in the shell's directory (see [Shell integration](#shell-integration))
@@ -107,10 +111,10 @@ The command jumps and Copy last output need [shell integration](#shell-integrati
 
 The command palette searches every action above plus **Open Config File**, one
 **Theme:** entry per theme, the commands plugins add, **Plugin Log:** (or
-**Allow Plugin:**) for each plugin and **Reload Plugins**, showing each
+**Allow Plugin:**) for each plugin, **Plugin Gallery** and **Reload Plugins**, showing each
 action's current shortcut. Type
-to filter (Ctrl+U clears it), ↑/↓ or Tab to choose, Enter to run, Esc or a click
-outside to close.
+to filter (Ctrl+U clears it), ↑/↓ or Tab to choose (the list scrolls), Enter to
+run, Esc or a click outside to close.
 Focus left/right/up/down and Go to tab N are keyboard-only.
 
 Rename Tab (Ctrl+, / ⌘, or double-click a tab) asks for a name in the palette,
@@ -172,6 +176,7 @@ shell = "/usr/bin/fish --login" # program for new panes; defaults to $SHELL
 shell-integration = true       # mark prompts and commands in bash, zsh and fish
 notify-after = 10              # seconds a command must run to notify when it ends; 0 = off
 socket-api = true              # let scripts control Lumen with `lumen msg`
+plugins = ["recent-dirs"]      # built-in plugins to run (see Plugins); the Plugin Gallery edits this
 ```
 
 Delete a line to go back to its default. Mistakes (a typo'd key, a bad value, a
@@ -262,7 +267,9 @@ Set `shell-integration = false` in the config to turn it off.
 Lumen can be driven from scripts, shell aliases and plugins. `lumen msg`
 is the same `lumen` binary, so it needs to be on your PATH (`cargo install
 --locked --path .` does that). Inside a Lumen pane, `lumen msg` talks to that Lumen and acts on that pane by default;
-from anywhere else it finds the most recently started Lumen.
+from anywhere else it finds the most recently started Lumen. From Python,
+`lumen_plugin` does the same with less ceremony; see
+[Scripts outside Lumen](docs/plugins.md#scripts-outside-lumen).
 
 ```sh
 lumen msg list                          # tabs and panes with their ids
@@ -340,7 +347,8 @@ echo '{"jsonrpc":"2.0","id":1,"method":"split","params":{"direction":"down","run
 ```
 
 Methods: `hello` (protocol version, Lumen version, actions and events),
-`show-picker` (`items`: a list of `{id, label, detail}`, `placeholder`; answers
+`show-picker` (`items`: a list of `{id, label, detail}`, `placeholder`, and
+`message`, text shown under the input; answers
 `{"id": ...}` with the choice, or `null` if closed),
 `list`, `new-tab` (`cwd`, `run`), `split` (`pane`, `direction`, `cwd`, `run`,
 `focus`), `focus`, `close`, `send-text` (`pane`, `text`), `read-screen`
@@ -359,9 +367,54 @@ you can use it to type into panes and read their screens, so turn it off with
 
 ## Plugins
 
+### Built-in plugins
+
+Lumen comes with plugins that are off until you turn them on: choose **Plugin
+Gallery** in the palette, pick one to see what it does and what it's allowed
+to do, and choose **Turn on**. Choosing it there is your approval; it starts at
+once and whenever Lumen opens. They're listed under `plugins` in config.toml,
+so they travel with your dotfiles (a name added there by hand still asks for
+approval the first time).
+
+| Plugin | What it does | Permissions |
+|---|---|---|
+| **Recent Directories** (`recent-dirs`) | Remembers the folders your shells visit. **Go to Recent Directory** (Ctrl+Shift+J, ⌘⇧J) lists them, most used and most recent first, and `cd`s the pane to the one you pick (or opens it in a new tab if the pane is busy). | `input`, `panes` |
+| **Command History** (`command-history`) | Keeps every command from every pane and session with its exit status, duration and folder. **Search Command History** (Ctrl+Shift+H, ⌘⇧H) types the one you pick without pressing Enter; **Rerun Last Failed Command** (Ctrl+Shift+R, ⌘⇧R) runs the last failure again, in its folder; **Clear Command History** forgets it all. Commands starting with a space aren't kept. | `screen`, `input` |
+| **Switch Git Branch** (`git-branch`) | Alt+B lists the branches of the pane's repository, newest first, and switches to the one you pick. | `input` |
+| **SSH to Host** (`ssh-hosts`) | Ctrl+Shift+S (⌘⇧S) lists the hosts in `~/.ssh/config` (and files it `Include`s) and opens the one you pick in a new tab named after it. | `panes` |
+| **Project Layouts** (`project-layout`) | Ctrl+Shift+L (⌘⇧L) finds `.lumen-layout.toml` in the pane's folder or above, shows you every command it would run, and opens its tab and splits ([format](plugins/project-layout/main.py)). | `panes` |
+| **Build Status** (`build-status`) | When a build or test (`cargo test`, `make`, `npm test`, `pytest`, …) finishes, the tab title shows how it went, like `✓ cargo test · 12s`, until the next command. Leaves tabs you've named alone. | `screen`, `panes` |
+
+All of them need [shell integration](#shell-integration) to know folders and
+commands. Their data (history, folders) is kept in
+`~/.local/state/lumen/plugin-data/`, readable only by you. A folder of your own
+in the plugins folder with the same name runs instead of the built-in one, so
+you can copy one from [`plugins/`](plugins/) and change it.
+
+### Writing plugins
+
 A plugin is a program in its own folder under `~/.config/lumen/plugins/`
-(`$XDG_CONFIG_HOME/lumen/plugins`), written in any language. Lumen starts every
-plugin when it opens, restarts one that exits (waiting 1, 2, 5, 10, 30 and then
+(`$XDG_CONFIG_HOME/lumen/plugins`), written in any language. For Python,
+Lumen comes with `lumen_plugin`, which needs no installing; see the
+**[plugin guide](docs/plugins.md)** to write one in a few lines:
+
+```python
+from lumen_plugin import Plugin
+
+app = Plugin()
+
+@app.command("Switch Git Branch", keys="alt-b")
+async def switch(pane):
+    branch = await app.pick(["main", "dev"], placeholder="Switch to…")
+    if branch:
+        await pane.run(["git", "switch", "--", branch])   # a list is quoted for the shell
+
+app.run()
+```
+
+The rest of this section is the protocol underneath, for other languages.
+
+Lumen starts every plugin when it opens, restarts one that exits (waiting 1, 2, 5, 10, 30 and then
 60 seconds after quick crashes), and stops them all when it quits. Each runs
 as its own process, so a slow or crashing plugin can't freeze Lumen.
 
@@ -375,7 +428,7 @@ as its own process, so a slow or crashing plugin can't freeze Lumen.
 # plugin.toml
 description = "Switch git branches from the palette"
 version = "1.0.0"
-command = "python3 -u main.py"   # run in the plugin's folder; or a list: ["node", "my plugin.js"]
+command = "python3 main.py"      # run in the plugin's folder; or a list: ["node", "my plugin.js"]
 permissions = ["input"]           # any of "panes", "input", "screen"; leave out if none
 ```
 
@@ -383,7 +436,10 @@ A plugin talks to Lumen over its **stdin and stdout**, using the same
 JSON-RPC 2.0 messages as the [socket API](#protocol), one per line. Anything it
 writes to **stderr** goes to its log, which **Plugin Log: <name>** in the
 palette opens in a new tab. It should exit when stdin closes. It gets
-`LUMEN_PLUGIN` (its name) and `LUMEN_PLUGIN_DIR` in its environment.
+`LUMEN_PLUGIN` (its name), `LUMEN_PLUGIN_DIR` (its folder), `LUMEN_PLUGIN_DATA`
+(a folder for its own data, kept across updates and readable only by you) in
+its environment, and `PYTHONPATH` starting with the folder holding
+`lumen_plugin`.
 
 Besides the socket API's methods, plugins can:
 
@@ -422,9 +478,9 @@ contain `$`, `;` and backticks.
 
 Problems in a `plugin.toml` are listed in the banner at the bottom of the
 window; fix them and choose **Reload Plugins** (which also picks up new and
-changed plugins). Two examples to copy from are in
-[`examples/plugins/`](examples/plugins/): `hello` (bash, no permissions) and
-`git-branch` (Python: a branch picker on Alt+B).
+changed plugins). To learn from: the built-in plugins in [`plugins/`](plugins/)
+(all Python), and [`examples/plugins/`](examples/plugins/): `hello` (bash
+speaking the raw protocol) and `snippets` (a snippet library).
 
 ## Session
 
@@ -451,6 +507,8 @@ come back.
 | Socket         | `$XDG_RUNTIME_DIR/lumen/lumen-<pid>.sock`       | `$TMPDIR/lumen-<uid>/lumen-<pid>.sock`              |
 | Plugins        | `~/.config/lumen/plugins/<name>/` (`$XDG_CONFIG_HOME`) | same                                         |
 | Plugin logs and approvals | `~/.local/state/lumen/plugins/<name>.log`, `plugin-approvals.json` | `~/Library/Application Support/lumen/…` |
+| Python package (`lumen python-path`) | `~/.local/state/lumen/python/lumen_plugin/` | `~/Library/Application Support/lumen/python/…` |
+| Built-in plugins (written out by Lumen) and plugin data | `~/.local/state/lumen/builtin-plugins/`, `plugin-data/<name>/` | `~/Library/Application Support/lumen/…` |
 
 Shells started by Lumen get `TERM=xterm-256color`, `COLORTERM=truecolor` and
 `TERM_PROGRAM=lumen`, so scripts can tell they're running in Lumen, plus
@@ -484,17 +542,22 @@ socket API is on.
 | `src/marks.rs`         | Finding prompts, exit statuses and command output in the grid |
 | `shell-integration/`   | The bash, zsh and fish scripts                            |
 | `examples/`            | Scripts using `lumen msg` and the socket API, and example plugins |
+| `python/`              | `lumen_plugin`, the Python package for plugins (built into Lumen), and its tests |
+| `plugins/`             | The built-in plugins (built into Lumen; turned on in the Plugin Gallery), and tests |
+| `docs/plugins.md`      | Guide and reference for writing plugins in Python         |
 
 ## Tests
 
 ```sh
 cargo test
+python3 -m unittest discover -s python/tests   # the Python package
+python3 -m unittest discover -s plugins/tests  # the built-in plugins
 ```
 
 ## Next up
 
 - Keyboard link hints
-- A Python package for writing plugins, and in-process plugin hooks
-- Notifications when a long command finishes; a quick-terminal dropdown
+- In-process plugin hooks
+- A quick-terminal dropdown
 - IME input, cursor blink, background blur/opacity setting
 - Ghostty theme file import

@@ -97,9 +97,20 @@ fn main() {
     if args.first().map(String::as_str) == Some("msg") {
         std::process::exit(cli::run(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("python-path") {
+        // For scripts: PYTHONPATH="$(lumen python-path)" python3 script.py
+        match plugins::python_path() {
+            Some(dir) => println!("{}", dir.display()),
+            None => {
+                eprintln!("lumen: couldn't write the Python package to the state folder");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Some(arg) = args.first() {
         let help = matches!(arg.as_str(), "-h" | "--help" | "help");
-        eprintln!("Usage: lumen            open a window\n       lumen msg ...      control a running Lumen (lumen msg help)");
+        eprintln!("Usage: lumen              open a window\n       lumen msg ...      control a running Lumen (lumen msg help)\n       lumen python-path  where the lumen_plugin Python package is");
         std::process::exit(if help { 0 } else { 2 });
     }
     Application::new().run(|cx: &mut App| {

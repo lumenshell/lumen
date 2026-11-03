@@ -1,0 +1,5 @@
+description = "Jump to folders you've visited, most used first (Ctrl+Shift+J, ⌘⇧J on macOS)"
+version = "1.0.0"
+command = "python3 main.py"
+# input: to type `cd` into the pane; panes: to open a busy pane's pick in a new tab.
+permissions = ["input", "panes"]

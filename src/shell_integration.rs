@@ -163,6 +163,17 @@ pub struct Rewriter {
     host: String,
     /// Pane id for socket API events; `None` sends none (tests).
     pane: Option<u64>,
+    /// Counts prompts, to give each prompt's links their own id.
+    prompt_count: u64,
+    /// The link put on the current prompt (it carries the exit status).
+    prompt_uri: String,
+    /// Between OSC 133;B and C: the shell is editing the command line.
+    editing: bool,
+    /// Where in this read's output the line was last returned to (`\r`)
+    /// while editing. If the input mark follows, the shell has reprinted its
+    /// prompt (as bash does when a wrapped line is edited), and that text is
+    /// marked as prompt again rather than taken for input.
+    redraw_at: Option<usize>,
 }
 
 fn local_hostname() -> &'static str {
@@ -215,6 +226,10 @@ impl Rewriter {
             shared,
             host,
             pane: None,
+            prompt_count: 0,
+            prompt_uri: PROMPT.to_string(),
+            editing: false,
+            redraw_at: None,
         }
     }
 
@@ -231,6 +246,8 @@ impl Rewriter {
     }
 
     pub fn feed(&mut self, input: &[u8], out: &mut Vec<u8>) {
+        // A redraw arrives in one write; don't look back past this read.
+        self.redraw_at = None;
         for &b in input {
             match self.state {
                 State::Normal => {
@@ -238,6 +255,13 @@ impl Rewriter {
                         self.state = State::Esc;
                     } else {
                         out.push(b);
+                        if self.editing {
+                            match b {
+                                b'\r' => self.redraw_at = Some(out.len()),
+                                b'\n' => self.redraw_at = None,
+                                _ => {}
+                            }
+                        }
                     }
                 }
                 State::Esc => {
@@ -301,10 +325,21 @@ impl Rewriter {
         }
     }
 
-    fn link(out: &mut Vec<u8>, uri: &str) {
-        out.extend_from_slice(b"\x1b]8;;");
-        out.extend_from_slice(uri.as_bytes());
-        out.extend_from_slice(b"\x1b\\");
+    /// Start a link (`id` keeps a prompt's pieces together), or end one.
+    fn link_bytes(id: &str, uri: &str) -> Vec<u8> {
+        let mut b = b"\x1b]8;".to_vec();
+        if !id.is_empty() {
+            b.extend_from_slice(b"id=");
+            b.extend_from_slice(id.as_bytes());
+        }
+        b.push(b';');
+        b.extend_from_slice(uri.as_bytes());
+        b.extend_from_slice(b"\x1b\\");
+        b
+    }
+
+    fn link(out: &mut Vec<u8>, id: &str, uri: &str) {
+        out.extend_from_slice(&Self::link_bytes(id, uri));
     }
 
     /// Handle a complete captured OSC.
@@ -318,19 +353,29 @@ impl Rewriter {
             match parts.next() {
                 Some("A") => {
                     // The link on the prompt carries the previous command's exit status.
-                    let uri = match (self.ran, self.exit) {
+                    self.prompt_uri = match (self.ran, self.exit) {
                         (true, Some(code)) => format!("{PROMPT}?exit={code}"),
                         _ => PROMPT.to_string(),
                     };
-                    Self::link(out, &uri);
+                    self.prompt_count += 1;
+                    self.editing = false;
+                    Self::link(out, &format!("lumen-p{}", self.prompt_count), &self.prompt_uri);
                     self.ran = false;
                     self.exit = None;
                     self.prompted = true;
                     self.running = false;
                 }
-                Some("B") => Self::link(out, INPUT),
+                Some("B") => {
+                    if let Some(at) = self.redraw_at.take().filter(|_| self.editing) {
+                        let id = format!("lumen-p{}", self.prompt_count);
+                        out.splice(at..at, Self::link_bytes(&id, &self.prompt_uri));
+                    }
+                    self.editing = true;
+                    Self::link(out, &format!("lumen-i{}", self.prompt_count), INPUT);
+                }
                 Some("C") => {
-                    Self::link(out, "");
+                    self.editing = false;
+                    Self::link(out, "", "");
                     self.ran = true;
                     self.running = true;
                     self.shared.lock().unwrap().running_since = Some(Instant::now());
@@ -490,7 +535,7 @@ mod tests {
         let (out, shared) = rewrite(&[b"\x1b]133;A\x07$ \x1b]133;B\x07false\r\n\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;A\x07$ "]);
         assert_eq!(
             text(&out),
-            "⎋]8;;lumen:prompt⎋\\$ ⎋]8;;lumen:input⎋\\false\r\n⎋]8;;⎋\\⎋]8;;lumen:prompt?exit=1⎋\\$ "
+            "⎋]8;id=lumen-p1;lumen:prompt⎋\\$ ⎋]8;id=lumen-i1;lumen:input⎋\\false\r\n⎋]8;;⎋\\⎋]8;id=lumen-p2;lumen:prompt?exit=1⎋\\$ "
         );
         assert!(shared.lock().unwrap().active);
     }
@@ -515,7 +560,21 @@ mod tests {
     fn exit_status_only_counts_when_a_command_ran() {
         // An empty Enter: D without C (bash repeats the old status).
         let (out, _) = rewrite(&[b"\x1b]133;D;1\x07\x1b]133;A\x07"]);
-        assert_eq!(text(&out), "⎋]8;;lumen:prompt⎋\\");
+        assert_eq!(text(&out), "⎋]8;id=lumen-p1;lumen:prompt⎋\\");
+    }
+
+    #[test]
+    fn a_reprinted_prompt_is_marked_as_prompt_again() {
+        // bash editing a wrapped line: back up, reprint the prompt, mark input again.
+        let (out, _) = rewrite(&[b"\x1b]133;A\x07$ \x1b]133;B\x07echo long", b"\x1b[A\r$ \x1b]133;B\x07\x1b[K"]);
+        assert_eq!(
+            text(&out),
+            "⎋]8;id=lumen-p1;lumen:prompt⎋\\$ ⎋]8;id=lumen-i1;lumen:input⎋\\echo long\
+             ⎋[A\r⎋]8;id=lumen-p1;lumen:prompt⎋\\$ ⎋]8;id=lumen-i1;lumen:input⎋\\⎋[K"
+        );
+        // A return that isn't followed by the input mark changes nothing.
+        let (out, _) = rewrite(&[b"\x1b]133;A\x07$ \x1b]133;B\x07ab\rcd"]);
+        assert!(text(&out).ends_with("lumen:input⎋\\ab\rcd"));
     }
 
     #[test]
@@ -537,7 +596,7 @@ mod tests {
     #[test]
     fn cwd_from_osc7_for_this_host_only() {
         let (out, shared) = rewrite(&[b"\x1b]133;A\x07\x1b]7;file://myhost/home/me/My%20Docs\x07"]);
-        assert_eq!(text(&out), "⎋]8;;lumen:prompt⎋\\");
+        assert_eq!(text(&out), "⎋]8;id=lumen-p1;lumen:prompt⎋\\");
         assert_eq!(shared.lock().unwrap().cwd, Some(PathBuf::from("/home/me/My Docs")));
         let (_, shared) = rewrite(&[b"\x1b]133;A\x07\x1b]7;file://elsewhere/srv\x1b\\"]);
         assert_eq!(shared.lock().unwrap().cwd, None);

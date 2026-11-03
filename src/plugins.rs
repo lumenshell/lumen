@@ -16,7 +16,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -72,6 +72,16 @@ pub struct Manifest {
     pub command: Vec<String>,
     pub permissions: Vec<Permission>,
     pub dir: PathBuf,
+    /// One of Lumen's built-in plugins, turned on in the Plugin Gallery.
+    pub builtin: bool,
+}
+
+impl Manifest {
+    /// Its entry in the approvals file. Built-in plugins have their own, so
+    /// turning one on never approves a folder of yours with the same name.
+    fn approval_key(&self) -> String {
+        if self.builtin { format!("builtin:{}", self.name) } else { self.name.clone() }
+    }
 }
 
 /// Where plugins are installed.
@@ -89,6 +99,38 @@ fn state_dir() -> Option<PathBuf> {
             .or_else(|| home.map(|h| h.join(".local/state")))?
     };
     Some(base.join("lumen"))
+}
+
+/// The `lumen_plugin` Python package, built into Lumen so plugins can import
+/// it without installing anything, and always matching this Lumen.
+const PYTHON_PACKAGE: &str = include_str!("../python/lumen_plugin/__init__.py");
+
+/// A folder holding an up-to-date `lumen_plugin`, for `PYTHONPATH`; written
+/// under the state folder the first time it's asked for.
+pub fn python_path() -> Option<PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = state_dir()?.join("python");
+        let file = dir.join("lumen_plugin").join("__init__.py");
+        if std::fs::read_to_string(&file).ok().as_deref() != Some(PYTHON_PACKAGE) {
+            std::fs::create_dir_all(file.parent()?).ok()?;
+            let tmp = file.with_extension(format!("py.{}.tmp", std::process::id()));
+            std::fs::write(&tmp, PYTHON_PACKAGE).ok()?;
+            std::fs::rename(&tmp, &file).ok()?;
+        }
+        Some(dir)
+    })
+    .clone()
+}
+
+/// `PYTHONPATH` for a plugin: Lumen's package first, then whatever was set.
+fn plugin_python_path() -> Option<std::ffi::OsString> {
+    let dir = python_path()?;
+    let mut paths = vec![dir];
+    if let Some(existing) = std::env::var_os("PYTHONPATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(paths).ok()
 }
 
 pub fn log_path(name: &str) -> Option<PathBuf> {
@@ -135,11 +177,99 @@ pub fn parse_manifest(dir: &Path, text: &str) -> Result<Manifest, String> {
         command,
         permissions,
         dir: dir.to_path_buf(),
+        builtin: false,
     })
 }
 
-/// Every plugin folder with a `plugin.toml`, and problems reading them.
-pub fn discover() -> (Vec<Manifest>, Vec<String>) {
+// ---- built-in plugins ----------------------------------------------------
+
+/// A plugin that comes with Lumen, off until you turn it on in the Plugin
+/// Gallery (or list it under `plugins` in config.toml).
+pub struct Builtin {
+    pub name: &'static str,
+    pub title: &'static str,
+    files: &'static [(&'static str, &'static str)],
+}
+
+macro_rules! builtin {
+    ($name:literal, $title:literal, [$($file:literal),*]) => {
+        Builtin {
+            name: $name,
+            title: $title,
+            files: &[$(($file, include_str!(concat!("../plugins/", $name, "/", $file)))),*],
+        }
+    };
+}
+
+pub const BUILTINS: &[Builtin] = &[
+    builtin!("recent-dirs", "Recent Directories", ["plugin.toml", "main.py"]),
+    builtin!("command-history", "Command History", ["plugin.toml", "main.py"]),
+    builtin!("git-branch", "Switch Git Branch", ["plugin.toml", "main.py"]),
+    builtin!("ssh-hosts", "SSH to Host", ["plugin.toml", "main.py"]),
+    builtin!("project-layout", "Project Layouts", ["plugin.toml", "main.py"]),
+    builtin!("build-status", "Build Status", ["plugin.toml", "main.py"]),
+];
+
+pub fn builtin(name: &str) -> Option<&'static Builtin> {
+    BUILTINS.iter().find(|b| b.name == name)
+}
+
+impl Builtin {
+    /// Its manifest, with the files written out (or refreshed after a Lumen
+    /// update) under the state folder, where it runs from.
+    pub fn manifest(&self) -> Result<Manifest, String> {
+        let dir = state_dir().ok_or("no state folder")?.join("builtin-plugins").join(self.name);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for (file, text) in self.files {
+            let path = dir.join(file);
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(*text) {
+                let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+                std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| format!("{}: {e}", path.display()))?;
+            }
+        }
+        let toml = self.files.iter().find(|(f, _)| *f == "plugin.toml").map(|(_, t)| *t).unwrap_or_default();
+        let mut m = parse_manifest(&dir, toml)?;
+        m.builtin = true;
+        Ok(m)
+    }
+
+    /// Your own plugin folder with the same name, which runs instead.
+    pub fn overridden(&self) -> bool {
+        plugins_dir().is_some_and(|d| d.join(self.name).join("plugin.toml").is_file())
+    }
+}
+
+/// Where a plugin keeps its own data: kept across updates, only yours.
+fn data_dir(name: &str) -> Option<PathBuf> {
+    let dir = state_dir()?.join("plugin-data").join(name);
+    std::fs::create_dir_all(&dir).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Some(dir)
+}
+
+/// Every plugin folder with a `plugin.toml`, then the built-in plugins in
+/// `enabled` (unless a folder of yours has the same name), and problems
+/// reading them.
+pub fn discover(enabled: &[String]) -> (Vec<Manifest>, Vec<String>) {
+    let (mut found, mut problems) = discover_folders();
+    for name in enabled {
+        let Some(b) = builtin(name) else { continue };
+        if found.iter().any(|m: &Manifest| m.name == b.name) || b.overridden() {
+            continue;
+        }
+        match b.manifest() {
+            Ok(m) => found.push(m),
+            Err(e) => problems.push(format!("built-in plugin `{name}`: {e}")),
+        }
+    }
+    (found, problems)
+}
+
+fn discover_folders() -> (Vec<Manifest>, Vec<String>) {
     let (mut found, mut problems) = (Vec::new(), Vec::new());
     let Some(dir) = plugins_dir() else { return (found, problems) };
     let Ok(entries) = std::fs::read_dir(&dir) else { return (found, problems) };
@@ -194,7 +324,7 @@ pub fn decision(m: &Manifest) -> Decision {
     if m.permissions.is_empty() {
         return Decision::Allowed;
     }
-    match load_approvals().get(&m.name) {
+    match load_approvals().get(&m.approval_key()) {
         Some(a) if a.command == m.command && m.permissions.iter().all(|p| a.permissions.contains(p)) => {
             if a.allowed { Decision::Allowed } else { Decision::Refused }
         }
@@ -205,7 +335,7 @@ pub fn decision(m: &Manifest) -> Decision {
 pub fn record_decision(m: &Manifest, allowed: bool) {
     let Some(path) = approvals_path() else { return };
     let mut all = load_approvals();
-    all.insert(m.name.clone(), Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed });
+    all.insert(m.approval_key(), Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed });
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -349,13 +479,18 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
     let mut quick_failures = 0usize;
     while !stop.load(Ordering::SeqCst) {
         let started = Instant::now();
-        let mut child = match Command::new(&m.command[0])
+        let mut cmd = Command::new(&m.command[0]);
+        if let Some(path) = plugin_python_path() {
+            cmd.env("PYTHONPATH", path);
+        }
+        let mut child = match cmd
             .args(&m.command[1..])
             .current_dir(&m.dir)
             .env_remove("LUMEN_SOCKET")
             .env_remove("LUMEN_PANE")
             .env("LUMEN_PLUGIN", &name)
             .env("LUMEN_PLUGIN_DIR", &m.dir)
+            .envs(data_dir(&name).map(|d| ("LUMEN_PLUGIN_DATA", d)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -491,6 +626,21 @@ pub fn run_command(plugin: &str, id: &str, pane: Option<u64>) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_plugins_have_valid_manifests() {
+        for b in BUILTINS {
+            let toml = b.files.iter().find(|(f, _)| *f == "plugin.toml").expect("plugin.toml").1;
+            let mut m = parse_manifest(Path::new(b.name), toml).unwrap_or_else(|e| panic!("{}: {e}", b.name));
+            assert!(!m.description.is_empty(), "{}", b.name);
+            assert!(b.files.iter().any(|(f, _)| *f == m.command[1]), "{} runs a file it doesn't ship", b.name);
+            assert!(b.files.iter().any(|(_, t)| t.contains("from lumen_plugin import")), "{}", b.name);
+            // Approvals for built-ins never apply to a folder of the same name.
+            assert_eq!(m.approval_key(), b.name);
+            m.builtin = true;
+            assert_eq!(m.approval_key(), format!("builtin:{}", b.name));
+        }
+    }
 
     #[test]
     fn manifests() {

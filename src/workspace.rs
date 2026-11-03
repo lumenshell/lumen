@@ -192,6 +192,8 @@ pub struct Workspace {
     pending_approvals: Vec<crate::plugins::Manifest>,
     /// Problems reading plugin manifests, shown in the banner.
     plugin_problems: Vec<String>,
+    /// The built-in plugins running, to notice when config.toml changes them.
+    builtins_running: Vec<String>,
     /// Axis of the divider being dragged, for the window-wide resize cursor.
     dragging: Option<Axis>,
     /// Last layout written to disk, so autosave only writes on change.
@@ -210,6 +212,7 @@ impl Workspace {
             palette: None,
             pending_approvals: Vec::new(),
             plugin_problems: Vec::new(),
+            builtins_running: Vec::new(),
             dragging: None,
             last_saved: None,
             saved_on_quit: false,
@@ -223,6 +226,12 @@ impl Workspace {
         }
         this.track_window(window);
         this._subs.push(cx.observe_window_bounds(window, |this, window, _| this.track_window(window)));
+        // Built-in plugins turned on or off (in the gallery or config.toml).
+        this._subs.push(cx.observe_global_in::<Settings>(window, |this, window, cx| {
+            if Settings::get(cx).plugins != this.builtins_running {
+                this.reload_plugins(window, cx);
+            }
+        }));
 
         // Save on quit, when the window is closed, and every few seconds while
         // running (so a crash or logout loses little and cwds stay current).
@@ -617,7 +626,8 @@ impl Workspace {
     /// Load the plugins folder: start what's allowed, and ask about the rest.
     pub fn start_plugins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::plugins::{self, Decision};
-        let (manifests, problems) = plugins::discover();
+        self.builtins_running = Settings::get(cx).plugins.clone();
+        let (manifests, problems) = plugins::discover(&self.builtins_running);
         self.plugin_problems = problems;
         self.pending_approvals.clear();
         for m in manifests {
@@ -639,6 +649,102 @@ impl Workspace {
         crate::plugins::clear();
         keymap::apply(cx);
         self.start_plugins(window, cx);
+    }
+
+    /// The Plugin Gallery: Lumen's built-in plugins, to turn on and off.
+    fn open_gallery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let enabled = Settings::get(cx).plugins.clone();
+        let ws = cx.entity().downgrade();
+        let items = crate::plugins::BUILTINS
+            .iter()
+            .map(|b| {
+                let on = enabled.iter().any(|n| n == b.name);
+                let status = match (on, b.overridden()) {
+                    (_, true) => "your own copy runs instead".to_string(),
+                    (true, _) => "on".to_string(),
+                    (false, _) => "off".to_string(),
+                };
+                let ws = ws.clone();
+                let name = b.name;
+                PaletteItem {
+                    label: format!("{} {}", if on { "●" } else { "○" }, b.title).into(),
+                    detail: status.into(),
+                    run: Rc::new(move |window, cx| {
+                        let _ = ws.update(cx, |ws, cx| ws.open_gallery_item(name, window, cx));
+                    }),
+                }
+            })
+            .collect();
+        let palette = cx.new(|cx| {
+            CommandPalette::picker(items, "Plugin Gallery: choose one to turn it on or off".into(), None, cx).with_message(
+                "Plugins that come with Lumen. Each runs as its own program, only once you turn it on.",
+            )
+        });
+        self.open_palette(palette, window, cx);
+    }
+
+    /// One built-in plugin: what it does and needs, and turning it on or off.
+    fn open_gallery_item(&mut self, name: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(b) = crate::plugins::builtin(name) else { return };
+        let m = match b.manifest() {
+            Ok(m) => m,
+            Err(e) => {
+                self.plugin_problems.push(format!("built-in plugin `{name}`: {e}"));
+                cx.notify();
+                return;
+            }
+        };
+        let on = Settings::get(cx).plugins.iter().any(|n| n == name);
+        let needs = if m.permissions.is_empty() {
+            "It needs no permissions.".to_string()
+        } else {
+            let wants: Vec<String> = m.permissions.iter().map(|p| p.describe().to_string()).collect();
+            format!("Turning it on lets it {}.", join_and(&wants))
+        };
+        let note = if b.overridden() {
+            format!(" You have your own \"{name}\" in the plugins folder, which runs instead.")
+        } else {
+            String::new()
+        };
+        let message = format!("{}. {needs}{note}", m.description.trim_end_matches('.'));
+        let ws = cx.entity().downgrade();
+        let toggle: PaletteFn = {
+            let ws = ws.clone();
+            Rc::new(move |_window, cx| {
+                if !on {
+                    // Choosing it here, with its permissions shown, approves it.
+                    crate::plugins::record_decision(&m, true);
+                }
+                Settings::update(cx, |s| {
+                    s.plugins.retain(|n| n != name);
+                    if !on {
+                        s.plugins.push(name.to_string());
+                    }
+                });
+                let _ = ws.update(cx, |_, cx| cx.notify());
+            })
+        };
+        let back: PaletteFn = Rc::new(move |window, cx| {
+            let _ = ws.update(cx, |ws, cx| ws.open_gallery(window, cx));
+        });
+        let mut items = vec![PaletteItem {
+            label: if on { "Turn off".into() } else { "Turn on".into() },
+            detail: if on { "stop it and forget the setting".into() } else { "start it now and whenever Lumen opens".into() },
+            run: toggle,
+        }];
+        if on {
+            let ws = cx.entity().downgrade();
+            items.push(PaletteItem {
+                label: "Open its log".into(),
+                detail: "".into(),
+                run: Rc::new(move |window, cx| {
+                    let _ = ws.update(cx, |ws, cx| ws.open_plugin_log(name, window, cx));
+                }),
+            });
+        }
+        items.push(PaletteItem { label: "Back to the gallery".into(), detail: "".into(), run: back });
+        let palette = cx.new(|cx| CommandPalette::picker(items, b.title.into(), None, cx).with_message(message));
+        self.open_palette(palette, window, cx);
     }
 
     /// Ask about the next plugin waiting for approval, in the palette.
@@ -751,7 +857,14 @@ impl Workspace {
         let cancel_answer = answer.clone();
         drop(answer);
         let cancel: PaletteFn = Rc::new(move |_, _| cancel_answer.send(Value::Null));
-        let palette = cx.new(|cx| CommandPalette::picker(items, placeholder, Some(cancel), cx));
+        let message = params.get("message").and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty());
+        let palette = cx.new(|cx| {
+            let picker = CommandPalette::picker(items, placeholder, Some(cancel), cx);
+            match message {
+                Some(m) => picker.with_message(m.to_string()),
+                None => picker,
+            }
+        });
         self.open_palette(palette, window, cx);
     }
 
@@ -1566,6 +1679,15 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
     }
     if let Some(ws) = ws.clone() {
         items.push(PaletteItem {
+            label: "Plugin Gallery".into(),
+            detail: "turn on the plugins that come with Lumen".into(),
+            run: Rc::new(move |window, cx| {
+                let _ = ws.update(cx, |ws, cx| ws.open_gallery(window, cx));
+            }),
+        });
+    }
+    if let Some(ws) = ws.clone() {
+        items.push(PaletteItem {
             label: "Reload Plugins".into(),
             detail: "restart every plugin and re-read plugin.toml files".into(),
             run: Rc::new(move |window, cx| {
@@ -1709,7 +1831,7 @@ impl Render for Workspace {
                         .flex()
                         .justify_center()
                         .items_start()
-                        .pt(px(72.0))
+                        .pt(px(crate::palette::PALETTE_TOP))
                         .bg(alpha(gpui::black(), 0.25))
                         .when_some(tiling, |d, t| d.when(!t.is_tiled(), |d| d.rounded(px(WINDOW_RADIUS))))
                         .on_mouse_down(

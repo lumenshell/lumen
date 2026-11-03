@@ -145,6 +145,20 @@ mod tests {
     }
 
     #[test]
+    fn a_command_edited_after_wrapping_is_read_correctly() {
+        // bash reprints the prompt when a wrapped line is edited (here with
+        // Ctrl+U); the reprint mustn't be read as part of the command.
+        let long = "echo a very long command that wraps past forty";
+        let t = term(&format!(
+            // (ESC M moves up and ESC [8G to column 8: the helper turns capital A-D into marks.)
+            "A$ Bls\nCx\nD0A~/src$ B{long}\x1bM\r~/src$ B\x1b[K\r\n\x1b[K\x1bM\x1b[8Gls -l"
+        ));
+        let p = prompts(&t);
+        assert_eq!(p.len(), 2, "{p:?}");
+        assert_eq!(recent_commands(&t, &p, 2, 0), vec![Some("ls".into()), Some("ls -l".into())]);
+    }
+
+    #[test]
     fn finds_prompts_output_and_exit_statuses() {
         // Placeholders: A prompt, B input, C output, D0/D1 exit status.
         let t = term("A$ Bls\nCa.txt\nb.txt\nD0A$ Bfalse\nCD1A$ B");

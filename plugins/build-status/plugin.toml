@@ -1,0 +1,5 @@
+description = "Show how the last build or test went in the tab title, like ✓ cargo test · 12s"
+version = "1.0.0"
+command = "python3 main.py"
+# screen: to see which command finished; panes: to set the tab title.
+permissions = ["screen", "panes"]

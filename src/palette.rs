@@ -45,6 +45,8 @@ pub struct CommandPalette {
     /// Set for a text prompt: Enter hands it the typed text instead of
     /// choosing an item.
     submit: Option<SubmitFn>,
+    /// Keeps the selected row in view when the list scrolls.
+    scroll: gpui::ScrollHandle,
 }
 
 impl EventEmitter<PaletteEvent> for CommandPalette {}
@@ -90,6 +92,7 @@ impl CommandPalette {
         let filtered = (0..items.len()).collect();
         Self {
             focus: cx.focus_handle(),
+            scroll: gpui::ScrollHandle::new(),
             query: String::new(),
             selected: 0,
             items,
@@ -132,6 +135,7 @@ impl CommandPalette {
         scored.sort();
         self.filtered = scored.into_iter().map(|(_, i)| i).collect();
         self.selected = 0;
+        self.scroll.scroll_to_item(0);
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -159,10 +163,12 @@ impl CommandPalette {
             "enter" => self.confirm(window, cx),
             "up" => {
                 self.selected = self.selected.checked_sub(1).unwrap_or(self.filtered.len().saturating_sub(1));
+                self.scroll.scroll_to_item(self.selected);
             }
             "down" | "tab" => {
                 if !self.filtered.is_empty() {
                     self.selected = (self.selected + 1) % self.filtered.len();
+                    self.scroll.scroll_to_item(self.selected);
                 }
             }
             "backspace" => {
@@ -188,12 +194,18 @@ impl CommandPalette {
     }
 }
 
+/// Rows are this tall, and this many show before the list scrolls.
+const ROW_HEIGHT: f32 = 34.0;
+const VISIBLE_ROWS: f32 = 12.0;
+/// How far below the top of the window the palette sits.
+pub const PALETTE_TOP: f32 = 72.0;
+
 fn caret(color: gpui::Hsla) -> gpui::Div {
     div().w(px(2.0)).h(px(18.0)).mx(px(1.0)).rounded(px(1.0)).bg(color)
 }
 
 impl Render for CommandPalette {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Settings::get(cx).theme().clone();
         let has_query = !self.query.is_empty();
         let query: SharedString = if has_query {
@@ -202,7 +214,7 @@ impl Render for CommandPalette {
             self.placeholder.clone()
         };
 
-        let rows = self.filtered.iter().take(12).enumerate().map(|(row, &idx)| {
+        let rows = self.filtered.iter().enumerate().map(|(row, &idx)| {
             let item = &self.items[idx];
             let selected = row == self.selected;
             div()
@@ -210,7 +222,8 @@ impl Render for CommandPalette {
                 .flex()
                 .items_center()
                 .justify_between()
-                .h(px(34.0))
+                .h(px(ROW_HEIGHT))
+                .flex_none()
                 .px(px(12.0))
                 .mx(px(6.0))
                 .rounded(px(7.0))
@@ -222,7 +235,15 @@ impl Render for CommandPalette {
                     this.confirm(window, cx);
                 }))
                 .gap(px(12.0))
-                .child(div().flex_none().child(item.label.clone()))
+                .child(
+                    div()
+                        .flex_none()
+                        .max_w(px(380.0))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(item.label.clone()),
+                )
                 .child(
                     div()
                         .min_w_0()
@@ -242,6 +263,9 @@ impl Render for CommandPalette {
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .w(px(560.0))
+            // Fit in the window below its top offset, leaving a margin; the
+            // list shrinks and scrolls to make room.
+            .max_h((window.viewport_size().height - px(PALETTE_TOP + 48.0)).max(px(160.0)))
             .flex()
             .flex_col()
             .pb(px(6.0))
@@ -263,6 +287,7 @@ impl Render for CommandPalette {
                     .items_center()
                     .gap(px(10.0))
                     .h(px(50.0))
+                    .flex_none()
                     .px(px(18.0))
                     .text_size(px(15.0))
                     .border_b_1()
@@ -271,16 +296,20 @@ impl Render for CommandPalette {
                     .child(
                         div()
                             .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
                             .items_center()
                             .text_color(if has_query { theme.text } else { theme.muted })
                             .when(!has_query, |d| d.child(caret(theme.accent)))
-                            .child(query)
+                            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(query))
                             .when(has_query, |d| d.child(caret(theme.accent))),
                     ),
             )
             .when_some(self.message.clone(), |d, message| {
                 d.child(
                     div()
+                        .flex_none()
                         .px(px(18.0))
                         .pt(px(12.0))
                         .pb(px(4.0))
@@ -290,7 +319,19 @@ impl Render for CommandPalette {
                         .child(message),
                 )
             })
-            .child(div().pt(px(6.0)).flex().flex_col().children(rows))
+            .child(
+                div()
+                    .id("palette-list")
+                    .mt(px(6.0))
+                    .flex()
+                    .flex_col()
+                    .flex_shrink()
+                    .min_h_0()
+                    .max_h(px(ROW_HEIGHT * VISIBLE_ROWS))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .children(rows),
+            )
             .when(self.filtered.is_empty() && self.submit.is_none(), |d| {
                 d.child(div().px(px(18.0)).py(px(10.0)).text_color(theme.muted).child("No matches"))
             })

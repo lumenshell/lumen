@@ -1,0 +1,5 @@
+description = "Search commands from every pane with how they went (Ctrl+Shift+H), and rerun the last failure (Ctrl+Shift+R)"
+version = "1.0.0"
+command = "python3 main.py"
+# screen: to see the commands you run; input: to type one back.
+permissions = ["screen", "input"]
