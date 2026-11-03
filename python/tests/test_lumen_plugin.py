@@ -123,6 +123,55 @@ class PluginModeTests(unittest.TestCase):
         self.assertEqual(lumen.expect("set-title"), {"pane": 9})
         lumen.close()
 
+    def test_plugin_panes_get_their_keys_size_and_closing(self):
+        lumen = FakeLumen("""
+            from lumen_plugin import Plugin
+            app = Plugin()
+
+            @app.on_start
+            async def go():
+                view = await app.pane(5).split("down", plugin_pane=True, focus=False)
+
+                @view.on_resize
+                async def resized():
+                    await view.draw([f"{view.cols}x{view.rows}"])
+
+                @view.on_key
+                async def key(name):
+                    await view.write(name + ";")
+
+                @view.on_close
+                def closed():
+                    print("closed", view.closed)
+
+                await view.set_tab_style(badge="5:00", color="red")
+                await view.set_tab_style(badge=None)
+
+            app.run()
+        """)
+        msg = lumen.recv()
+        self.assertEqual(msg["params"], {"pane": 5, "direction": "down", "focus": False, "plugin_pane": True})
+        # Its size can arrive before the reply is read: it's kept until then.
+        lumen.send({"jsonrpc": "2.0", "method": "pane", "params": {"event": "resize", "pane": 9, "cols": 40, "rows": 6}})
+        lumen.reply(msg, {"pane": 9})
+        # Drawing (on its first size) and styling the tab run side by side.
+        got = []
+        for _ in range(3):
+            got.append(lumen.recv())
+            lumen.reply(got[-1])
+        by_method = sorted((m["method"], json.dumps(m["params"], sort_keys=True)) for m in got)
+        self.assertEqual(by_method, sorted([
+            ("set-tab-style", json.dumps({"pane": 9, "badge": "5:00", "color": "red"}, sort_keys=True)),
+            ("set-tab-style", json.dumps({"pane": 9, "badge": None}, sort_keys=True)),
+            ("write", json.dumps({"pane": 9, "text": "\x1b[?25l\x1b[H\x1b[2J40x6"}, sort_keys=True)),
+        ]))
+        lumen.send({"jsonrpc": "2.0", "method": "pane", "params": {"event": "input", "pane": 9, "text": "q\x1b[A"}})
+        self.assertEqual(lumen.expect("write"), {"pane": 9, "text": "q;"})
+        self.assertEqual(lumen.expect("write"), {"pane": 9, "text": "up;"})
+        lumen.send({"jsonrpc": "2.0", "method": "pane", "params": {"event": "closed", "pane": 9}})
+        self.assertEqual(lumen.close(), 0)
+        self.assertIn("closed True", lumen.stderr())
+
     def test_pick_accepts_strings_tuples_and_dicts(self):
         lumen = FakeLumen("""
             from lumen_plugin import Plugin

@@ -13,6 +13,7 @@ use crate::*;
 /// Action names for `[keys]`, in the order they're documented.
 pub const ACTIONS: &[&str] = &[
     "new-tab",
+    "new-window",
     "close-pane",
     "split-right",
     "split-down",
@@ -63,6 +64,7 @@ pub fn action(name: &str) -> Option<Box<dyn Action>> {
     }
     Some(match name {
         "new-tab" => Box::new(NewTab),
+        "new-window" => Box::new(NewWindow),
         "close-pane" => Box::new(ClosePane),
         "split-right" => Box::new(SplitRight),
         "split-down" => Box::new(SplitDown),
@@ -100,6 +102,7 @@ fn defaults() -> Vec<(String, &'static str)> {
     let m = |mac_key: &str, linux_key: &str| if mac { mac_key } else { linux_key }.to_string();
     let mut b = vec![
         (m("cmd-t", "ctrl-shift-t"), "new-tab"),
+        (m("cmd-n", "ctrl-shift-n"), "new-window"),
         (m("cmd-w", "ctrl-shift-w"), "close-pane"),
         (m("cmd-d", "ctrl-shift-d"), "split-right"),
         (m("cmd-shift-d", "ctrl-shift-e"), "split-down"),
@@ -108,7 +111,12 @@ fn defaults() -> Vec<(String, &'static str)> {
         (m("cmd-shift-]", "ctrl-pagedown"), "next-tab"),
         (m("cmd-shift-[", "ctrl-pageup"), "prev-tab"),
         (m("cmd-,", "ctrl-,"), "rename-tab"),
-        (m("cmd-]", "ctrl-shift-n"), "next-pane"),
+        // Ctrl+Shift+]: GPUI reports it on Linux as the `}` it types.
+        (m("cmd-]", "ctrl-}"), "next-pane"),
+        (m("cmd-left", "ctrl-left"), "focus-left"),
+        (m("cmd-right", "ctrl-right"), "focus-right"),
+        (m("cmd-up", "ctrl-up"), "focus-up"),
+        (m("cmd-down", "ctrl-down"), "focus-down"),
         (m("cmd-alt-left", "alt-shift-left"), "focus-left"),
         (m("cmd-alt-right", "alt-shift-right"), "focus-right"),
         (m("cmd-alt-up", "alt-shift-up"), "focus-up"),
@@ -123,8 +131,8 @@ fn defaults() -> Vec<(String, &'static str)> {
         (m("cmd-c", "ctrl-shift-c"), "copy"),
         (m("cmd-v", "ctrl-shift-v"), "paste"),
         (m("cmd-f", "ctrl-shift-f"), "find"),
-        (m("cmd-up", "ctrl-shift-up"), "prev-command"),
-        (m("cmd-down", "ctrl-shift-down"), "next-command"),
+        (m("cmd-shift-up", "ctrl-shift-up"), "prev-command"),
+        (m("cmd-shift-down", "ctrl-shift-down"), "next-command"),
         (m("cmd-shift-o", "ctrl-shift-o"), "copy-last-output"),
         (m("cmd-shift-space", "ctrl-shift-space"), "select-mode"),
         ("shift-insert".into(), "paste"),
@@ -176,10 +184,26 @@ pub fn normalize_keys(source: &str) -> Result<String, String> {
             if ks.key_char.is_some() || !(ks.key.chars().count() == 1 || is_named_key(&ks.key)) {
                 return Err(format!("unknown key `{}` in `{part}`", ks.key));
             }
-            Ok(ks.unparse())
+            Ok(linux_shifted(ks).unparse())
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|v| v.join(" "))
+}
+
+/// On Linux GPUI reports Shift with a symbol key as the symbol it types
+/// (Ctrl+Shift+] arrives as `ctrl-}`), so a binding written with Shift and
+/// the unshifted symbol would never match. Rewrite it the way it arrives,
+/// for a US layout.
+fn linux_shifted(mut ks: Keystroke) -> Keystroke {
+    const PAIRS: &str = "1!2@3#4$5%6^7&8*9(0)-_=+[{]}\\|;:'\",<.>/?`~";
+    if cfg!(target_os = "linux") && ks.modifiers.shift && ks.key.chars().count() == 1 {
+        let chars: Vec<char> = PAIRS.chars().collect();
+        if let Some(pair) = chars.chunks(2).find(|p| p[0].to_string() == ks.key) {
+            ks.key = pair[1].to_string();
+            ks.modifiers.shift = false;
+        }
+    }
+    ks
 }
 
 /// Check an action name from `[keys]`: Ok(None) frees the key.
@@ -275,6 +299,29 @@ mod tests {
             assert!(ACTIONS.contains(&name), "{name}");
         }
         assert_eq!(bindings(&[], &[]).len(), defaults().len());
+    }
+
+    #[test]
+    fn shifted_symbols_match_how_linux_reports_them() {
+        let want = if cfg!(target_os = "linux") { "ctrl-}" } else { "ctrl-shift-]" };
+        assert_eq!(normalize_keys("ctrl-shift-]").unwrap(), want);
+        assert_eq!(normalize_keys("ctrl-shift-t").unwrap(), "ctrl-shift-t");
+        assert_eq!(normalize_keys("ctrl-shift-up").unwrap(), "ctrl-shift-up");
+    }
+
+    #[test]
+    fn arrows_with_ctrl_or_cmd_focus_panes() {
+        let b = bindings(&[], &[]);
+        let ctrl = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+        for dir in ["left", "right", "up", "down"] {
+            assert!(keys_of(&b, &format!("focus-{dir}")).contains(&format!("{ctrl}-{dir}")), "{dir}");
+        }
+        // No key is bound to two actions.
+        let mut keys: Vec<_> = defaults().into_iter().map(|(k, _)| k).collect();
+        let n = keys.len();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), n);
     }
 
     #[test]

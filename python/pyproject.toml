@@ -8,6 +8,7 @@ version = "1.0.0"
 description = "Write plugins and scripts for the Lumen terminal in Python"
 readme = "README.md"
 requires-python = ">=3.8"
+license = {text = "MIT OR Apache-2.0"}
 dependencies = []
 
 [tool.setuptools]

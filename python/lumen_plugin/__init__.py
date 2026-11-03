@@ -36,8 +36,14 @@ import sys
 import traceback
 import unicodedata
 
-__all__ = ["Plugin", "Pane", "Event", "LumenError", "quote", "typeable", "EVENTS"]
-__version__ = "1.0.0"
+__all__ = ["Plugin", "Pane", "PluginPane", "Event", "LumenError", "quote", "typeable", "keys", "EVENTS", "TAB_COLORS"]
+__version__ = "1.1.0"
+
+#: Colours a tab can take (see `Pane.set_tab_style`), from your theme; an
+#: exact "#rrggbb" works too.
+TAB_COLORS = ("red", "green", "yellow", "blue", "magenta", "cyan")
+
+_KEEP = object()
 
 #: Events Lumen can send; see `Plugin.on`.
 EVENTS = (
@@ -177,6 +183,13 @@ class Pane:
         Needs `panes`."""
         await self.app.call("set-title", pane=self.id, title=title)
 
+    async def move_tab(self, position: int) -> None:
+        """Move this pane's tab to `position` in its window, 1 being first.
+        Needs `panes`."""
+        if position < 1:
+            raise ValueError("tab positions start at 1")
+        await self.app.call("move-tab", pane=self.id, index=position - 1)
+
     async def focus(self) -> None:
         """Needs `panes`."""
         await self.app.call("focus", pane=self.id)
@@ -185,10 +198,32 @@ class Pane:
         """Needs `panes`."""
         await self.app.call("close", pane=self.id)
 
-    async def split(self, direction: str = "right", *, cwd=None, run=None, focus: bool = True) -> "Pane":
+    async def split(
+        self,
+        direction: str = "right",
+        *,
+        cwd=None,
+        run=None,
+        focus: bool = True,
+        size=None,
+        plugin_pane: bool = False,
+    ) -> "Pane":
         """Split this pane ("right" or "down") and return the new one, which
         starts in `cwd` (default: this pane's directory; ~ works) and runs `run` (a
-        string, or a list to quote). Needs `panes`."""
+        string, or a list to quote). Needs `panes`.
+
+        With `plugin_pane=True` the new pane runs nothing: you draw it, and
+        get what's typed in it. It returns a PluginPane.
+
+        `size` is the new pane's share: a fraction (0.3), or a number of rows
+        (down) or columns (right). Half by default."""
+        if plugin_pane:
+            if cwd is not None or run is not None:
+                raise ValueError("a plugin pane runs no program, so takes no cwd or run")
+            result = await self.app.call(
+                "split", pane=self.id, direction=direction, focus=focus, size=size, plugin_pane=True
+            )
+            return self.app._adopt(result["pane"])
         result = await self.app.call(
             "split",
             pane=self.id,
@@ -196,12 +231,150 @@ class Pane:
             cwd=_dir(cwd),
             run=None if run is None else _command_text(run),
             focus=focus,
+            size=size,
         )
         return Pane(self.app, result["pane"])
+
+    async def set_tab_style(self, *, badge=_KEEP, color=_KEEP) -> None:
+        """Mark this pane's tab: `badge` is a short label beside its title (up
+        to 24 characters, like "🍅 18:42"), `color` tints it: one of
+        TAB_COLORS, or "#rrggbb". None removes either; what you leave out
+        stays. Needs `panes`."""
+        params = {"pane": self.id}
+        if badge is not _KEEP:
+            params["badge"] = badge
+        if color is not _KEEP:
+            params["color"] = color
+        await self.app.request("set-tab-style", params)
 
     async def run_action(self, action: str) -> None:
         """Run a Lumen action (as named in [keys]) in this pane. Needs `input`."""
         await self.app.call("run-action", action=action, pane=self.id)
+
+
+_KEY_NAMES = {
+    "\r": "enter", "\n": "enter", "\t": "tab", "\x7f": "backspace", "\x08": "backspace",
+    "\x1b": "escape", " ": "space",
+}
+_CSI_KEYS = {
+    "A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end",
+    "2~": "insert", "3~": "delete", "5~": "pageup", "6~": "pagedown", "Z": "shift-tab",
+}
+_ESCAPE = re.compile(r"\x1b(?:\[[0-9;:<?]*[A-Za-z~]|O[A-Za-z])")
+
+
+def keys(text: str) -> list:
+    """The keys in a plugin pane's input, by name: "a", "A", "space",
+    "enter", "escape", "backspace", "tab", "up", "down", "left", "right",
+    "home", "end", "pageup", "pagedown", "delete", "ctrl-c" and so on. A
+    sequence it doesn't know comes back as it is."""
+    out, i = [], 0
+    while i < len(text):
+        m = _ESCAPE.match(text, i)
+        if m:
+            seq = m.group(0)
+            body = seq[2:]
+            # Modifiers (\x1b[1;5A) aren't named; the key is.
+            if body.endswith("~"):
+                body = body.split(";")[0].rstrip("~") + "~"
+            name = _CSI_KEYS.get(body) or _CSI_KEYS.get(body[-1:])
+            out.append(name or seq)
+            i = m.end()
+            continue
+        c = text[i]
+        if c in _KEY_NAMES:
+            out.append(_KEY_NAMES[c])
+        elif "\x01" <= c <= "\x1a":
+            out.append("ctrl-" + chr(ord(c) + 96))
+        else:
+            out.append(c)
+        i += 1
+    return out
+
+
+class PluginPane(Pane):
+    """A pane you draw: it runs no program. What you `write` shows in it, as
+    if a program had printed it (escape sequences for colour and cursor
+    movement work), and what's typed in it comes to your `on_key` and
+    `on_input` handlers. It closes when your plugin (or script) exits.
+
+        view = await pane.split("down", plugin_pane=True, focus=False)
+
+        @view.on_key
+        async def key(name):
+            if name == "q":
+                await view.close()
+
+    `cols` and `rows` are its size, updated before `on_resize` handlers run.
+    `closed` turns True when it closes, by you or otherwise."""
+
+    def __init__(self, app: "Plugin", id: int):
+        super().__init__(app, id)
+        self.cols = 80
+        self.rows = 24
+        self.closed = False
+        self._sized = False
+        self._on = {"key": [], "input": [], "resize": [], "close": []}
+
+    def __repr__(self) -> str:
+        return f"PluginPane({self.id})"
+
+    async def write(self, text: str) -> None:
+        """Show `text` (\\r\\n for a new line). Needs `panes`."""
+        if self.closed:
+            raise LumenError(-32000, "the pane has closed")
+        await self.app.call("write", pane=self.id, text=text)
+
+    async def draw(self, lines) -> None:
+        """Replace everything shown with `lines` (a list of strings, or one
+        string), cursor hidden: one write, so it never flickers."""
+        if isinstance(lines, str):
+            lines = lines.split("\n")
+        await self.write("\x1b[?25l\x1b[H\x1b[2J" + "\r\n".join(lines))
+
+    def on_key(self, fn):
+        """Call `fn(name)` for each key typed in the pane (see `keys`)."""
+        self._on["key"].append(fn)
+        return fn
+
+    def on_input(self, fn):
+        """Call `fn(text)` with input exactly as the terminal sent it: keys,
+        pastes, mouse reports if you turned them on."""
+        self._on["input"].append(fn)
+        return fn
+
+    def on_resize(self, fn):
+        """Call `fn()` when the pane changes size, starting with its first
+        size (straight away if that's known already)."""
+        self._on["resize"].append(fn)
+        if self._sized:
+            self.app._spawn(fn)
+        return fn
+
+    def on_close(self, fn):
+        """Call `fn()` once the pane has closed."""
+        self._on["close"].append(fn)
+        return fn
+
+    def _handle(self, params: dict) -> None:
+        kind = params.get("event")
+        if kind == "input":
+            text = params.get("text", "")
+            for fn in self._on["input"]:
+                self.app._spawn(fn, text)
+            for name in keys(text):
+                for fn in self._on["key"]:
+                    self.app._spawn(fn, name)
+        elif kind == "resize":
+            self.cols, self.rows = params.get("cols", self.cols), params.get("rows", self.rows)
+            self._sized = True
+            for fn in self._on["resize"]:
+                self.app._spawn(fn)
+        elif kind == "closed" and not self.closed:
+            self.closed = True
+            self.app._plugin_panes.pop(self.id, None)
+            for fn in self._on["close"]:
+                self.app._spawn(fn)
 
 
 class Event:
@@ -245,6 +418,9 @@ class Plugin:
         self._send_line = None
         self._tasks: set = set()
         self._closed = False
+        self._plugin_panes: dict = {}
+        # Messages for a plugin pane that came before we knew of it.
+        self._early: dict = {}
 
     @property
     def data_dir(self) -> str:
@@ -303,6 +479,11 @@ class Plugin:
     async def call(self, method: str, **params):
         """Send any request and return its result. Parameters left as None
         aren't sent. Raises LumenError if Lumen says no."""
+        return await self.request(method, {k: v for k, v in params.items() if v is not None})
+
+    async def request(self, method: str, params: dict):
+        """Like `call`, with the parameters as a dict sent as they are
+        (None as null)."""
         if self._send_line is None:
             raise RuntimeError("not connected: call this from a handler, or inside app.run()")
         if self._closed:
@@ -311,7 +492,6 @@ class Plugin:
         rid = self._next_id
         future = asyncio.get_running_loop().create_future()
         self._pending[rid] = future
-        params = {k: v for k, v in params.items() if v is not None}
         self._send_line(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
         return await future
 
@@ -324,8 +504,8 @@ class Plugin:
         return (await self.call("list"))["tabs"]
 
     async def panes(self) -> list:
-        """Every pane, each with a `tab` index added."""
-        return [dict(p, tab=t["index"]) for t in await self.tabs() for p in t["panes"]]
+        """Every pane, each with its `tab` index and `window` added."""
+        return [dict(p, tab=t["index"], window=t.get("window", 0)) for t in await self.tabs() for p in t["panes"]]
 
     async def focused(self) -> Pane | None:
         """The pane with keyboard focus."""
@@ -336,9 +516,14 @@ class Plugin:
         """A Pane by id (from an event, a command or `panes()`)."""
         return Pane(self, id)
 
-    async def new_tab(self, *, cwd=None, run=None) -> Pane:
+    async def new_tab(self, *, cwd=None, run=None, plugin_pane: bool = False) -> Pane:
         """Open a tab in `cwd` (~ works) and return its pane. `run` is a
-        string, or a list to quote. Needs `panes`."""
+        string, or a list to quote. With `plugin_pane=True`, the tab holds a
+        PluginPane for you to draw. Needs `panes`."""
+        if plugin_pane:
+            if cwd is not None or run is not None:
+                raise ValueError("a plugin pane runs no program, so takes no cwd or run")
+            return self._adopt((await self.call("new-tab", plugin_pane=True))["pane"])
         result = await self.call("new-tab", cwd=_dir(cwd), run=None if run is None else _command_text(run))
         return Pane(self, result["pane"])
 
@@ -373,6 +558,13 @@ class Plugin:
         """Run a Lumen action (as named in [keys]) in the focused pane.
         Needs `input`."""
         await self.call("run-action", action=action)
+
+    def _adopt(self, id: int) -> PluginPane:
+        pane = PluginPane(self, id)
+        self._plugin_panes[id] = pane
+        for params in self._early.pop(id, []):
+            pane._handle(params)
+        return pane
 
     def log(self, *args) -> None:
         """Write to the plugin's log (stderr). `print` does the same in a
@@ -478,6 +670,13 @@ class Plugin:
             pane = params.get("pane")
             if entry:
                 self._spawn(entry[2], Pane(self, pane) if isinstance(pane, int) else None)
+        elif msg["method"] == "pane":
+            # About one of our plugin panes.
+            pane = self._plugin_panes.get(params.get("pane"))
+            if pane is not None:
+                pane._handle(params)
+            elif params.get("event") != "closed":
+                self._early.setdefault(params.get("pane"), []).append(params)
         elif msg["method"] == "event":
             event = Event(self, params)
             for fn in self._handlers.get(event.name, []) + self._handlers.get("*", []):

@@ -1,0 +1,5 @@
+description = "A pomodoro timer in a pane of its own, with the countdown on its tab"
+version = "1.0.0"
+command = "python3 main.py"
+# panes: to open the timer's pane, draw it and mark its tab.
+permissions = ["panes"]

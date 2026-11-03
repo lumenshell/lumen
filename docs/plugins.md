@@ -147,6 +147,51 @@ kept across updates and readable only by you. `app.name` is its name.
 **Logging.** `print()` goes to the plugin's log, as does `app.log(...)`;
 stdout belongs to the protocol, so the package moves `print` out of the way.
 
+## Drawing your own pane
+
+A plugin pane runs no program: you draw it, and get what's typed in it. Use
+one for a timer, a dashboard, a game, anything a terminal can show. Ask for
+one with `plugin_pane=True`:
+
+```python
+view = await pane.split("down", plugin_pane=True, focus=False, size=8)
+
+@view.on_resize                       # also runs once it has its first size
+async def redraw():
+    await view.draw([f"{view.cols} × {view.rows}", "", "press q to close"])
+
+@view.on_key
+async def key(name):                  # "q", "space", "enter", "up", "ctrl-c", …
+    if name == "q":
+        await view.close()
+
+@view.on_close
+def gone():                           # closed by you, by Lumen, or above
+    ...
+```
+
+`view.write(text)` shows text as if a program had printed it, so escape
+sequences work: colours (`\x1b[31m`), moving the cursor (`\x1b[5;10H`),
+clearing (`\x1b[2J`), hiding the cursor (`\x1b[?25l`), even mouse reports
+(turn them on with `\x1b[?1000h` and read them in `on_input`, which gets
+input exactly as sent). `view.draw(lines)` clears and redraws the whole pane
+in one go, without flicker. `size` is the new pane's share of the space: a
+fraction like `0.3`, or a number of rows (down) or columns (right).
+
+A plugin pane belongs to your plugin: no one else can write to it, it closes
+when your plugin stops, and it isn't brought back with the session. Its tab
+is named after your plugin until you `set_title`. `new_tab(plugin_pane=True)`
+gives a whole tab to it.
+
+**Marking tabs.** `pane.set_tab_style(badge="🍅 24:59", color="red")` puts a
+short badge beside the tab's title and tints the tab, which you can see from
+any tab. Colours are `red`, `green`, `yellow`, `blue`, `magenta` and `cyan`
+from your theme (so they suit it), or `"#rrggbb"`. Pass `None` to remove one;
+what you leave out stays as it is.
+
+The built-in [Pomodoro Timer](../plugins/pomodoro/main.py) uses both, in
+about 300 lines.
+
 ## Permissions
 
 Without any permissions a plugin can list panes, subscribe to events, show
@@ -159,7 +204,7 @@ permissions = ["panes", "input"]
 
 | Permission | Allows |
 |---|---|
-| `panes` | `new_tab`, `split`, `focus`, `close`, `set_title` |
+| `panes` | `new_tab`, `split`, `focus`, `close`, `set_title`, `set_tab_style`, `move_tab`, and drawing your own plugin panes |
 | `input` | `send_text`, `run`, `run_action`: typing into panes, which can run any command |
 | `screen` | `read_screen`, and `command` in `command-finished` events |
 
@@ -221,12 +266,13 @@ else uses the most recently started Lumen.
 | `@on_start` | Run once connected. |
 | `run(main=None)` | Connect and handle messages until Lumen goes away. With `main`, run it and stop when it returns. |
 | `await call(method, **params)` | Any request; parameters that are None aren't sent. Returns the result. |
+| `await request(method, params)` | The same with a dict, sent as it is (None as `null`). |
 | `await hello()` | Lumen's version, protocol version, actions and events. |
 | `await tabs()` | Every tab with its panes, as `list` returns them. |
-| `await panes()` | Every pane as a dict (`id`, `title`, `cwd`, `cols`, `rows`, `last_exit`, `active`, `focused`, `tab`). |
+| `await panes()` | Every pane as a dict (`id`, `title`, `cwd`, `cols`, `rows`, `last_exit`, `active`, `focused`, `plugin_pane`, `tab`, `window`). |
 | `await focused()` | The focused `Pane`, or None. |
 | `pane(id)` | A `Pane` for an id. |
-| `await new_tab(cwd=None, run=None)` | Open a tab (`~` works in `cwd`); returns its `Pane`. `panes` |
+| `await new_tab(cwd=None, run=None, plugin_pane=False)` | Open a tab (`~` works in `cwd`); returns its `Pane`, or a `PluginPane` with `plugin_pane=True`. `panes` |
 | `await pick(items, placeholder=None, message=None)` | Palette picker; returns the chosen id or None. Items: strings, `(id, label)`, `(id, label, detail)` or dicts. `message` is wrapped text under the input. |
 | `await confirm(question, message=None, yes="Yes", no="No")` | Yes/no in the palette; Esc is no. |
 | `await notify(title, body="")` | Desktop notification. |
@@ -244,10 +290,32 @@ else uses the most recently started Lumen.
 | `await send_text(text)` | Type text as-is. `input` |
 | `await run(command)` | Type a command and press Enter; a list is quoted word by word. `input` |
 | `await read_screen(lines=None)` | The screen's text, or its last `lines` lines. `screen` |
-| `await split(direction="right", cwd=None, run=None, focus=True)` | Split it; returns the new `Pane`. `panes` |
+| `await split(direction="right", cwd=None, run=None, focus=True, size=None, plugin_pane=False)` | Split it; returns the new `Pane` (a `PluginPane` with `plugin_pane=True`). `size`: a fraction, or rows/columns. `panes` |
 | `await set_title(title=None)` | Name its tab; None goes back to the program's title. `panes` |
+| `await set_tab_style(badge=…, color=…)` | Badge beside its tab's title (up to 24 characters) and a tint (`TAB_COLORS` or `"#rrggbb"`); None removes, left out stays. `panes` |
+| `await move_tab(position)` | Move its tab to `position` in its window, 1 being first. `panes` |
 | `await focus()`, `await close()` | `panes` |
 | `await run_action(action)` | Run a Lumen action in this pane. `input` |
+
+### PluginPane
+
+A `Pane` you draw (see [Drawing your own pane](#drawing-your-own-pane)), with:
+
+| | |
+|---|---|
+| `cols`, `rows` | Its size, kept up to date. |
+| `closed` | True once it has closed. |
+| `await write(text)` | Show text, escape sequences and all (`\r\n` for a new line). |
+| `await draw(lines)` | Clear it and show `lines` (a list, or a string), cursor hidden. |
+| `@on_key` | The function gets each key typed, by name (see `keys`). |
+| `@on_input` | The function gets input exactly as the terminal sent it. |
+| `@on_resize` | The function runs when its size changes, and once it has one. |
+| `@on_close` | The function runs once it has closed. |
+
+`keys(text)` names the keys in a piece of input: letters and symbols as
+themselves, and `space`, `enter`, `tab`, `shift-tab`, `backspace`, `escape`,
+`up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `insert`,
+`delete`, `ctrl-a` to `ctrl-z`. Sequences it doesn't know come back as they are.
 
 ### Event
 

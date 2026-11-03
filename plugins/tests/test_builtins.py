@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 import os
 import runpy
 import stat
@@ -181,3 +182,70 @@ class ProjectLayoutTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PomodoroTests(unittest.TestCase):
+    def setUp(self):
+        self.p = load("pomodoro")
+        self.t = 1000.0
+        self.timer = self.p["Timer"]("classic", now=lambda: self.t)
+
+    def test_breaks_start_by_themselves_and_focus_waits_for_you(self):
+        timer = self.timer
+        self.assertEqual((timer.phase, timer.badge(), timer.color()), ("focus", "🍅 25:00", "red"))
+        self.t += 25 * 60
+        self.assertEqual(timer.remaining(), 0)
+        timer.finish()
+        self.assertEqual((timer.phase, timer.ready, timer.badge()), ("break", False, "☕ 05:00"))
+        self.t += 5 * 60
+        timer.finish()
+        self.assertEqual((timer.phase, timer.ready, timer.badge(), timer.color()), ("focus", True, "🍅 ready", "blue"))
+        # Waiting doesn't use up the session.
+        self.t += 600
+        self.assertEqual(timer.remaining(), 25 * 60)
+        timer.toggle()
+        self.t += 1
+        self.assertEqual(clock := self.p["clock"](timer.remaining()), "24:59", clock)
+
+    def test_every_fourth_break_is_long(self):
+        timer = self.timer
+        phases = []
+        for _ in range(4):
+            timer.start("focus")
+            timer.finish()
+            phases.append(timer.phase)
+        self.assertEqual(phases, ["break", "break", "break", "long"])
+
+    def test_pause_holds_the_time(self):
+        timer = self.timer
+        self.t += 60
+        timer.toggle()
+        self.t += 3600
+        self.assertEqual((timer.badge(), timer.color()), ("‖ 24:00", "yellow"))
+        timer.toggle()
+        self.t += 30
+        self.assertEqual(timer.remaining(), 23 * 60 + 30)
+
+    def test_minutes_can_be_added_but_not_below_one(self):
+        timer = self.timer
+        timer.adjust(60)
+        self.assertEqual(timer.remaining(), 26 * 60)
+        for _ in range(40):
+            timer.adjust(-60)
+        self.assertEqual(timer.remaining(), 60)
+
+    def test_drawn_big_when_it_fits_and_on_one_line_when_not(self):
+        strip = re.compile(r"\x1b\[[0-9;]*m")
+        lines = [strip.sub("", l) for l in self.timer.render(80, 12, today=2)]
+        self.assertEqual(len(lines), 11)  # centred: one blank line on top
+        self.assertIn("FOCUS  ·  25 min  ·  today 2 🍅", lines[1])
+        self.assertTrue(all(len(l) <= 80 for l in lines))
+        self.assertIn("██████", lines[3])
+        small = [strip.sub("", l) for l in self.timer.render(30, 3, today=0)]
+        self.assertEqual([l for l in small if l], [" FOCUS 25:00  " + "╌" * 16])
+
+    def test_sessions_are_counted_by_day(self):
+        self.assertEqual(self.p["today_count"](), 0)
+        self.p["count_session"]()
+        self.p["count_session"]()
+        self.assertEqual(self.p["today_count"](), 2)

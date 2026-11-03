@@ -17,14 +17,23 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
 - Tabs in a custom title bar, with pane counts and inherited working directory.
   A tab shows the title its program sets until you rename it (double-click the
   tab, or Ctrl+, / ⌘,); **+** opens a tab and a tab's **×**
-  closes it with all its panes. Drag the title bar to move the window and
-  double-click it to maximize. Closing the last pane quits Lumen
+  closes it with all its panes. Drag a tab along the bar to reorder it. Drag the
+  title bar to move the window and double-click it to maximize
+- As many windows as you like (New Window, Ctrl+Shift+N / ⌘N, opens in the
+  current pane's folder). Closing a window's last pane closes the window;
+  Lumen quits when its last window closes
 - Split panes on a padded canvas: rounded frames, an accent focus halo, and
   dimmed unfocused panes; Focus Mode zooms the active pane
 - Drag the gap between panes to resize a split; double-click it to even the split out
-- Your layout comes back next launch: tabs, splits and their sizes, each pane's
-  working directory, which pane had focus, tab names you gave, and the window's
-  size, position and maximized state
+- Your layout comes back next launch: every window, with its tabs, splits and
+  their sizes, each pane's working directory, which pane had focus, tab names
+  you gave, and the window's size, position and maximized state
+- Input methods for Chinese, Japanese and Korean, compose keys and dead keys,
+  with the text you're composing shown at the cursor
+- The kitty keyboard protocol, so programs such as Neovim and Helix can tell
+  Ctrl+I from Tab and Esc from Ctrl+[, and see key releases
+- A blinking cursor (or not: `cursor-blink`), and a see-through, blurred
+  background where the desktop supports it (`background-opacity`)
 - Command palette (fuzzy search over every action and theme)
 - Find in scrollback, with optional case-sensitive and regex matching
 - Keyboard select mode: move through the screen and scrollback with vi keys,
@@ -106,10 +115,11 @@ switcher; drag it into Applications. Its binary is
 |--------------------|----------------------|------------------|
 | Command palette    | Ctrl+Shift+P         | ⌘⇧P              |
 | New tab            | Ctrl+T / Ctrl+Shift+T | ⌘T              |
+| New window         | Ctrl+Shift+N         | ⌘N               |
 | Split right / down | Ctrl+Shift+D / E     | ⌘D / ⌘⇧D         |
 | Close pane         | Ctrl+Shift+W         | ⌘W               |
-| Focus pane         | Alt+Shift+Arrows     | ⌘⌥Arrows         |
-| Next pane          | Ctrl+Shift+N         | ⌘]               |
+| Focus pane         | Ctrl+Arrows or Alt+Shift+Arrows | ⌘Arrows or ⌘⌥Arrows |
+| Next pane          | Ctrl+Shift+]         | ⌘]               |
 | Focus Mode (zoom)  | Ctrl+Shift+Enter     | ⌘⇧Enter          |
 | Next tab           | Ctrl+Tab / Ctrl+PgDn | ⌘⇧]              |
 | Previous tab       | Ctrl+Shift+Tab / Ctrl+PgUp | ⌘⇧[        |
@@ -121,7 +131,7 @@ switcher; drag it into Applications. Its binary is
 | Scroll a page      | Shift+PgUp / PgDn    | Shift+PgUp / PgDn|
 | Open link          | Ctrl+click           | ⌘+click          |
 | Find in scrollback | Ctrl+Shift+F         | ⌘F               |
-| Prev / next command | Ctrl+Shift+↑ / ↓    | ⌘↑ / ⌘↓          |
+| Prev / next command | Ctrl+Shift+↑ / ↓    | ⌘⇧↑ / ⌘⇧↓        |
 | Copy last output   | Ctrl+Shift+O         | ⌘⇧O              |
 | Keyboard select mode | Ctrl+Shift+Space   | ⌘⇧Space          |
 | Quit               | Ctrl+Shift+Q         | ⌘Q               |
@@ -196,6 +206,8 @@ line-height = 1.35             # multiple of the font size
 padding = 12                   # pixels between a pane's edge and its text
 scrollback = 10000             # lines of history per pane
 cursor-style = "block"         # "block", "beam" or "underline", until a program picks one
+cursor-blink = true            # false: the cursor never blinks, even if a program asks
+background-opacity = 1         # 0.3 to 1; below 1 the desktop shows through (needs a compositor on Linux)
 shell = "/usr/bin/fish --login" # program for new panes; defaults to $SHELL
 shell-integration = true       # mark prompts and commands in bash, zsh and fish
 notify-after = 10              # seconds a command must run to notify when it ends; 0 = off
@@ -226,6 +238,8 @@ binds a key to an action by name, and applies as soon as you save:
 ctrl-alt-t = "new-tab"      # an extra key for New Tab; Ctrl+Shift+T still works
 ctrl-tab = "none"           # free Ctrl+Tab for the desktop or the shell
 ctrl-t = "none"             # give Ctrl+T back to the shell (bash swaps letters, fzf finds files)
+ctrl-left = "none"          # give Ctrl+←/→ back to the shell for jumping by word
+ctrl-right = "none"         # (Alt+Shift+arrows still move between panes)
 "ctrl-=" = "increase-font"  # keys with symbols need quotes
 ```
 
@@ -233,7 +247,9 @@ A key you list replaces whatever it did by default; `"none"` frees it, so it
 goes to the program in the terminal instead. An action's other default keys
 keep working, so to move one, bind the new key and set the old one to
 `"none"`. Keys are case-insensitive and written like `ctrl-shift-t`, `alt-1`,
-`cmd-k` (macOS), `f5`, `shift-insert` or `ctrl-pageup`. Multi-key sequences
+`cmd-k` (macOS), `f5`, `shift-insert` or `ctrl-pageup`. On Linux a Shift
+plus a symbol is matched as the symbol it types on a US layout, so
+`ctrl-shift-]` and `ctrl-}` are the same key. Multi-key sequences
 such as `ctrl-a n` aren't supported yet. Typos are listed in the banner, with a
 suggestion when an action name is close.
 
@@ -241,7 +257,7 @@ Plugin commands can be bound too, as `plugin:<plugin>:<command id>`, e.g.
 `alt-g = "plugin:git-branch:switch"`; that also overrides a key the plugin
 asked for.
 
-Actions: `new-tab`, `close-pane`, `split-right`, `split-down`, `next-tab`,
+Actions: `new-tab`, `new-window`, `close-pane`, `split-right`, `split-down`, `next-tab`,
 `prev-tab`, `tab-1` … `tab-9`, `rename-tab`, `next-pane`, `focus-left`, `focus-right`,
 `focus-up`, `focus-down`, `toggle-zoom`, `command-palette`, `next-theme`,
 `increase-font`, `decrease-font`, `reset-font`, `copy`, `paste`, `find`,
@@ -253,7 +269,7 @@ When a pane runs bash, zsh or fish, Lumen loads a small script into it that
 marks where each prompt, command and its output begins, and reports the
 shell's directory. That gives you:
 
-- **Jump between commands** with Ctrl+Shift+↑ / ↓ (⌘↑ / ⌘↓). The prompt you
+- **Jump between commands** with Ctrl+Shift+↑ / ↓ (⌘⇧↑ / ⌘⇧↓). The prompt you
   jumped to stays highlighted until you type; jumping past the newest one
   returns to the bottom.
 - **Copy the last command's output** with Ctrl+Shift+O (⌘⇧O). It's selected
@@ -325,6 +341,7 @@ lumen msg split down --pane "$p" --cwd ~/api --run 'cargo watch -x test' --no-fo
 lumen msg send-text --pane "$p" 'q\n'   # type into a pane (\n is Enter)
 lumen msg read-screen --pane "$p" --lines 20
 lumen msg set-title "Servers"           # this pane's tab; no title resets it
+lumen msg tab-style --badge prod --color red   # mark the tab; --clear removes it
 lumen msg action toggle-zoom            # any action from Key bindings
 lumen msg notify "Deploy done" "web-3 is live"
 lumen msg watch command-finished        # events as JSON lines, until Ctrl+C
@@ -332,13 +349,15 @@ lumen msg watch command-finished        # events as JSON lines, until Ctrl+C
 
 | Command | Does |
 |---|---|
-| `list [--json]` | Tabs and panes: ids, titles, directories, sizes, last exit status |
+| `list [--json]` | Every window's tabs and panes: ids, titles, directories, sizes, last exit status |
 | `new-tab [--cwd DIR] [--run CMD]` | Open a tab; prints its pane id |
-| `split [right\|down] [--pane ID] [--cwd DIR] [--run CMD] [--no-focus]` | Split a pane; prints the new pane id |
+| `split [right\|down] [--pane ID] [--cwd DIR] [--run CMD] [--size N] [--no-focus]` | Split a pane; prints the new pane id. `--size` is the new pane's share: a fraction (`0.3`) or rows/columns (`12`) |
 | `focus [ID]`, `close [ID]` | Show and focus, or close, a pane |
 | `send-text [--pane ID] TEXT` | Type text; `\n`, `\r`, `\t`, `\e` and `\\` are understood |
 | `read-screen [--pane ID] [--lines N]` | Print the screen, or the last N lines including history |
 | `set-title [--pane ID] [TITLE]` | Name a tab; without TITLE the program's title is shown again |
+| `move-tab [--pane ID] N` | Move the pane's tab to position N in its window (1 is first) |
+| `tab-style [--pane ID] [--badge TEXT] [--color COLOR] [--clear]` | Put a short badge beside the tab's title, tint the tab (`red`, `green`, `yellow`, `blue`, `magenta`, `cyan` from your theme, or `#rrggbb`), or `--clear` both |
 | `notify TITLE [BODY]` | Desktop notification (`notify-send` on Linux) |
 | `action NAME [--pane ID]` | Run an action such as `split-right` or `find` |
 | `watch [EVENT...]` | Stream events (all of them, or the ones named) |
@@ -347,7 +366,7 @@ lumen msg watch command-finished        # events as JSON lines, until Ctrl+C
 `--run` types the command into the new pane's shell, so the shell stays open
 after it finishes. A new pane starts in the directory of the pane it was split
 from (or the current one, for tabs) unless `--cwd` says otherwise. Tab titles
-set this way aren't kept between sessions.
+and badges set this way aren't kept between sessions.
 
 More complete scripts (a project layout, run-and-wait, git branch tab titles,
 broadcasting, grabbing another pane's output, and a Python client using the
@@ -397,13 +416,31 @@ Methods: `hello` (protocol version, Lumen version, actions and events),
 `show-picker` (`items`: a list of `{id, label, detail}`, `placeholder`, and
 `message`, text shown under the input; answers
 `{"id": ...}` with the choice, or `null` if closed),
-`list`, `new-tab` (`cwd`, `run`), `split` (`pane`, `direction`, `cwd`, `run`,
-`focus`), `focus`, `close`, `send-text` (`pane`, `text`), `read-screen`
-(`pane`, `lines`), `set-title` (`pane`, `title`), `notify` (`title`, `body`),
+`list`, `new-tab` (`cwd`, `run`, `plugin_pane`), `split` (`pane`, `direction`,
+`cwd`, `run`, `focus`, `size`, `plugin_pane`), `focus`, `close`, `send-text`
+(`pane`, `text`), `read-screen` (`pane`, `lines`), `set-title` (`pane`,
+`title`), `set-tab-style` (`pane`, `badge`, `color`; a field left out stays,
+`null` clears it), `move-tab` (`pane`, `index`, counting from 0), `write`
+(`pane`, `text`; plugin panes only), `notify` (`title`, `body`),
 `run-action` (`action`, `pane`) and `subscribe` (`events`, a list; omit for
-all). `pane` is optional everywhere and means the focused pane. After
+all). `pane` is optional everywhere and means the focused pane, in the active
+window. `list` covers every window: each tab has a `window` (0 for the first
+window opened) and `window_active`, and its `index` counts within its window.
+After
 `subscribe`, the connection also receives events as notifications:
 `{"jsonrpc":"2.0","method":"event","params":{"event":"bell","pane":4294967298}}`.
+
+**Plugin panes.** `"plugin_pane": true` on `new-tab` or `split` opens a pane
+that runs no program: the connection that opened it draws it with `write`
+(text with escape sequences, as a program would print; nobody else may write
+to it), and is sent what happens to it as `pane` notifications:
+`{"method":"pane","params":{"event":"input","pane":…,"text":"q"}}` for what's
+typed (keys arrive as a terminal sends them, so ↑ is `\u001b[A`),
+`"resize"` with `cols` and `rows` (also once it first has a size), and
+`"closed"`. It closes when the connection does, isn't kept in the session,
+and its tab is named after the plugin (`script` for a socket client) until
+it sets a title. In `list`, such panes have `"plugin_pane": true`, and tabs
+show their `badge` and `color`.
 Errors use the standard JSON-RPC codes, with `-32000` for requests that can't
 be carried out (such as an unknown pane). The protocol version (`hello`) goes
 up only when a change could break existing clients.
@@ -431,9 +468,10 @@ approval the first time).
 | **SSH to Host** (`ssh-hosts`) | Ctrl+Shift+S (⌘⇧S) lists the hosts in `~/.ssh/config` (and files it `Include`s) and opens the one you pick in a new tab named after it. | `panes` |
 | **Project Layouts** (`project-layout`) | Ctrl+Shift+L (⌘⇧L) finds `.lumen-layout.toml` in the pane's folder or above, shows you every command it would run, and opens its tab and splits ([format](plugins/project-layout/main.py)). | `panes` |
 | **Build Status** (`build-status`) | When a build or test (`cargo test`, `make`, `npm test`, `pytest`, …) finishes, the tab title shows how it went, like `✓ cargo test · 12s`, until the next command. Leaves tabs you've named alone. | `screen`, `panes` |
+| **Pomodoro Timer** (`pomodoro`) | **Start Pomodoro** asks how long (25, 50 or 15 minutes of focus), then opens a strip under the pane with a big countdown. The tab shows it too, tinted red while you focus and green on a break. Breaks start by themselves, with every fourth a long one; the next session waits for you. In the timer: Space pauses, S skips, R restarts, +/- change a minute, Q closes. Counts today's sessions. | `panes` |
 
-All of them need [shell integration](#shell-integration) to know folders and
-commands. Their data (history, folders) is kept in
+Most of them need [shell integration](#shell-integration) to know folders and
+commands (the Pomodoro Timer doesn't). Their data (history, folders) is kept in
 `~/.local/state/lumen/plugin-data/`, readable only by you. A folder of your own
 in the plugins folder with the same name runs instead of the built-in one, so
 you can copy one from [`plugins/`](plugins/) and change it.
@@ -496,6 +534,11 @@ Besides the socket API's methods, plugins can:
   where `pane` is the focused pane. Commands go away when the plugin stops.
 - **Ask you to choose**: `show-picker` opens the palette with the plugin's
   items and answers with the one you pick (or `null` for Esc).
+- **Draw panes of their own**: a [plugin pane](#protocol) runs no program;
+  the plugin writes to it and gets its keys, for timers, dashboards, games or
+  anything else a terminal can show.
+- **Mark tabs**: `set-tab-style` puts a badge beside a tab's title and tints
+  it, for a countdown, a build that broke or a production server.
 
 **Permissions.** Without any, a plugin can list panes, subscribe to events,
 show notifications, add commands and show pickers. Anything more is declared
@@ -504,7 +547,7 @@ time Lumen sees the plugin (and again if its permissions or command change):
 
 | Permission | Allows |
 |---|---|
-| `panes` | `new-tab`, `split`, `focus`, `close`, `set-title` |
+| `panes` | `new-tab`, `split`, `focus`, `close`, `set-title`, `set-tab-style`, `move-tab`, and drawing its own plugin panes (`write`) |
 | `input` | `send-text`, `run-action`: typing into panes, which can run any command |
 | `screen` | `read-screen`, and the command text in `command-finished` events |
 
@@ -535,14 +578,15 @@ speaking the raw protocol) and `snippets` (a snippet library).
 
 ## Session
 
-The pane layout is saved to `~/.local/state/lumen/session.json`
+Every window's pane layout is saved to `~/.local/state/lumen/session.json`
 (`$XDG_STATE_HOME`, or `~/Library/Application Support/lumen` on macOS) when you
-quit or close the window, and every few seconds while Lumen runs. Tab names you
-gave are kept. Shells start fresh in their saved directories; scrollback isn't kept. If you `exit` every
-shell, the session is cleared and the next launch starts with one tab. Delete
-the file to reset.
+quit, and every few seconds while Lumen runs. Tab names you gave are kept.
+Shells start fresh in their saved directories; scrollback isn't kept. Closing a
+window drops it from the session, except the last one, which comes back next
+launch. If you `exit` every shell, the session is cleared and the next launch
+starts with one tab. Delete the file to reset.
 
-The window reopens at its saved size and position, maximized or fullscreen if it
+Each window reopens at its saved size and position, maximized or fullscreen if it
 was. If the saved spot would leave the title bar off every connected monitor
 (say a monitor was unplugged), the window manager places it instead. On Wayland,
 apps can't position their own windows, so only the size and maximized state
@@ -580,7 +624,7 @@ socket API is on.
 | `src/workspace.rs`     | Title bar, tabs, pane tree, focus halo, palette overlay   |
 | `src/terminal_view.rs` | Grid rendering, cursor, selection, mouse and key input    |
 | `src/pty.rs`           | Shell process + `alacritty_terminal` state and event loop |
-| `src/input.rs`         | Keystroke → escape-sequence encoding                      |
+| `src/input.rs`         | Keystroke → escape-sequence encoding, legacy and kitty keyboard protocol |
 | `src/links.rs`         | URL and OSC 8 hyperlink detection                         |
 | `src/search.rs`        | Find in scrollback: matching, navigation, highlights      |
 | `src/vi.rs`            | Keyboard select mode: keys, motions, selections           |
@@ -590,7 +634,7 @@ socket API is on.
 | `src/palette.rs`       | Command palette                                           |
 | `src/theme.rs`         | Theme palettes and 256-colour table                       |
 | `src/settings.rs`      | Settings global and config file                           |
-| `src/session.rs`       | Saved pane layout (JSON) and loading/sanitising it        |
+| `src/session.rs`       | Saved windows and pane layouts (JSON) and loading/sanitising them |
 | `src/shell_integration.rs` | Loading the shell scripts; turning their OSC 133/7 marks into hidden links |
 | `src/marks.rs`         | Finding prompts, exit statuses and command output in the grid |
 | `shell-integration/`   | The bash, zsh and fish scripts                            |
@@ -603,6 +647,7 @@ socket API is on.
 | `python/`              | `lumen_plugin`, the Python package for plugins (built into Lumen), and its tests |
 | `plugins/`             | The built-in plugins (built into Lumen; turned on in the Plugin Gallery), and tests |
 | `docs/plugins.md`      | Guide and reference for writing plugins in Python         |
+| `vendor/xim-ctext/`    | A patched copy of the decoder GPUI's X11 input-method client uses, so input methods can't crash Lumen ([why](vendor/xim-ctext/README-lumen.md)) |
 
 ## Tests
 
@@ -617,5 +662,14 @@ python3 -m unittest discover -s plugins/tests  # the built-in plugins
 - Keyboard link hints
 - In-process plugin hooks
 - A quick-terminal dropdown
-- IME input, cursor blink, background blur/opacity setting
 - Ghostty theme file import
+
+## License
+
+Lumen is available under either the [MIT License](LICENSE-MIT) or the
+[Apache License 2.0](LICENSE-APACHE), at your option. Unless you say otherwise,
+anything you contribute is offered under the same terms.
+
+The bundled fonts, JetBrains Mono and Inter, keep their own license, the SIL
+Open Font License ([JetBrains Mono](assets/fonts/JetBrainsMono-OFL.txt),
+[Inter](assets/fonts/Inter-LICENSE.txt)).

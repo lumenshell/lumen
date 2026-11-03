@@ -38,6 +38,10 @@ pub struct Settings {
     pub scrollback: usize,
     /// Cursor shape used until a program picks one.
     pub cursor_shape: CursorShape,
+    /// Blink the cursor. Off, nothing blinks, even when a program asks.
+    pub cursor_blink: bool,
+    /// How opaque the window background is, from 0.3 to 1 (fully opaque).
+    pub background_opacity: f32,
     /// Program and arguments for new panes; `None` uses `$SHELL`.
     pub shell: Option<Vec<String>>,
     /// Load Lumen's shell integration into bash, zsh and fish.
@@ -69,6 +73,8 @@ impl Default for Settings {
             padding: 12.0,
             scrollback: 10_000,
             cursor_shape: CursorShape::Block,
+            cursor_blink: true,
+            background_opacity: 1.0,
             shell: None,
             shell_integration: true,
             socket_api: true,
@@ -114,7 +120,7 @@ impl Settings {
     }
 
     pub fn cursor_style(&self) -> CursorStyle {
-        CursorStyle { shape: self.cursor_shape, blinking: false }
+        CursorStyle { shape: self.cursor_shape, blinking: self.cursor_blink }
     }
 
     /// Settings from config text. Problems are collected rather than fatal:
@@ -202,6 +208,20 @@ impl Settings {
                         None
                     }
                     _ => Some(bad("\"block\", \"beam\" or \"underline\"")),
+                },
+                "cursor-blink" => match item.as_bool() {
+                    Some(v) => {
+                        s.cursor_blink = v;
+                        None
+                    }
+                    _ => Some(bad("true or false")),
+                },
+                "background-opacity" => match number(item) {
+                    Some(v) if (0.3..=1.0).contains(&v) => {
+                        s.background_opacity = v as f32;
+                        None
+                    }
+                    _ => Some(bad("a number from 0.3 to 1")),
                 },
                 "shell" => match item.as_str().map(|v| v.split_whitespace().map(String::from).collect::<Vec<_>>()) {
                     Some(parts) if !parts.is_empty() => {
@@ -335,6 +355,12 @@ impl Settings {
              \n\
              # Cursor shape until a program picks one: \"block\", \"beam\" or \"underline\".\n\
              cursor-style = \"{cursor}\"\n\
+             # Blink the cursor. When false it never blinks, even if a program asks it to.\n\
+             cursor-blink = {blink}\n\
+             \n\
+             # How opaque the window background is, from 0.3 to 1. Below 1 shows what's\n\
+             # behind the window (on Linux this needs a compositor).\n\
+             background-opacity = {opacity}\n\
              \n\
              # Program (and arguments) to run in new panes. Uses $SHELL when unset.\n\
              {shell}\n\
@@ -369,6 +395,8 @@ impl Settings {
             line_height = self.line_height,
             padding = self.padding,
             scrollback = self.scrollback,
+            blink = self.cursor_blink,
+            opacity = self.background_opacity,
             integration = self.shell_integration,
             socket_api = self.socket_api,
             notify_after = self.notify_after,
@@ -538,7 +566,7 @@ mod tests {
 
     #[test]
     fn template_round_trips() {
-        let s = Settings { font_size: 15.5, padding: 8.0, scrollback: 500, cursor_shape: CursorShape::Beam, ..Default::default() };
+        let s = Settings { font_size: 15.5, padding: 8.0, scrollback: 500, cursor_shape: CursorShape::Beam, cursor_blink: false, background_opacity: 0.85, ..Default::default() };
         let parsed = Settings::parse(&s.template());
         assert!(parsed.problems.is_empty(), "{:?}", parsed.problems);
         assert!(parsed == s);
@@ -555,13 +583,17 @@ mod tests {
     fn reads_every_setting() {
         let s = Settings::parse(
             "theme = \"tokyo night\"\nfont-family = \"Fira Code\"\nfont-size = 16\nline-height = 1.5\n\
-             padding = 20\nscrollback = 2000\ncursor-style = \"underline\"\nshell = \"/bin/zsh -l\"\n",
+             padding = 20\nscrollback = 2000\ncursor-style = \"underline\"\nshell = \"/bin/zsh -l\"\n\
+             cursor-blink = false\nbackground-opacity = 0.9\n",
         );
         assert!(s.problems.is_empty(), "{:?}", s.problems);
         assert_eq!(s.theme().name, "Tokyo Night");
         assert_eq!(s.font_family, "Fira Code");
         assert_eq!((s.font_size, s.line_height, s.padding, s.scrollback), (16.0, 1.5, 20.0, 2000));
         assert_eq!(s.cursor_shape, CursorShape::Underline);
+        assert_eq!((s.cursor_blink, s.background_opacity), (false, 0.9));
+        assert!(!s.cursor_style().blinking);
+        assert!(!Settings::parse("background-opacity = 0.1").problems.is_empty());
         assert_eq!(s.shell, Some(vec!["/bin/zsh".to_string(), "-l".to_string()]));
     }
 

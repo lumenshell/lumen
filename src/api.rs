@@ -154,12 +154,24 @@ impl Caller {
 /// The permission a method needs, if any.
 fn required(method: &str) -> Option<Permission> {
     match method {
-        "new-tab" | "split" | "focus" | "close" | "set-title" => Some(Permission::Panes),
+        "new-tab" | "split" | "focus" | "close" | "set-title" | "move-tab" | "set-tab-style" | "write" => {
+            Some(Permission::Panes)
+        }
         "send-text" | "run-action" => Some(Permission::Input),
         "read-screen" => Some(Permission::Screen),
         _ => None,
     }
 }
+
+/// The connection a request came in on: plugin panes it opens send their
+/// input back over it, and close when it does.
+#[derive(Clone)]
+pub struct Origin {
+    pub conn: u64,
+    pub out: mpsc::Sender<String>,
+}
+
+static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// A request for the UI thread.
 pub struct Job {
@@ -167,6 +179,8 @@ pub struct Job {
     pub method: String,
     pub params: Value,
     pub reply: oneshot::Sender<ApiResult>,
+    /// Lumen's own requests (from no connection) have none.
+    pub origin: Option<Origin>,
 }
 
 pub type Jobs = fmpsc::UnboundedSender<Job>;
@@ -178,31 +192,21 @@ pub fn jobs() -> Option<Jobs> {
     JOBS.get().cloned()
 }
 
-/// Run requests from the socket and plugins against `window`'s workspace,
-/// on the UI thread.
-pub fn start(window: WindowHandle<Workspace>, cx: &mut App) {
+/// Run requests from the socket and plugins on the UI thread, each in the
+/// window it's about: the one holding its `pane`, else the active window.
+pub fn start(cx: &mut App) {
     let (tx, mut jobs) = fmpsc::unbounded::<Job>();
     let _ = JOBS.set(tx);
     cx.spawn(async move |cx| {
         while let Some(job) = jobs.next().await {
-            let Job { caller, method, params, reply } = job;
+            let Job { caller, method, params, reply, origin } = job;
             let reply = std::cell::Cell::new(Some(reply));
             let result = cx
                 .update(|cx| {
                     if matches!(caller, Caller::Socket) && !Settings::get(cx).socket_api {
                         return Some(Err(ApiError::failed("the socket API is turned off in config.toml")));
                     }
-                    window
-                        .update(cx, |ws, window, cx| {
-                            if method == "show-picker" {
-                                // Answered when you pick something.
-                                ws.show_picker(&params, reply.take().unwrap(), window, cx);
-                                None
-                            } else {
-                                Some(ws.handle_api(&caller, &method, &params, window, cx))
-                            }
-                        })
-                        .unwrap_or_else(|_| Some(Err(ApiError::failed("the window is closed"))))
+                    route(&caller, &method, &params, origin.as_ref(), &reply, cx)
                 })
                 .unwrap_or_else(|_| Some(Err(ApiError::failed("Lumen is quitting"))));
             if let (Some(result), Some(reply)) = (result, reply.take()) {
@@ -211,6 +215,69 @@ pub fn start(window: WindowHandle<Workspace>, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// Lumen's windows, in the order they opened.
+fn workspaces(cx: &App) -> Vec<WindowHandle<Workspace>> {
+    cx.windows().iter().filter_map(|w| w.downcast::<Workspace>()).collect()
+}
+
+/// Answer a request in the right window. `None` means the reply comes later
+/// (a picker waiting for you).
+fn route(
+    caller: &Caller,
+    method: &str,
+    params: &Value,
+    origin: Option<&Origin>,
+    reply: &std::cell::Cell<Option<oneshot::Sender<ApiResult>>>,
+    cx: &mut App,
+) -> Option<ApiResult> {
+    let windows = workspaces(cx);
+    if method == "_disconnected" {
+        // A connection closed: close the plugin panes it was drawing.
+        for w in &windows {
+            let _ = w.update(cx, |ws, window, cx| ws.handle_api(caller, method, params, origin, window, cx));
+        }
+        return Some(Ok(json!({})));
+    }
+    let active = cx.active_window().map(|w| w.window_id());
+    let is_active = |w: &WindowHandle<Workspace>| Some(w.window_id()) == active;
+    if method == "list" {
+        // Every window's tabs, each marked with its window (0 is the first).
+        let mut tabs = Vec::new();
+        let mut focused = Value::Null;
+        for (i, w) in windows.iter().enumerate() {
+            let Ok(ws) = w.read(cx) else { continue };
+            let list = ws.api_list(cx);
+            if is_active(w) || (focused.is_null() && i == 0) {
+                focused = list["focused_pane"].clone();
+            }
+            for mut tab in list["tabs"].as_array().cloned().unwrap_or_default() {
+                tab["window"] = json!(i);
+                tab["window_active"] = json!(is_active(w));
+                tabs.push(tab);
+            }
+        }
+        return Some(Ok(json!({ "tabs": tabs, "windows": windows.len(), "focused_pane": focused })));
+    }
+    let pane = params.get("pane").and_then(Value::as_u64);
+    let target = pane
+        .and_then(|id| windows.iter().find(|w| w.read(cx).is_ok_and(|ws| ws.has_pane(id))))
+        .or_else(|| windows.iter().find(|w| is_active(w)))
+        .or(windows.first())
+        .copied();
+    let Some(target) = target else { return Some(Err(ApiError::failed("there are no windows"))) };
+    target
+        .update(cx, |ws, window, cx| {
+            if method == "show-picker" {
+                // Answered when you pick something.
+                ws.show_picker(params, reply.take().unwrap(), window, cx);
+                None
+            } else {
+                Some(ws.handle_api(caller, method, params, origin, window, cx))
+            }
+        })
+        .unwrap_or_else(|_| Some(Err(ApiError::failed("the window is closed"))))
 }
 
 /// Open the socket, if enabled in the settings. Done before any pane starts,
@@ -286,6 +353,15 @@ pub fn writer(mut w: impl Write + Send + 'static) -> mpsc::Sender<String> {
 
 /// Read requests line by line from `reader` until it closes, answering on `out`.
 pub fn serve_lines(mut reader: impl BufRead, out: &mpsc::Sender<String>, jobs: &Jobs, caller: &Caller) {
+    let origin = Origin { conn: NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed), out: out.clone() };
+    read_requests(&mut reader, &origin, jobs, caller);
+    let (reply, _) = oneshot::channel();
+    let params = json!({ "conn": origin.conn });
+    let _ = jobs.unbounded_send(Job { caller: caller.clone(), method: "_disconnected".into(), params, reply, origin: None });
+}
+
+fn read_requests(mut reader: impl BufRead, origin: &Origin, jobs: &Jobs, caller: &Caller) {
+    let out = &origin.out;
     let mut buf = Vec::new();
     loop {
         buf.clear();
@@ -301,7 +377,7 @@ pub fn serve_lines(mut reader: impl BufRead, out: &mpsc::Sender<String>, jobs: &
         if text.trim().is_empty() {
             continue;
         }
-        if let Some(reply) = handle_line(&text, jobs, out, caller) {
+        if let Some(reply) = handle_line(&text, jobs, origin, caller) {
             let _ = out.send(reply);
         }
     }
@@ -318,9 +394,9 @@ fn ok_response(id: Value, result: ApiResult) -> String {
     }
 }
 
-fn run_job(jobs: &Jobs, caller: &Caller, method: String, params: Value) -> ApiResult {
+fn run_job(jobs: &Jobs, caller: &Caller, origin: &Origin, method: String, params: Value) -> ApiResult {
     let (reply, rx) = oneshot::channel();
-    let job = Job { caller: caller.clone(), method, params, reply };
+    let job = Job { caller: caller.clone(), method, params, reply, origin: Some(origin.clone()) };
     if jobs.unbounded_send(job).is_err() {
         return Err(ApiError::failed("Lumen is quitting"));
     }
@@ -329,7 +405,8 @@ fn run_job(jobs: &Jobs, caller: &Caller, method: String, params: Value) -> ApiRe
 
 /// Handle one request line; the reply, or `None` for a notification (or a
 /// reply that comes later).
-fn handle_line(text: &str, jobs: &Jobs, out: &mpsc::Sender<String>, caller: &Caller) -> Option<String> {
+fn handle_line(text: &str, jobs: &Jobs, origin: &Origin, caller: &Caller) -> Option<String> {
+    let out = &origin.out;
     let msg: Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(e) => return Some(error_response(Value::Null, ApiError(-32700, format!("not valid JSON: {e}")))),
@@ -337,7 +414,8 @@ fn handle_line(text: &str, jobs: &Jobs, out: &mpsc::Sender<String>, caller: &Cal
     let id = msg.get("id").cloned();
     let reply_id = id.clone().unwrap_or(Value::Null);
     let method = match (msg.get("jsonrpc").and_then(Value::as_str), msg.get("method").and_then(Value::as_str)) {
-        (Some("2.0"), Some(m)) => m.to_string(),
+        // Lumen's own requests start with `_`.
+        (Some("2.0"), Some(m)) if !m.starts_with('_') => m.to_string(),
         _ => {
             return Some(error_response(
                 reply_id,
@@ -362,9 +440,9 @@ fn handle_line(text: &str, jobs: &Jobs, out: &mpsc::Sender<String>, caller: &Cal
     } else if method == "show-picker" {
         // Waits for you to choose, so don't hold up this connection's other
         // requests: answer from another thread.
-        let (jobs, out, caller) = (jobs.clone(), out.clone(), caller.clone());
+        let (jobs, out, caller, origin) = (jobs.clone(), out.clone(), caller.clone(), origin.clone());
         std::thread::spawn(move || {
-            let result = run_job(&jobs, &caller, method, params);
+            let result = run_job(&jobs, &caller, &origin, method, params);
             if let Some(id) = id {
                 let _ = out.send(ok_response(id, result));
             }
@@ -380,7 +458,7 @@ fn handle_line(text: &str, jobs: &Jobs, out: &mpsc::Sender<String>, caller: &Cal
             None => Err(ApiError::invalid_params("`title` is required")),
         }
     } else {
-        run_job(jobs, caller, method, params)
+        run_job(jobs, caller, origin, method, params)
     };
     Some(ok_response(id?, result))
 }
@@ -450,13 +528,16 @@ mod tests {
     fn line(text: &str) -> (Option<Value>, mpsc::Receiver<String>) {
         let (jobs, _rx) = fmpsc::unbounded();
         let (out, events) = mpsc::channel();
-        (handle_line(text, &jobs, &out, &Caller::Socket).map(|r| serde_json::from_str(&r).unwrap()), events)
+        let origin = Origin { conn: 0, out };
+        (handle_line(text, &jobs, &origin, &Caller::Socket).map(|r| serde_json::from_str(&r).unwrap()), events)
     }
 
     #[test]
     fn bad_requests_get_json_rpc_errors() {
         assert_eq!(line("{oops").0.unwrap()["error"]["code"], -32700);
         assert_eq!(line(r#"{"method":"list","id":1}"#).0.unwrap()["error"]["code"], -32600);
+        // Lumen's own requests can't be sent from outside.
+        assert_eq!(line(r#"{"jsonrpc":"2.0","method":"_disconnected","id":2}"#).0.unwrap()["error"]["code"], -32600);
         let bad = line(r#"{"jsonrpc":"2.0","method":"subscribe","params":{"events":["nope"]},"id":7}"#).0.unwrap();
         assert_eq!((bad["id"].clone(), bad["error"]["code"].clone()), (json!(7), json!(-32602)));
     }
@@ -477,8 +558,9 @@ mod tests {
         let (jobs, _rx) = fmpsc::unbounded();
         let (out, events) = mpsc::channel();
         let plugin = Caller::Plugin { name: "p".into(), perms: vec![Permission::Panes] };
+        let origin = Origin { conn: 0, out };
         let ask = |text: &str| -> Value {
-            serde_json::from_str(&handle_line(text, &jobs, &out, &plugin).unwrap()).unwrap()
+            serde_json::from_str(&handle_line(text, &jobs, &origin, &plugin).unwrap()).unwrap()
         };
         let denied = ask(r#"{"jsonrpc":"2.0","id":1,"method":"send-text","params":{"text":"rm -rf ~"}}"#);
         assert_eq!(denied["error"]["code"], -32001);

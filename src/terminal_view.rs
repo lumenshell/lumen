@@ -3,6 +3,7 @@
 use std::cell::Cell as StdCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::Event;
 use alacritty_terminal::grid::Scroll;
@@ -15,7 +16,7 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use futures::StreamExt;
 use gpui::{
     App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, FontStyle,
-    FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, Modifiers,
+    ElementInputHandler, EntityInputHandler, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers, UTF16Selection,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     DispatchPhase, ParentElement, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent, ShapedLine,
     StatefulInteractiveElement, StrikethroughStyle, Styled, Subscription, Task,
@@ -30,11 +31,14 @@ use crate::search::Search;
 use crate::shell_integration;
 use crate::marks;
 use crate::mouse::{self, Action as MouseAction, Button as ReportButton};
-use crate::pty::{GridSize, Pty};
+use crate::pty::{GridSize, Owner, Pty};
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
 use crate::theme::{Theme, alpha, indexed};
 use crate::vi::{self, Outcome, ViState};
 use crate::{Copy, CopyLastOutput, Find, NextPrompt, Paste, PrevPrompt, ToggleSelectMode, input};
+
+/// Half a blink: how long the cursor stays shown, then hidden.
+const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -57,6 +61,9 @@ pub struct TerminalView {
     pty: Pty,
     focus: FocusHandle,
     pub title: String,
+    /// The title when the program hasn't set one: the shell's name, or the
+    /// plugin's for a plugin pane.
+    base_title: String,
     layout: Rc<StdCell<Option<GridLayout>>>,
     selecting: bool,
     scroll_acc: f32,
@@ -96,6 +103,15 @@ pub struct TerminalView {
     /// A long command finished while you weren't here: whether it succeeded.
     /// Shown as a dot on the tab until the pane is focused.
     pub attention: Option<bool>,
+    /// The blinking cursor is in its visible half. Stays true while the
+    /// cursor isn't blinking.
+    blink_on: bool,
+    /// Text an input method is composing (CJK, dead keys), drawn at the
+    /// cursor until it's committed.
+    marked: Option<String>,
+    /// Last key typed here: the cursor stays solid for a moment after.
+    last_typed: Instant,
+    _blink: Task<()>,
     _events: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -116,13 +132,18 @@ fn default_title() -> String {
 }
 
 impl TerminalView {
-    pub fn new(cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// A pane running your shell in `cwd`, or, with an `owner`, a plugin
+    /// pane that the plugin draws.
+    pub fn new(cwd: Option<PathBuf>, owner: Option<Owner>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = Settings::get(cx);
         let mut applied = term_config(settings);
         let pane = cx.entity_id().as_u64();
-        let (pty, mut rx) =
-            Pty::spawn(cwd, settings.shell.as_deref(), settings.shell_integration, pane, applied.clone())
-                .expect("failed to spawn shell");
+        let base_title = owner.as_ref().map_or_else(default_title, |o| o.name.clone());
+        let (pty, mut rx) = match owner {
+            Some(owner) => Pty::plugin(owner, pane, applied.clone()),
+            None => Pty::spawn(cwd, settings.shell.as_deref(), settings.shell_integration, pane, applied.clone())
+                .expect("failed to spawn shell"),
+        };
         let focus = cx.focus_handle();
 
         let events = cx.spawn(async move |this, cx| {
@@ -138,6 +159,15 @@ impl TerminalView {
                     }
                 });
                 if ok.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let blink = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(BLINK_INTERVAL).await;
+                if this.update(cx, |this, cx| this.blink_tick(cx)).is_err() {
                     break;
                 }
             }
@@ -173,7 +203,8 @@ impl TerminalView {
         Self {
             pty,
             focus,
-            title: default_title(),
+            title: base_title.clone(),
+            base_title,
             layout: Rc::new(StdCell::new(None)),
             selecting: false,
             scroll_acc: 0.0,
@@ -195,6 +226,10 @@ impl TerminalView {
             window_active: window.is_window_active(),
             running_command: None,
             attention: None,
+            blink_on: true,
+            marked: None,
+            last_typed: Instant::now(),
+            _blink: blink,
             _events: events,
             _subs: subs,
         }
@@ -202,6 +237,21 @@ impl TerminalView {
 
     pub fn cwd(&self) -> Option<PathBuf> {
         self.pty.cwd()
+    }
+
+    /// Drawn by a plugin rather than running a program.
+    pub fn is_plugin_pane(&self) -> bool {
+        self.pty.owner().is_some()
+    }
+
+    /// The connection drawing this pane, if it's a plugin pane.
+    pub fn owner_conn(&self) -> Option<u64> {
+        self.pty.owner().map(|o| o.conn)
+    }
+
+    /// Show `text` in this plugin pane, escape sequences and all.
+    pub fn feed(&mut self, text: &str) {
+        self.pty.feed(text.as_bytes());
     }
 
     /// Clear the tab badge once you've looked at the pane.
@@ -319,8 +369,8 @@ impl TerminalView {
                 self.title = title;
                 cx.emit(TerminalEvent::TitleChanged);
             }
-            Event::ResetTitle if self.title != default_title() => {
-                self.title = default_title();
+            Event::ResetTitle if self.title != self.base_title => {
+                self.title = self.base_title.clone();
                 cx.emit(TerminalEvent::TitleChanged);
             }
             Event::PtyWrite(s) => self.pty.write(s.into_bytes()),
@@ -453,7 +503,28 @@ impl TerminalView {
         }
     }
 
+    /// Whether the cursor should blink now: this pane has focus in the active
+    /// window, the setting allows it, and the cursor style (the default or the
+    /// one a program chose) blinks. Select mode's cursor never blinks.
+    fn blinks(&self, cx: &App) -> bool {
+        if !(self.focused && self.window_active && Settings::get(cx).cursor_blink) {
+            return false;
+        }
+        let term = self.pty.term.lock();
+        term.cursor_style().blinking && !term.mode().contains(TermMode::VI)
+    }
+
+    fn blink_tick(&mut self, cx: &mut Context<Self>) {
+        let on = !self.blinks(cx) || self.last_typed.elapsed() < BLINK_INTERVAL || !self.blink_on;
+        if on != self.blink_on {
+            self.blink_on = on;
+            cx.notify();
+        }
+    }
+
     fn on_key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.last_typed = Instant::now();
+        self.blink_on = true;
         let ks = &ev.keystroke;
         let m = ks.modifiers;
         if self.search.is_some() && self.search_key(ks, cx) {
@@ -476,7 +547,8 @@ impl TerminalView {
             return;
         }
         let mode = *self.pty.term.lock().mode();
-        if let Some(bytes) = input::to_esc(ks, mode) {
+        let event = if ev.is_held { input::KeyEvent::Repeat } else { input::KeyEvent::Press };
+        if let Some(bytes) = input::encode(ks, mode, event) {
             self.jump_target = None;
             {
                 let mut term = self.pty.term.lock();
@@ -486,6 +558,18 @@ impl TerminalView {
             self.pty.write(bytes);
             cx.stop_propagation();
             cx.notify();
+        }
+    }
+
+    /// Key releases, for programs that asked the kitty keyboard protocol to
+    /// report them.
+    fn on_key_up(&mut self, ev: &KeyUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        let mode = *self.pty.term.lock().mode();
+        if !mode.contains(TermMode::REPORT_EVENT_TYPES) || self.search.is_some() {
+            return;
+        }
+        if let Some(bytes) = input::encode(&ev.keystroke, mode, input::KeyEvent::Release) {
+            self.pty.write(bytes);
         }
     }
 
@@ -870,6 +954,23 @@ impl TerminalView {
         true
     }
 
+    /// Text typed through an input method: into the find bar when it's open,
+    /// else to the program, as if typed.
+    fn type_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Some(search) = self.search.as_mut() {
+            search.query.push_str(text);
+            self.update_search(cx);
+            return;
+        }
+        self.jump_target = None;
+        {
+            let mut term = self.pty.term.lock();
+            term.scroll_display(Scroll::Bottom);
+            term.selection = None;
+        }
+        self.pty.write(text.as_bytes().to_vec());
+    }
+
     fn paste_text(&mut self, text: &str) {
         let bracketed = self.pty.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
         let body = text.replace("\r\n", "\r").replace('\n', "\r");
@@ -880,6 +981,92 @@ impl TerminalView {
         };
         self.pty.term.lock().scroll_display(Scroll::Bottom);
         self.pty.write(data.into_bytes());
+    }
+}
+
+/// Input methods (CJK input, dead keys) talk to the pane through this. A
+/// terminal has no editable document, so the only text it holds is what's
+/// being composed; committed text goes straight to the program.
+impl EntityInputHandler for TerminalView {
+    fn text_for_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        adjusted: &mut Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        let utf16: Vec<u16> = self.marked.as_ref()?.encode_utf16().collect();
+        let range = range.start.min(utf16.len())..range.end.min(utf16.len());
+        *adjusted = Some(range.clone());
+        Some(String::from_utf16_lossy(&utf16[range]))
+    }
+
+    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
+        let end = self.marked.as_ref().map_or(0, |m| m.encode_utf16().count());
+        Some(UTF16Selection { range: end..end, reversed: false })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<std::ops::Range<usize>> {
+        self.marked.as_ref().map(|m| 0..m.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.marked = None;
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.marked = None;
+        if !text.is_empty() {
+            self.type_text(text, cx);
+        }
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        text: &str,
+        _: Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.marked = (!text.is_empty()).then(|| text.to_string());
+        cx.notify();
+    }
+
+    /// Where the input method should open its candidate window: at the cursor.
+    fn bounds_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        _: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let layout = self.layout.get()?;
+        let term = self.pty.term.lock();
+        let cursor = term.grid().cursor.point;
+        let row = cursor.line.0 + term.grid().display_offset() as i32;
+        if row < 0 || row as usize >= layout.rows {
+            return None;
+        }
+        Some(Bounds::new(
+            point(
+                layout.origin.x + layout.cell_width * cursor.column.0 as f32,
+                layout.origin.y + layout.line_height * row as f32,
+            ),
+            size(layout.cell_width, layout.line_height),
+        ))
+    }
+
+    fn character_index_for_point(&mut self, _: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+        None
     }
 }
 
@@ -900,6 +1087,8 @@ struct Frame {
     decorations: Vec<Decoration>,
     cursor: Option<(Bounds<Pixels>, CursorShape)>,
     cursor_color: Hsla,
+    /// Text an input method is composing, shaped, at the cursor's cell.
+    preedit: Option<(Bounds<Pixels>, ShapedLine)>,
     /// Target of the hovered link, shown in a pill at the bottom of the pane.
     link_label: Option<(ShapedLine, Hsla, Hsla)>,
 }
@@ -952,6 +1141,7 @@ fn term_config(settings: &Settings) -> alacritty_terminal::term::Config {
     alacritty_terminal::term::Config {
         scrolling_history: settings.scrollback,
         default_cursor_style: settings.cursor_style(),
+        kitty_keyboard: true,
         ..Default::default()
     }
 }
@@ -1193,6 +1383,11 @@ impl Render for TerminalView {
         let font_family = settings.font_family.clone();
         let line_height_factor = settings.line_height;
         let focused = self.focus.is_focused(window);
+        let blink_hidden = focused && !self.blink_on;
+        let marked = self.marked.clone();
+        let ime_focus = self.focus.clone();
+        let ime_entity = cx.entity();
+        let preedit_bg = Settings::get(cx).theme().raised;
         let term = self.pty.term.clone();
         let layout_cell = self.layout.clone();
         let entity = cx.entity();
@@ -1264,7 +1459,9 @@ impl Render for TerminalView {
             // Select mode's cursor is the accent colour, so it's clearly not the shell's.
             let vi_cursor = content.mode.contains(TermMode::VI);
             let cursor_row = cursor.point.line.0 + offset;
+            let cursor_col = cursor.point.column.0;
             let show_cursor = cursor.shape != CursorShape::Hidden
+                && !(blink_hidden && !vi_cursor)
                 && cursor_row >= 0
                 && (cursor_row as usize) < rows;
 
@@ -1510,6 +1707,21 @@ impl Render for TerminalView {
                 (cell_bounds(cursor_row as usize, cursor.point.column.0, span), cursor.shape)
             });
 
+            // Composed input sits over the cursor's cell, whether or not the
+            // cursor is showing (blinking, say).
+            let preedit = marked.as_ref().filter(|_| cursor_row >= 0 && (cursor_row as usize) < rows).map(|text| {
+                let run = TextRun {
+                    len: text.len(),
+                    font: fonts[0].clone(),
+                    color: theme.text,
+                    background_color: None,
+                    underline: Some(UnderlineStyle { thickness: px(1.0), color: Some(theme.accent), wavy: false }),
+                    strikethrough: None,
+                };
+                let shaped = text_system.shape_line(text.clone().into(), font_size, &[run], None);
+                (cell_bounds(cursor_row as usize, cursor_col, 1), shaped)
+            });
+
             let link_label = hovered_link.as_ref().map(|link| {
                 let mut uri = link.uri.clone();
                 if uri.chars().count() > 120 {
@@ -1539,6 +1751,7 @@ impl Render for TerminalView {
                 decorations,
                 cursor,
                 cursor_color: if vi_cursor { theme.accent } else { theme.cursor },
+                preedit,
                 link_label,
             }
         };
@@ -1618,6 +1831,14 @@ impl Render for TerminalView {
                     }
                 }
             });
+            if let Some((anchor, line)) = &frame.preedit {
+                let back = Bounds::new(anchor.origin, size(line.width.max(anchor.size.width), anchor.size.height));
+                window.paint_quad(fill(back, preedit_bg).corner_radii(px(2.0)));
+                let _ = line.paint(anchor.origin, anchor.size.height, window, cx);
+            }
+            if focused {
+                window.handle_input(&ime_focus, ElementInputHandler::new(bounds, ime_entity.clone()), cx);
+            }
             if let Some((label, bg, border)) = &frame.link_label {
                 // Clamp to the pane so a long URL can't spill out.
                 let (pad_x, height) = (px(8.0), px(22.0));
@@ -1647,6 +1868,7 @@ impl Render for TerminalView {
             .on_hover(cx.listener(Self::on_hover))
             .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_key_up(cx.listener(Self::on_key_up))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))

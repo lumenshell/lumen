@@ -21,13 +21,17 @@ that pane unless --pane says otherwise; elsewhere, on the focused pane.
 Commands:
   list [--json]                       Tabs and panes, with ids, titles and directories
   new-tab [--cwd DIR] [--run CMD]     Open a tab; prints the new pane's id
-  split [right|down] [--pane ID] [--cwd DIR] [--run CMD] [--no-focus]
+  split [right|down] [--pane ID] [--cwd DIR] [--run CMD] [--size N] [--no-focus]
                                       Split a pane; prints the new pane's id
   focus [ID]                          Show and focus a pane
   close [ID]                          Close a pane
   send-text [--pane ID] TEXT          Type TEXT into a pane (\\n, \\r, \\t, \\e and \\\\ work)
   read-screen [--pane ID] [--lines N] Print the screen, or the last N lines with history
   set-title [--pane ID] [TITLE]       Set the pane's tab title; no TITLE goes back to normal
+  move-tab [--pane ID] N              Move the pane's tab to position N (1 is first)
+  tab-style [--pane ID] [--badge TEXT] [--color COLOR] [--clear]
+                                      Mark the pane's tab with a badge and a colour
+                                      (red, green, yellow, blue, magenta, cyan, #rrggbb)
   notify TITLE [BODY]                 Show a desktop notification
   action NAME [--pane ID]             Run a key-binding action, e.g. split-right or find
   watch [EVENT...]                    Print events as JSON lines until interrupted
@@ -159,7 +163,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "split" => {
-            let a = parse(rest, &["pane", "cwd", "run"], &["no-focus"])?;
+            let a = parse(rest, &["pane", "cwd", "run", "size"], &["no-focus"])?;
             at_most(&a, 1)?;
             let direction = a.positional.first().map(String::as_str).unwrap_or("right");
             let mut params = Map::new();
@@ -169,6 +173,13 @@ fn run_inner(args: &[String]) -> Result<(), String> {
                 if let Some(v) = a.options.get(key) {
                     params.insert(key.into(), v.clone());
                 }
+            }
+            if let Some(size) = a.options.get("size") {
+                let text = size.as_str().unwrap_or_default();
+                let n: f64 = text
+                    .parse()
+                    .map_err(|_| format!("--size should be a fraction (0.3) or rows/columns (12), not `{text}`"))?;
+                params.insert("size".into(), n.into());
             }
             if a.options.contains_key("no-focus") {
                 params.insert("focus".into(), false.into());
@@ -210,6 +221,38 @@ fn run_inner(args: &[String]) -> Result<(), String> {
             let a = parse(rest, &["pane"], &[])?;
             let title = (!a.positional.is_empty()).then(|| a.positional.join(" "));
             Client::connect()?.call("set-title", json!({ "pane": pane(&a)?, "title": title }))?;
+            Ok(())
+        }
+        "tab-style" => {
+            let a = parse(rest, &["pane", "badge", "color"], &["clear"])?;
+            at_most(&a, 0)?;
+            let mut params = Map::new();
+            params.insert("pane".into(), pane(&a)?);
+            if a.options.contains_key("clear") {
+                params.insert("badge".into(), Value::Null);
+                params.insert("color".into(), Value::Null);
+            }
+            for key in ["badge", "color"] {
+                if let Some(v) = a.options.get(key) {
+                    params.insert(key.into(), v.clone());
+                }
+            }
+            if params.len() == 1 {
+                return Err("tab-style needs --badge, --color or --clear".into());
+            }
+            Client::connect()?.call("set-tab-style", Value::Object(params))?;
+            Ok(())
+        }
+        "move-tab" => {
+            let a = parse(rest, &["pane"], &[])?;
+            at_most(&a, 1)?;
+            let n: usize = a
+                .positional
+                .first()
+                .and_then(|n| n.parse().ok())
+                .filter(|n| *n >= 1)
+                .ok_or("move-tab needs the position to move the tab to, from 1")?;
+            Client::connect()?.call("move-tab", json!({ "pane": pane(&a)?, "index": n - 1 }))?;
             Ok(())
         }
         "notify" => {
@@ -279,9 +322,22 @@ fn absolute_cwd(params: &mut Map<String, Value>) -> Result<(), String> {
 fn list_text(result: &Value) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let mut out = String::new();
+    // With more than one window, head each window's tabs.
+    let several = result["windows"].as_u64().unwrap_or(1) > 1;
+    let mut window = None;
     for tab in result["tabs"].as_array().into_iter().flatten() {
+        if several && window != tab["window"].as_u64() {
+            window = tab["window"].as_u64();
+            let active = if tab["window_active"] == true { " (active)" } else { "" };
+            out.push_str(&format!("window {}{active}\n", window.unwrap_or(0) + 1));
+        }
         let marker = if tab["active"] == true { "*" } else { " " };
-        out.push_str(&format!("{marker} tab {}  {}\n", tab["index"].as_u64().unwrap_or(0) + 1, tab["title"].as_str().unwrap_or("")));
+        let badge = tab["badge"].as_str().map(|b| format!("  [{b}]")).unwrap_or_default();
+        out.push_str(&format!(
+            "{marker} tab {}  {}{badge}\n",
+            tab["index"].as_u64().unwrap_or(0) + 1,
+            tab["title"].as_str().unwrap_or("")
+        ));
         for p in tab["panes"].as_array().into_iter().flatten() {
             let marker = if p["focused"] == true { "*" } else if p["active"] == true { "+" } else { " " };
             let cwd = p["cwd"].as_str().unwrap_or("?");

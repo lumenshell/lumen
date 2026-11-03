@@ -101,12 +101,35 @@ fn path() -> Option<PathBuf> {
     Some(base.join("lumen").join("session.json"))
 }
 
-pub fn load() -> Option<Session> {
-    let text = std::fs::read_to_string(path()?).ok()?;
-    let session: Session = serde_json::from_str(&text).ok()?;
-    if session.version != VERSION {
-        return None;
-    }
+/// What's saved: every open window, in the order they opened.
+#[derive(Serialize, Deserialize)]
+struct SessionFile {
+    version: u32,
+    windows: Vec<Session>,
+}
+
+/// Version of the file that lists windows. Version 1 held a single window
+/// (a bare [`Session`]) and still loads.
+const FILE_VERSION: u32 = 2;
+
+/// The saved windows, repaired; empty when there's nothing to restore.
+pub fn load() -> Vec<Session> {
+    let Some(text) = path().and_then(|p| std::fs::read_to_string(p).ok()) else { return Vec::new() };
+    parse(&text)
+}
+
+fn parse(text: &str) -> Vec<Session> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else { return Vec::new() };
+    let windows = match value.get("version").and_then(serde_json::Value::as_u64) {
+        Some(1) => serde_json::from_value::<Session>(value).map(|s| vec![s]).unwrap_or_default(),
+        Some(2) => serde_json::from_value::<SessionFile>(value).map(|f| f.windows).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    windows.into_iter().filter_map(clean).collect()
+}
+
+/// Repair one window's saved state; None if it has no panes left.
+fn clean(session: Session) -> Option<Session> {
     let tabs: Vec<TabState> = session
         .tabs
         .into_iter()
@@ -124,20 +147,85 @@ pub fn load() -> Option<Session> {
     Some(Session::new(window, active_tab, tabs))
 }
 
-/// Write the session atomically. An empty session (every shell exited) removes
-/// the file so the next launch starts fresh.
-pub fn save(session: &Session) {
+/// The windows open now, by window id in the order they opened, with their
+/// latest state (`None` until a window first saves).
+static OPEN: std::sync::Mutex<Vec<(u64, Option<Session>)>> = std::sync::Mutex::new(Vec::new());
+
+/// A new window: it's saved in this position from now on.
+pub fn register(window: u64) {
+    OPEN.lock().unwrap().push((window, None));
+}
+
+/// Record a window's state, writing the file if anything changed. A window
+/// with no tabs left is dropped from the file.
+pub fn record(window: u64, session: Session) {
+    let mut open = OPEN.lock().unwrap();
+    let Some(entry) = open.iter_mut().find(|(id, _)| *id == window) else { return };
+    let session = (!session.tabs.is_empty()).then_some(session);
+    if entry.1 == session {
+        return;
+    }
+    entry.1 = session;
+    write(&open);
+}
+
+/// A window closed. The last one stays in the file, to come back next launch
+/// (unless its shells all exited, which [`record`] already noted).
+pub fn forget(window: u64) {
+    let mut open = OPEN.lock().unwrap();
+    if open.len() > 1 {
+        open.retain(|(id, _)| *id != window);
+        write(&open);
+    }
+}
+
+/// Write every window atomically; with none left, remove the file so the
+/// next launch starts fresh.
+fn write(open: &[(u64, Option<Session>)]) {
     let Some(path) = path() else { return };
-    if session.tabs.is_empty() {
+    let windows: Vec<&Session> = open.iter().filter_map(|(_, s)| s.as_ref()).collect();
+    if windows.is_empty() {
         let _ = std::fs::remove_file(path);
         return;
     }
-    let Ok(json) = serde_json::to_string_pretty(session) else { return };
+    let file = serde_json::json!({ "version": FILE_VERSION, "windows": windows });
+    let Ok(json) = serde_json::to_string_pretty(&file) else { return };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let tmp = path.with_extension("json.tmp");
     if std::fs::write(&tmp, json).is_ok() {
         let _ = std::fs::rename(tmp, path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window(cwd: &str) -> Session {
+        Session::new(None, 0, vec![TabState {
+            root: NodeState::Pane { cwd: Some(cwd.into()) },
+            active: 0,
+            zoomed: false,
+            title: None,
+        }])
+    }
+
+    #[test]
+    fn old_single_window_files_still_load() {
+        let old = serde_json::to_string(&window("/")).unwrap();
+        assert_eq!(parse(&old).len(), 1);
+    }
+
+    #[test]
+    fn every_window_is_saved_and_empty_ones_are_skipped() {
+        let mut empty = window("/");
+        empty.tabs.clear();
+        let file = serde_json::json!({ "version": 2, "windows": [window("/"), empty, window("/tmp")] });
+        let windows = parse(&file.to_string());
+        assert_eq!(windows.len(), 2);
+        assert!(parse("{\"version\": 3, \"windows\": []}").is_empty());
+        assert!(parse("not json").is_empty());
     }
 }

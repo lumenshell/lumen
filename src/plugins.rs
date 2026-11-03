@@ -85,6 +85,18 @@ impl Manifest {
 }
 
 /// Where plugins are installed.
+/// The built-in plugins last started, to notice when config.toml changes them
+/// (whichever window sees the change first reloads them, once).
+static BUILTINS_RUNNING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn builtins_running() -> Vec<String> {
+    BUILTINS_RUNNING.lock().unwrap().clone()
+}
+
+pub fn set_builtins_running(names: Vec<String>) {
+    *BUILTINS_RUNNING.lock().unwrap() = names;
+}
+
 pub fn plugins_dir() -> Option<PathBuf> {
     crate::settings::config_path().and_then(|p| Some(p.parent()?.join("plugins")))
 }
@@ -208,6 +220,7 @@ pub const BUILTINS: &[Builtin] = &[
     builtin!("ssh-hosts", "SSH to Host", ["plugin.toml", "main.py"]),
     builtin!("project-layout", "Project Layouts", ["plugin.toml", "main.py"]),
     builtin!("build-status", "Build Status", ["plugin.toml", "main.py"]),
+    builtin!("pomodoro", "Pomodoro Timer", ["plugin.toml", "main.py"]),
 ];
 
 pub fn builtin(name: &str) -> Option<&'static Builtin> {
@@ -544,6 +557,7 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
                 method: "_plugin-commands-changed".into(),
                 params: json!({}),
                 reply,
+                origin: None,
             });
         }
         if stop.load(Ordering::SeqCst) {

@@ -2,6 +2,8 @@
 name = "lumen"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lumenshell/lumen"
 
 [dependencies]
 alacritty_terminal = "0.26.0"
@@ -22,3 +24,9 @@ strip = true
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+
+# GPUI's XIM client panics on text its compound-text decoder rejects (plain
+# Latin-1 such as "é" from ibus, Chinese and Korean charsets). This copy
+# decodes those and never fails. See vendor/xim-ctext/README-lumen.md.
+[patch.crates-io]
+xim-ctext = { path = "vendor/xim-ctext" }

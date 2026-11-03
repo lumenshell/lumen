@@ -4,12 +4,12 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Bounds, BoxShadow, Context, CursorStyle, Decorations,
+    AnyElement, AnyView, App, AppContext, Bounds, BoxShadow, Context, CursorStyle, Decorations, Hsla, Rgba,
     DragMoveEvent, ElementId, Entity, EntityId, Focusable, HitboxBehavior, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ResizeEdge,
     SharedString, Size, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task,
     Window,
-    WindowBounds, canvas, div,
+    WindowBackgroundAppearance, WindowBounds, canvas, div,
     point, prelude::FluentBuilder, px, relative,
 };
 
@@ -20,11 +20,21 @@ use crate::keymap;
 use crate::palette::{CommandPalette, PaletteEvent, PaletteFn, PaletteItem};
 use crate::session::{self, Axis, NodeState, Session, TabState, WindowState};
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
+use crate::pty::Owner;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::theme::{Theme, alpha};
 use crate::*;
 
 const GAP: f32 = 8.0;
+/// Narrowest a tab gets before the tab strip scrolls instead.
+const TAB_MIN_WIDTH: f32 = 56.0;
+/// Below this share of the bar, inactive tabs drop their close button and
+/// pane count to leave room for titles.
+const COMPACT_TAB_WIDTH: f32 = 140.0;
+/// A tab's close button and the gap before it.
+const CLOSE_WIDTH: f32 = 26.0;
+/// Widest a tab gets.
+const TAB_MAX_WIDTH: f32 = 220.0;
 const RADIUS: f32 = 10.0;
 const WINDOW_RADIUS: f32 = 12.0;
 pub const SHADOW_INSET: f32 = 10.0;
@@ -44,6 +54,49 @@ struct SplitDrag {
     tab: usize,
     path: Vec<usize>,
     index: usize,
+}
+
+/// A tab being dragged along the tab bar, by its position.
+#[derive(Clone)]
+struct TabDrag {
+    index: usize,
+    title: SharedString,
+    colors: (gpui::Hsla, gpui::Hsla, gpui::Hsla),
+}
+
+/// The tab drawn under the pointer while you drag one.
+struct TabGhost(TabDrag);
+
+impl Render for TabGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let (bg, fg, border) = self.0.colors;
+        div()
+            .h(px(28.0))
+            .max_w(px(220.0))
+            .px(px(10.0))
+            .flex()
+            .items_center()
+            .rounded(px(8.0))
+            .bg(bg)
+            .border_1()
+            .border_color(border)
+            .text_color(fg)
+            .text_size(px(12.5))
+            .font_family(UI_FONT)
+            .whitespace_nowrap()
+            .overflow_hidden()
+            .child(self.0.title.clone())
+    }
+}
+
+/// Where a tab moved from `from` lands, given the slot it was dropped on.
+pub fn reorder<T>(items: &mut Vec<T>, from: usize, to: usize) -> bool {
+    if from >= items.len() || to >= items.len() || from == to {
+        return false;
+    }
+    let item = items.remove(from);
+    items.insert(to, item);
+    true
 }
 
 /// GPUI needs a view to show under the cursor while dragging; ours draws nothing.
@@ -71,14 +124,30 @@ impl PaneNode {
         }
     }
 
-    fn to_state(&self, cx: &App) -> NodeState {
+    /// What the session file keeps. Plugin panes aren't kept (their plugin
+    /// opens them again if it wants), so a split may lose some sides, or all.
+    fn to_state(&self, cx: &App) -> Option<NodeState> {
         match self {
-            PaneNode::Leaf(term) => NodeState::Pane { cwd: term.read(cx).cwd() },
-            PaneNode::Split { axis, children, ratios } => NodeState::Split {
-                axis: *axis,
-                children: children.iter().map(|c| c.to_state(cx)).collect(),
-                ratios: ratios.clone(),
-            },
+            PaneNode::Leaf(term) => {
+                let view = term.read(cx);
+                (!view.is_plugin_pane()).then(|| NodeState::Pane { cwd: view.cwd() })
+            }
+            PaneNode::Split { axis, children, ratios } => {
+                let (children, ratios): (Vec<_>, Vec<_>) = children
+                    .iter()
+                    .zip(ratios)
+                    .filter_map(|(c, r)| Some((c.to_state(cx)?, *r)))
+                    .unzip();
+                match children.len() {
+                    0 => None,
+                    1 => children.into_iter().next(),
+                    _ => {
+                        let total: f32 = ratios.iter().sum();
+                        let ratios = ratios.iter().map(|r| r / total).collect();
+                        Some(NodeState::Split { axis: *axis, children, ratios })
+                    }
+                }
+            }
         }
     }
 
@@ -145,6 +214,21 @@ impl PaneNode {
         }
     }
 
+    /// Give `new`, just split off its neighbour before it, `share` of the
+    /// space the two had.
+    fn set_share(&mut self, new: EntityId, share: f32) -> bool {
+        let PaneNode::Split { children, ratios, .. } = self else { return false };
+        if let Some(i) = children.iter().position(|c| matches!(c, PaneNode::Leaf(e) if e.entity_id() == new))
+            && i > 0
+        {
+            let both = ratios[i - 1] + ratios[i];
+            ratios[i] = both * share;
+            ratios[i - 1] = both - ratios[i];
+            return true;
+        }
+        children.iter_mut().any(|c| c.set_share(new, share))
+    }
+
     /// Remove a leaf. Returns true if found. Collapses single-child splits.
     fn remove(&mut self, target: EntityId) -> bool {
         let PaneNode::Split { children, ratios, .. } = self else { return false };
@@ -174,6 +258,72 @@ struct Tab {
     zoomed: bool,
     /// Title set over the socket API, shown instead of the program's.
     title: Option<String>,
+    /// A short label beside the title (a countdown, a count), set over the
+    /// socket API. Not saved.
+    badge: Option<String>,
+    /// A colour tinting the tab, set over the socket API. Not saved.
+    color: Option<TabColor>,
+}
+
+/// What a new pane runs: your shell (in a folder), or nothing, for a plugin
+/// to draw.
+pub enum NewPane {
+    Shell(Option<std::path::PathBuf>),
+    Plugin(Owner),
+}
+
+impl NewPane {
+    fn into_parts(self) -> (Option<std::path::PathBuf>, Option<Owner>) {
+        match self {
+            NewPane::Shell(cwd) => (cwd, None),
+            NewPane::Plugin(owner) => (None, Some(owner)),
+        }
+    }
+}
+
+/// A tab's tint: one of the theme's colours, so it suits every theme, or an
+/// exact one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TabColor {
+    Ansi(u8),
+    Rgb(u8, u8, u8),
+}
+
+impl TabColor {
+    pub const NAMES: [(&'static str, u8); 7] =
+        [("red", 1), ("green", 2), ("yellow", 3), ("blue", 4), ("magenta", 5), ("purple", 5), ("cyan", 6)];
+
+    /// A name from [`TabColor::NAMES`], or `#rrggbb`.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim().to_ascii_lowercase();
+        if let Some(&(_, i)) = Self::NAMES.iter().find(|(n, _)| *n == text) {
+            return Ok(TabColor::Ansi(i));
+        }
+        let hex = text.strip_prefix('#').filter(|h| h.len() == 6 && h.chars().all(|c| c.is_ascii_hexdigit()));
+        match hex {
+            Some(h) => {
+                let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(0);
+                Ok(TabColor::Rgb(byte(0), byte(2), byte(4)))
+            }
+            None => Err(format!(
+                "`color` should be red, green, yellow, blue, magenta, cyan or #rrggbb, not \"{text}\""
+            )),
+        }
+    }
+
+    pub fn resolve(self, theme: &Theme) -> Hsla {
+        match self {
+            TabColor::Ansi(i) => theme.ansi[i as usize],
+            TabColor::Rgb(r, g, b) => Rgba { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a: 1.0 }.into(),
+        }
+    }
+}
+
+/// `a` with `t` of `b` mixed in.
+fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
+    let (a, b): (Rgba, Rgba) = (a.into(), b.into());
+    let m = |x: f32, y: f32| x + (y - x) * t;
+    Rgba { r: m(a.r, b.r), g: m(a.g, b.g), b: m(a.b, b.b), a: m(a.a, b.a) }.into()
 }
 
 impl Tab {
@@ -185,6 +335,13 @@ impl Tab {
 }
 
 pub struct Workspace {
+    /// What the window shows behind its contents, last set from the
+    /// background-opacity setting.
+    background_appearance: Option<WindowBackgroundAppearance>,
+    /// The tab strip, which scrolls sideways when tabs don't fit.
+    tab_scroll: gpui::ScrollHandle,
+    /// Active tab when the strip last scrolled to it.
+    tab_scrolled_to: Option<usize>,
     tabs: Vec<Tab>,
     active_tab: usize,
     palette: Option<Entity<CommandPalette>>,
@@ -192,12 +349,10 @@ pub struct Workspace {
     pending_approvals: Vec<crate::plugins::Manifest>,
     /// Problems reading plugin manifests, shown in the banner.
     plugin_problems: Vec<String>,
-    /// The built-in plugins running, to notice when config.toml changes them.
-    builtins_running: Vec<String>,
     /// Axis of the divider being dragged, for the window-wide resize cursor.
     dragging: Option<Axis>,
-    /// Last layout written to disk, so autosave only writes on change.
-    last_saved: Option<Session>,
+    /// This window's id, which the session file keys its state by.
+    window_id: u64,
     saved_on_quit: bool,
     window_state: Option<WindowState>,
     _autosave: Task<()>,
@@ -207,19 +362,22 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(saved: Option<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
+            background_appearance: None,
+            tab_scroll: gpui::ScrollHandle::new(),
+            tab_scrolled_to: None,
             tabs: Vec::new(),
             active_tab: 0,
             palette: None,
             pending_approvals: Vec::new(),
             plugin_problems: Vec::new(),
-            builtins_running: Vec::new(),
             dragging: None,
-            last_saved: None,
+            window_id: window.window_handle().window_id().as_u64(),
             saved_on_quit: false,
             window_state: saved.as_ref().and_then(|s| s.window),
             _autosave: Task::ready(()),
             _subs: Vec::new(),
         };
+        session::register(this.window_id);
         match saved {
             Some(saved) => this.restore(saved, window, cx),
             None => this.new_tab(&NewTab, window, cx),
@@ -228,7 +386,7 @@ impl Workspace {
         this._subs.push(cx.observe_window_bounds(window, |this, window, _| this.track_window(window)));
         // Built-in plugins turned on or off (in the gallery or config.toml).
         this._subs.push(cx.observe_global_in::<Settings>(window, |this, window, cx| {
-            if Settings::get(cx).plugins != this.builtins_running {
+            if Settings::get(cx).plugins != crate::plugins::builtins_running() {
                 this.reload_plugins(window, cx);
             }
         }));
@@ -243,8 +401,11 @@ impl Workspace {
         this._subs.push(cx.on_release(|this, cx| {
             if !this.saved_on_quit {
                 this.save_session(cx);
+                session::forget(this.window_id);
             }
         }));
+        // Record this window now, so the file never lists the others without it.
+        this.save_session(cx);
         this._autosave = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(5)).await;
@@ -265,7 +426,14 @@ impl Workspace {
             root.leaves(&mut leaves);
             let active = leaves[tab.active.min(leaves.len() - 1)].clone();
             let zoomed = tab.zoomed && leaves.len() > 1;
-            self.tabs.push(Tab { root, active, zoomed, title: tab.title.filter(|t| !t.trim().is_empty()) });
+            self.tabs.push(Tab {
+                root,
+                active,
+                zoomed,
+                title: tab.title.filter(|t| !t.trim().is_empty()),
+                badge: None,
+                color: None,
+            });
         }
         self.active_tab = saved.active_tab.min(self.tabs.len() - 1);
         self.focus_active(window, cx);
@@ -305,7 +473,7 @@ impl Workspace {
 
     fn build_node(&mut self, node: NodeState, window: &mut Window, cx: &mut Context<Self>) -> PaneNode {
         match node {
-            NodeState::Pane { cwd } => PaneNode::Leaf(self.spawn_terminal(cwd, window, cx)),
+            NodeState::Pane { cwd } => PaneNode::Leaf(self.spawn_terminal(NewPane::Shell(cwd), window, cx)),
             NodeState::Split { axis, children, ratios } => PaneNode::Split {
                 axis,
                 children: children.into_iter().map(|c| self.build_node(c, window, cx)).collect(),
@@ -315,34 +483,36 @@ impl Workspace {
     }
 
     fn snapshot(&self, cx: &App) -> Session {
-        let tabs = self
-            .tabs
-            .iter()
-            .map(|tab| TabState {
-                root: tab.root.to_state(cx),
-                active: tab.leaves().iter().position(|l| *l == tab.active).unwrap_or(0),
-                zoomed: tab.zoomed,
+        let mut tabs = Vec::new();
+        let mut active_tab = 0;
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let Some(root) = tab.root.to_state(cx) else { continue };
+            if i <= self.active_tab {
+                active_tab = tabs.len();
+            }
+            let kept: Vec<_> = tab.leaves().into_iter().filter(|l| !l.read(cx).is_plugin_pane()).collect();
+            tabs.push(TabState {
+                root,
+                active: kept.iter().position(|l| *l == tab.active).unwrap_or(0),
+                zoomed: tab.zoomed && kept.len() > 1,
                 title: tab.title.clone(),
-            })
-            .collect();
-        Session::new(self.window_state, self.active_tab, tabs)
+            });
+        }
+        Session::new(self.window_state, active_tab, tabs)
     }
 
     fn save_session(&mut self, cx: &App) {
-        let snapshot = self.snapshot(cx);
-        if self.last_saved.as_ref() != Some(&snapshot) {
-            session::save(&snapshot);
-            self.last_saved = Some(snapshot);
-        }
+        session::record(self.window_id, self.snapshot(cx));
     }
 
     fn spawn_terminal(
         &mut self,
-        cwd: Option<std::path::PathBuf>,
+        what: NewPane,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TerminalView> {
-        let term = cx.new(|cx| TerminalView::new(cwd, window, cx));
+        let (cwd, owner) = what.into_parts();
+        let term = cx.new(|cx| TerminalView::new(cwd, owner, window, cx));
         api::emit("pane-opened", json!({ "pane": term.entity_id().as_u64() }));
         let sub = cx.subscribe_in(&term, window, |this, term, event, window, cx| match event {
             TerminalEvent::Attention => cx.notify(),
@@ -386,23 +556,38 @@ impl Workspace {
 
     // ---- actions --------------------------------------------------------
 
+    /// Open another window, starting in this pane's folder, the same size as
+    /// this one.
+    fn new_window(&mut self, _: &NewWindow, window: &mut Window, cx: &mut Context<Self>) {
+        let cwd = self.current_cwd(cx);
+        let size = window.inner_window_bounds().get_bounds().size;
+        cx.defer(move |cx| crate::new_window(cwd, Some(size), cx));
+    }
+
     fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         let cwd = self.current_cwd(cx);
-        self.open_tab(cwd, window, cx);
+        self.open_tab(NewPane::Shell(cwd), window, cx);
     }
 
     /// Open a tab after the current one and switch to it.
     fn open_tab(
         &mut self,
-        cwd: Option<std::path::PathBuf>,
+        what: NewPane,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TerminalView> {
-        let term = self.spawn_terminal(cwd, window, cx);
+        let term = self.spawn_terminal(what, window, cx);
         let insert_at = if self.tabs.is_empty() { 0 } else { self.active_tab + 1 };
         self.tabs.insert(
             insert_at,
-            Tab { root: PaneNode::Leaf(term.clone()), active: term.clone(), zoomed: false, title: None },
+            Tab {
+                root: PaneNode::Leaf(term.clone()),
+                active: term.clone(),
+                zoomed: false,
+                title: None,
+                badge: None,
+                color: None,
+            },
         );
         self.active_tab = insert_at;
         self.focus_active(window, cx);
@@ -413,7 +598,7 @@ impl Workspace {
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         let Some(target) = self.active_terminal().map(|t| t.entity_id()) else { return };
         let cwd = self.current_cwd(cx);
-        self.split_pane(target, axis, cwd, true, window, cx);
+        self.split_pane(target, axis, NewPane::Shell(cwd), true, window, cx);
     }
 
     /// Split the pane `target` (in any tab), putting a new pane after it. With
@@ -422,13 +607,13 @@ impl Workspace {
         &mut self,
         target: EntityId,
         axis: Axis,
-        cwd: Option<std::path::PathBuf>,
+        what: NewPane,
         focus: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<TerminalView>> {
         let tab_idx = self.tabs.iter().position(|t| t.leaves().iter().any(|l| l.entity_id() == target))?;
-        let new = self.spawn_terminal(cwd, window, cx);
+        let new = self.spawn_terminal(what, window, cx);
         let tab = &mut self.tabs[tab_idx];
         tab.root.split(target, &new, axis);
         tab.zoomed = false;
@@ -466,7 +651,10 @@ impl Workspace {
         if matches!(tab.root, PaneNode::Leaf(_)) {
             self.tabs.remove(tab_idx);
             if self.tabs.is_empty() {
-                cx.quit();
+                // The window's last shell exited: close the window (Lumen
+                // quits after its last window).
+                self.save_session(cx);
+                window.remove_window();
                 return;
             }
             if self.active_tab >= tab_idx && self.active_tab > 0 {
@@ -489,6 +677,15 @@ impl Workspace {
     fn activate_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if index < self.tabs.len() {
             self.active_tab = index;
+            self.focus_active(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// Move tab `from` to position `to`, keeping it active.
+    fn move_tab(&mut self, from: usize, to: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if reorder(&mut self.tabs, from, to) {
+            self.active_tab = to;
             self.focus_active(window, cx);
             cx.notify();
         }
@@ -626,8 +823,9 @@ impl Workspace {
     /// Load the plugins folder: start what's allowed, and ask about the rest.
     pub fn start_plugins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::plugins::{self, Decision};
-        self.builtins_running = Settings::get(cx).plugins.clone();
-        let (manifests, problems) = plugins::discover(&self.builtins_running);
+        let enabled = Settings::get(cx).plugins.clone();
+        plugins::set_builtins_running(enabled.clone());
+        let (manifests, problems) = plugins::discover(&enabled);
         self.plugin_problems = problems;
         self.pending_approvals.clear();
         for m in manifests {
@@ -884,7 +1082,7 @@ impl Workspace {
         }
         let _ = std::fs::OpenOptions::new().create(true).append(true).open(&path);
         let quoted = format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
-        let term = self.open_tab(path.parent().map(std::path::Path::to_path_buf), window, cx);
+        let term = self.open_tab(NewPane::Shell(path.parent().map(std::path::Path::to_path_buf)), window, cx);
         term.read(cx).send_text(&format!("tail -n 200 -F {quoted}\r"));
         self.tabs[self.active_tab].title = Some(format!("{name} log"));
     }
@@ -1039,16 +1237,53 @@ impl Workspace {
     }
 
     fn render_titlebar(
-        &self,
+        &mut self,
         theme: &Theme,
         decorations: Decorations,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let client = matches!(decorations, Decorations::Client { .. });
+        let controls = client && !cfg!(target_os = "macos");
+        // Tabs share the bar equally, up to TAB_MAX_WIDTH each; a title longer
+        // than its tab's share ends in an ellipsis. When space is tight,
+        // inactive tabs drop their close button (shown only on hover anyway)
+        // and pane count. Below TAB_MIN_WIDTH the strip scrolls instead.
+        // (Measured here because GPUI places a text's ellipsis before flexbox
+        // shrinks it.)
+        let bar = f32::from(window.viewport_size().width)
+            - 2.0 * SHADOW_INSET
+            - if cfg!(target_os = "macos") { 84.0 } else { 10.0 }
+            - 10.0
+            - 28.0
+            - if controls { 96.0 } else { 0.0 }
+            - 3.0 * 4.0;
+        let n = self.tabs.len().max(1) as f32;
+        let gaps = 4.0 * (n - 1.0);
+        let compact = (bar - gaps) / n < COMPACT_TAB_WIDTH;
+        // In compact tabs only the active one keeps its close button.
+        let active_extra = if compact { CLOSE_WIDTH } else { 0.0 };
+        let share = ((bar - gaps - active_extra) / n).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH);
+        // Keep the active tab in view when the strip scrolls.
+        if self.tab_scrolled_to != Some(self.active_tab) {
+            self.tab_scrolled_to = Some(self.active_tab);
+            self.tab_scroll.scroll_to_item(self.active_tab);
+        }
+        let accent = theme.accent;
         let tabs = self.tabs.iter().enumerate().map(|(i, tab)| {
             let active = i == self.active_tab;
             let title: SharedString =
                 tab.title.clone().unwrap_or_else(|| tab.active.read(cx).title.clone()).into();
             let panes = tab.leaves().len();
+            let show_close = active || !compact;
+            let show_panes = panes > 1 && !compact;
+            let width = share + if active { active_extra } else { 0.0 };
+            // Room left for the title after the tab's padding, number, close
+            // button, and dot or pane count if shown.
+            let number = 7.0 * (i + 1).to_string().len() as f32;
+            let fixed = 16.0 + number + 8.0
+                + if show_close { CLOSE_WIDTH } else { 0.0 }
+                + if show_panes { 8.0 + 10.0 + 6.5 * panes.to_string().len() as f32 } else { 0.0 };
             // A long command finished in a pane you haven't looked at since.
             let attention = tab
                 .leaves()
@@ -1056,6 +1291,13 @@ impl Workspace {
                 .filter_map(|l| l.read(cx).attention)
                 .reduce(|a, b| a && b)
                 .map(|ok| if ok { theme.ansi[2] } else { theme.ansi[1] });
+            let fixed = fixed + if attention.is_some() { 15.0 } else { 0.0 };
+            let tint = tab.color.map(|c| c.resolve(theme));
+            let badge = tab.badge.clone();
+            // Monospace, so a ticking countdown doesn't jiggle the title.
+            let fixed = fixed + badge.as_ref().map_or(0.0, |b| 8.0 + 12.0 + 6.4 * b.chars().count() as f32);
+            let title_width = (width - fixed).max(16.0);
+            let title = truncate_title(title, title_width, cx);
             div()
                 .id(("tab", i))
                 .group("tab")
@@ -1067,18 +1309,31 @@ impl Workspace {
                 .pl(px(10.0))
                 .pr(px(6.0))
                 .rounded(px(8.0))
-                .max_w(px(220.0))
+                .max_w(px(width))
                 .cursor_pointer()
                 .text_color(if active { theme.text } else { theme.muted })
                 .when(active, |d| {
-                    d.bg(theme.raised).shadow(vec![BoxShadow {
+                    d.bg(tint.map_or(theme.raised, |t| mix(theme.raised, t, 0.2))).shadow(vec![BoxShadow {
                         color: alpha(gpui::black(), 0.18),
                         offset: point(px(0.0), px(1.0)),
                         blur_radius: px(3.0),
                         spread_radius: px(0.0),
                     }])
                 })
-                .when(!active, |d| d.hover(|d| d.bg(alpha(theme.raised, 0.55))))
+                .when(!active, |d| match tint {
+                    Some(t) => d.bg(alpha(t, 0.12)).hover(move |d| d.bg(alpha(t, 0.2))),
+                    None => d.hover(|d| d.bg(alpha(theme.raised, 0.55))),
+                })
+                .on_drag(
+                    TabDrag { index: i, title: title.clone(), colors: (theme.raised, theme.text, alpha(theme.accent, 0.5)) },
+                    |drag, _, _, cx| cx.new(|_| TabGhost(drag.clone())),
+                )
+                .drag_over::<TabDrag>(move |style, drag, _, _| {
+                    if drag.index == i { style } else { style.bg(alpha(accent, 0.22)) }
+                })
+                .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
+                    this.move_tab(drag.index, i, window, cx);
+                }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, ev: &gpui::MouseDownEvent, window, cx| {
@@ -1089,27 +1344,49 @@ impl Workspace {
                         }
                     }),
                 )
+                // Items are centred by their boxes, but the fonts differ: nudge
+                // the number onto the title's baseline, and the dot and × onto
+                // the middle of its capitals (measured; these fonts are bundled).
                 .child(
                     div()
+                        .flex_none()
+                        .relative()
+                        .top(px(1.0))
                         .font_family(MONO_FONT)
                         .text_size(px(11.0))
-                        .text_color(if active { theme.accent } else { theme.muted })
+                        .text_color(tint.unwrap_or(if active { theme.accent } else { theme.muted }))
                         .child(format!("{}", i + 1)),
                 )
                 .when_some(attention, |d, color| {
-                    d.child(div().flex_none().size(px(7.0)).rounded(px(4.0)).bg(color))
+                    d.child(div().relative().top(px(-1.0)).flex_none().size(px(7.0)).rounded(px(4.0)).bg(color))
                 })
                 .child(
                     div()
+                        .max_w(px(title_width))
                         .min_w_0()
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .child(title),
                 )
-                .when(panes > 1, |d| {
+                .when_some(badge, |d, badge| {
+                    let color = tint.unwrap_or(theme.subtext);
                     d.child(
                         div()
+                            .flex_none()
+                            .font_family(MONO_FONT)
+                            .text_size(px(10.5))
+                            .px(px(6.0))
+                            .rounded(px(4.0))
+                            .bg(alpha(tint.unwrap_or(theme.muted), 0.18))
+                            .text_color(color)
+                            .child(badge),
+                    )
+                })
+                .when(show_panes, |d| {
+                    d.child(
+                        div()
+                            .flex_none()
                             .text_size(px(10.5))
                             .px(px(5.0))
                             .rounded(px(4.0))
@@ -1118,10 +1395,11 @@ impl Workspace {
                             .child(format!("{panes}")),
                     )
                 })
-                .child(
+                .when(show_close, |d| d.child(
                     div()
                         .id(("tab-close", i))
                         .flex()
+                        .flex_none()
                         .items_center()
                         .justify_center()
                         .size(px(18.0))
@@ -1142,8 +1420,8 @@ impl Workspace {
                                 }
                             }),
                         )
-                        .child("×"),
-                )
+                        .child(div().relative().top(px(-1.0)).child("×")),
+                ))
         });
 
         let new_tab = div()
@@ -1165,9 +1443,8 @@ impl Workspace {
                     this.new_tab(&NewTab, window, cx);
                 }),
             )
-            .child("+");
+            .child(div().relative().top(px(-1.0)).child("+"));
 
-        let client = matches!(decorations, Decorations::Client { .. });
 
         div()
             .id("titlebar")
@@ -1189,14 +1466,16 @@ impl Workspace {
             })
             .child(
                 div()
+                    .id("tab-strip")
                     .flex()
                     .items_center()
                     .gap(px(4.0))
                     .min_w_0()
-                    .overflow_hidden()
-                    .children(tabs)
-                    .child(new_tab),
+                    .overflow_x_scroll()
+                    .track_scroll(&self.tab_scroll)
+                    .children(tabs),
             )
+            .child(new_tab)
             .child(div().flex_1())
             .when(client && !cfg!(target_os = "macos"), |d| d.child(window_controls(theme)))
     }
@@ -1248,6 +1527,43 @@ fn problem_banner(problems: &[String], plugin_problems: &[String], theme: &Theme
                         .children(plugin_problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone())))
                 }),
         )
+}
+
+/// `title` shortened with an ellipsis to fit `width` in the tab font. (GPUI's
+/// own text ellipsis doesn't apply to text measured before its box shrank.)
+fn truncate_title(title: SharedString, width: f32, cx: &App) -> SharedString {
+    let font = gpui::font(UI_FONT);
+    let mut runs = vec![gpui::TextRun {
+        len: title.len(),
+        font: font.clone(),
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    }];
+    let mut wrapper = cx.text_system().line_wrapper(font, px(12.5));
+    wrapper.truncate_line(title, px(width), "…", &mut runs)
+}
+
+/// Alphas for the window frame and the panes on it, so that with
+/// `background-opacity` below 1 the frame is that see-through and panes,
+/// whose fill is drawn over the frame's, are only a little more solid.
+/// At 1 both are opaque.
+pub fn backdrop_alphas(opacity: f32) -> (f32, f32) {
+    (opacity, opacity.powi(8))
+}
+
+/// The window background for a `background-opacity`: blurred behind a
+/// translucent window where the platform can. Fully opaque, Linux stays
+/// transparent anyway, for its rounded corners and shadow.
+pub fn window_background(opacity: f32) -> WindowBackgroundAppearance {
+    if opacity < 1.0 {
+        WindowBackgroundAppearance::Blurred
+    } else if cfg!(target_os = "macos") {
+        WindowBackgroundAppearance::Opaque
+    } else {
+        WindowBackgroundAppearance::Transparent
+    }
 }
 
 fn pane_frame(
@@ -1407,7 +1723,12 @@ impl Workspace {
         }
     }
 
-    fn api_list(&self, cx: &App) -> Value {
+    /// Whether pane `id` is in this window.
+    pub fn has_pane(&self, id: u64) -> bool {
+        self.find_pane(id).is_some()
+    }
+
+    pub fn api_list(&self, cx: &App) -> Value {
         let focused = self.active_terminal().map(|t| t.entity_id());
         let tabs: Vec<Value> = self
             .tabs
@@ -1429,6 +1750,7 @@ impl Workspace {
                             "cols": cols,
                             "rows": rows,
                             "last_exit": view.last_exit(),
+                            "plugin_pane": view.is_plugin_pane(),
                         })
                     })
                     .collect();
@@ -1438,6 +1760,11 @@ impl Workspace {
                     "custom_title": tab.title.is_some(),
                     "active": i == self.active_tab,
                     "zoomed": tab.zoomed,
+                    "badge": tab.badge,
+                    "color": tab.color.map(|c| match c {
+                        TabColor::Ansi(i) => TabColor::NAMES.iter().find(|(_, n)| *n == i).map_or("", |(name, _)| name).to_string(),
+                        TabColor::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+                    }),
                     "panes": panes,
                 })
             })
@@ -1452,6 +1779,7 @@ impl Workspace {
         caller: &api::Caller,
         method: &str,
         params: &Value,
+        origin: Option<&api::Origin>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ApiResult {
@@ -1472,6 +1800,24 @@ impl Workspace {
                 }
             }
         };
+        // `plugin_pane`: a pane the caller draws, instead of a shell.
+        let owner = || -> Result<Option<Owner>, ApiError> {
+            match params.get("plugin_pane") {
+                None | Some(Value::Null) | Some(Value::Bool(false)) => Ok(None),
+                Some(Value::Bool(true)) => {
+                    if params.get("run").is_some_and(|r| !r.is_null()) || params.get("cwd").is_some_and(|c| !c.is_null()) {
+                        return Err(ApiError::invalid_params("a plugin pane runs no program, so takes no `run` or `cwd`"));
+                    }
+                    let origin = origin.ok_or_else(|| ApiError::failed("plugin panes need a connection to draw them"))?;
+                    let name = match caller {
+                        api::Caller::Plugin { name, .. } => name.clone(),
+                        api::Caller::Socket => "script".into(),
+                    };
+                    Ok(Some(Owner { conn: origin.conn, out: origin.out.clone(), name }))
+                }
+                Some(_) => Err(ApiError::invalid_params("`plugin_pane` should be true or false")),
+            }
+        };
         // Typed into a new pane's shell, which reads it once it's ready.
         let run = |term: &Entity<TerminalView>, cx: &App| -> Result<(), ApiError> {
             if let Some(cmd) = string("run")? {
@@ -1490,9 +1836,12 @@ impl Workspace {
             })),
             "list" => Ok(self.api_list(cx)),
             "new-tab" => {
-                let dir = cwd()?.or_else(|| self.current_cwd(cx));
+                let what = match owner()? {
+                    Some(owner) => NewPane::Plugin(owner),
+                    None => NewPane::Shell(cwd()?.or_else(|| self.current_cwd(cx))),
+                };
                 string("run")?;
-                let term = self.open_tab(dir, window, cx);
+                let term = self.open_tab(what, window, cx);
                 run(&term, cx)?;
                 Ok(json!({ "pane": term.entity_id().as_u64(), "tab": self.active_tab }))
             }
@@ -1510,12 +1859,38 @@ impl Workspace {
                     None | Some(Value::Null) => true,
                     Some(v) => v.as_bool().ok_or_else(|| ApiError::invalid_params("`focus` should be true or false"))?,
                 };
+                // The new pane's share of the space: a fraction, or a number
+                // of rows (down) or columns (right) of the pane split.
+                let share = match params.get("size") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => {
+                        let n = v.as_f64().filter(|n| *n > 0.0).ok_or_else(|| {
+                            ApiError::invalid_params("`size` should be a fraction (like 0.3) or a number of rows or columns")
+                        })?;
+                        Some(n)
+                    }
+                };
+                let owner = owner()?;
                 string("run")?;
                 let (_, target) = self.target_pane(params)?;
-                let dir = cwd()?.or_else(|| target.read(cx).cwd());
+                let what = match owner {
+                    Some(owner) => NewPane::Plugin(owner),
+                    None => NewPane::Shell(cwd()?.or_else(|| target.read(cx).cwd())),
+                };
+                let (cols, rows) = target.read(cx).grid_size();
                 let new = self
-                    .split_pane(target.entity_id(), axis, dir, focus, window, cx)
+                    .split_pane(target.entity_id(), axis, what, focus, window, cx)
                     .ok_or_else(|| ApiError::failed("that pane just closed"))?;
+                if let Some(n) = share {
+                    let whole = if axis == Axis::Row { cols } else { rows } as f64;
+                    // The new pane's frame and the divider take about two
+                    // rows (or columns) of what it's given.
+                    let fraction = if n < 1.0 { n } else { (n + 2.0) / whole.max(1.0) };
+                    let id = new.entity_id();
+                    if let Some(tab) = self.tabs.iter_mut().find(|t| t.leaves().iter().any(|l| l.entity_id() == id)) {
+                        tab.root.set_share(id, fraction.clamp(0.1, 0.9) as f32);
+                    }
+                }
                 run(&new, cx)?;
                 Ok(json!({ "pane": new.entity_id().as_u64() }))
             }
@@ -1552,11 +1927,79 @@ impl Workspace {
                 let (_, pane) = self.target_pane(params)?;
                 Ok(json!({ "text": pane.read(cx).screen_text(lines) }))
             }
+            "move-tab" => {
+                let to = params
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| ApiError::invalid_params("`index` (a tab position, from 0) is required"))?
+                    as usize;
+                let (from, _) = self.target_pane(params)?;
+                if to >= self.tabs.len() {
+                    return Err(ApiError::invalid_params(format!("there are only {} tabs", self.tabs.len())));
+                }
+                self.move_tab(from, to, window, cx);
+                Ok(json!({}))
+            }
             "set-title" => {
                 let title = string("title")?.filter(|t| !t.trim().is_empty());
                 let (tab, _) = self.target_pane(params)?;
                 self.tabs[tab].title = title;
                 cx.notify();
+                Ok(json!({}))
+            }
+            "set-tab-style" => {
+                let (tab, _) = self.target_pane(params)?;
+                // Fields left out stay as they are; null clears them.
+                let badge = match params.get("badge") {
+                    None => self.tabs[tab].badge.clone(),
+                    Some(Value::Null) => None,
+                    Some(Value::String(b)) => {
+                        let b = b.trim();
+                        if b.chars().count() > 24 {
+                            return Err(ApiError::invalid_params("`badge` should be at most 24 characters"));
+                        }
+                        (!b.is_empty()).then(|| b.to_string())
+                    }
+                    Some(_) => return Err(ApiError::invalid_params("`badge` should be a string or null")),
+                };
+                let color = match params.get("color") {
+                    None => self.tabs[tab].color,
+                    Some(Value::Null) => None,
+                    Some(Value::String(c)) => Some(TabColor::parse(c).map_err(ApiError::invalid_params)?),
+                    Some(_) => return Err(ApiError::invalid_params("`color` should be a string or null")),
+                };
+                self.tabs[tab].badge = badge;
+                self.tabs[tab].color = color;
+                cx.notify();
+                Ok(json!({}))
+            }
+            "write" => {
+                let text = required("text")?;
+                let (_, pane) = self.target_pane(params)?;
+                match pane.read(cx).owner_conn() {
+                    None => Err(ApiError::failed("that pane runs a program; `write` is for plugin panes (`send-text` types into it)")),
+                    Some(conn) if Some(conn) != origin.map(|o| o.conn) => {
+                        Err(ApiError::failed("that plugin pane belongs to another connection"))
+                    }
+                    Some(_) => {
+                        pane.update(cx, |view, _| view.feed(&text));
+                        Ok(json!({}))
+                    }
+                }
+            }
+            // A connection closed: so do the plugin panes it drew.
+            "_disconnected" => {
+                let conn = params.get("conn").and_then(Value::as_u64);
+                let orphans: Vec<EntityId> = self
+                    .tabs
+                    .iter()
+                    .flat_map(|t| t.leaves())
+                    .filter(|l| conn.is_some() && l.read(cx).owner_conn() == conn)
+                    .map(|l| l.entity_id())
+                    .collect();
+                for id in orphans {
+                    self.close_pane_entity(id, window, cx);
+                }
                 Ok(json!({}))
             }
             "run-action" => {
@@ -1595,6 +2038,7 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
     }
     let actions: Vec<(SharedString, Box<dyn gpui::Action>)> = vec![
         action::<NewTab>("New Tab"),
+        action::<NewWindow>("New Window"),
         action::<SplitRight>("Split Right"),
         action::<SplitDown>("Split Down"),
         action::<ClosePane>("Close Pane"),
@@ -1726,7 +2170,17 @@ fn resize_edge(pos: Point<Pixels>, inset: Pixels, size: Size<Pixels>) -> Option<
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Settings::get(cx).theme().clone();
+        let settings = Settings::get(cx);
+        let mut theme = settings.theme().clone();
+        let opacity = settings.background_opacity;
+        let (frame_alpha, pane_alpha) = backdrop_alphas(opacity);
+        theme.shell = alpha(theme.shell, frame_alpha);
+        theme.pane = alpha(theme.pane, pane_alpha);
+        let appearance = window_background(opacity);
+        if self.background_appearance != Some(appearance) {
+            self.background_appearance = Some(appearance);
+            window.set_background_appearance(appearance);
+        }
         let decorations = window.window_decorations();
         let inset = px(SHADOW_INSET);
 
@@ -1786,6 +2240,7 @@ impl Render for Workspace {
                     })
             })
             .on_action(cx.listener(Self::new_tab))
+            .on_action(cx.listener(Self::new_window))
             .on_action(cx.listener(Self::split_right))
             .on_action(cx.listener(Self::split_down))
             .on_action(cx.listener(Self::close_pane))
@@ -1801,7 +2256,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FocusRight, w, cx| this.focus_pane(1.0, 0.0, w, cx)))
             .on_action(cx.listener(|this, _: &FocusUp, w, cx| this.focus_pane(0.0, -1.0, w, cx)))
             .on_action(cx.listener(|this, _: &FocusDown, w, cx| this.focus_pane(0.0, 1.0, w, cx)))
-            .child(self.render_titlebar(&theme, decorations, cx))
+            .child(self.render_titlebar(&theme, decorations, window, cx))
             // Keep the resize cursor while a divider drag strays off the divider.
             .when_some(drag_cursor, |d, style| {
                 d.child(
@@ -1911,5 +2366,41 @@ fn join_and(parts: &[String]) -> String {
         [] => String::new(),
         [one] => one.clone(),
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropped_tabs_land_in_the_slot_they_were_dropped_on() {
+        let mut tabs = vec!['a', 'b', 'c', 'd'];
+        assert!(reorder(&mut tabs, 0, 2));
+        assert_eq!(tabs, ['b', 'c', 'a', 'd']);
+        assert!(reorder(&mut tabs, 3, 0));
+        assert_eq!(tabs, ['d', 'b', 'c', 'a']);
+        assert!(!reorder(&mut tabs, 1, 1));
+        assert!(!reorder(&mut tabs, 1, 4));
+        assert_eq!(tabs, ['d', 'b', 'c', 'a']);
+    }
+
+    #[test]
+    fn tab_colors_are_theme_names_or_hex() {
+        assert_eq!(TabColor::parse("Red"), Ok(TabColor::Ansi(1)));
+        assert_eq!(TabColor::parse("purple"), TabColor::parse("magenta"));
+        assert_eq!(TabColor::parse("#FF8000"), Ok(TabColor::Rgb(255, 128, 0)));
+        assert!(TabColor::parse("#ff80").is_err());
+        assert!(TabColor::parse("orange").unwrap_err().contains("not \"orange\""));
+    }
+
+    #[test]
+    fn opacity_sets_the_frame_and_panes() {
+        assert_eq!(backdrop_alphas(1.0), (1.0, 1.0));
+        let (frame, pane) = backdrop_alphas(0.8);
+        assert_eq!(frame, 0.8);
+        // Panes are drawn over the frame: together a little more solid than it.
+        let combined = pane + frame * (1.0 - pane);
+        assert!(combined > 0.8 && combined < 0.9, "{combined}");
     }
 }
