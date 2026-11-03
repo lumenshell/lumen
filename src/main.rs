@@ -5,6 +5,7 @@ mod api;
 mod boxdraw;
 mod cli;
 mod glyphs;
+mod info;
 mod input;
 mod keymap;
 mod links;
@@ -97,6 +98,9 @@ fn main() {
     if args.first().map(String::as_str) == Some("msg") {
         std::process::exit(cli::run(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("info") {
+        std::process::exit(info::run(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("python-path") {
         // For scripts: PYTHONPATH="$(lumen python-path)" python3 script.py
         match plugins::python_path() {
@@ -110,7 +114,7 @@ fn main() {
     }
     if let Some(arg) = args.first() {
         let help = matches!(arg.as_str(), "-h" | "--help" | "help");
-        eprintln!("Usage: lumen              open a window\n       lumen msg ...      control a running Lumen (lumen msg help)\n       lumen python-path  where the lumen_plugin Python package is");
+        eprintln!("Usage: lumen              open a window\n       lumen msg ...      control a running Lumen (lumen msg help)\n       lumen info         system facts and this Lumen's settings, beside a flame\n       lumen python-path  where the lumen_plugin Python package is");
         std::process::exit(if help { 0 } else { 2 });
     }
     Application::new().run(|cx: &mut App| {

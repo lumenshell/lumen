@@ -25,6 +25,8 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
 - Find in scrollback, with optional case-sensitive and regex matching
 - Keyboard select mode: move through the screen and scrollback with vi keys,
   select and copy without the mouse (see [Keyboard select mode](#keyboard-select-mode))
+- `lumen info`: a neofetch-style summary of your system and this Lumen, beside
+  a flickering flame drawn in your theme's colours
 - Scriptable: `lumen msg` opens tabs and splits, types into panes, reads their
   screens and streams events such as "command finished with exit 1" (see
   [Scripting](#scripting-lumen-msg))
@@ -261,6 +263,28 @@ in [`shell-integration/`](shell-integration). Directories reported by a remote
 host are ignored, so new panes still open locally.
 
 Set `shell-integration = false` in the config to turn it off.
+
+## System info (`lumen info`)
+
+`lumen info` prints a flame in your theme's colours beside your OS, kernel,
+uptime, shell, CPU, GPU, memory and public IP, and Lumen's own details: version and
+window size, theme, font, whether shell integration is on, and which plugins
+are set up. Below them are the terminal's 16 colours. It takes a few
+milliseconds and needs no other programs (GPU names come from `lspci` or
+NVIDIA's driver when they're there).
+
+The public IP comes from asking [api.ipify.org](https://www.ipify.org) (over
+plain HTTP, and shown only if the answer is an IP address). The rest prints
+at once and the IP fills in when it arrives, or reads "unavailable" when
+offline. `--no-ip` skips it, so nothing leaves your machine.
+
+In a terminal the flame burns until you press any key (the key still reaches
+your shell; Ctrl+C works too). `--brief` burns for two seconds and then
+settles, which suits your shell's startup: add `lumen info --brief` to your
+`~/.bashrc`, `~/.zshrc` or `config.fish` to see it in every new pane.
+`--still` doesn't animate at all, and it doesn't animate when the output
+wouldn't fit on screen. Piped or redirected,
+or with `NO_COLOR=1`, it prints plain text.
 
 ## Scripting (`lumen msg`)
 
@@ -527,6 +551,7 @@ socket API is on.
 | `src/keymap.rs`        | Default shortcuts and the `[keys]` table                  |
 | `src/api.rs`           | Socket API server: JSON-RPC requests and the event stream |
 | `src/cli.rs`           | The `lumen msg` command                                   |
+| `src/info.rs`          | The `lumen info` command                                  |
 | `src/plugins.rs`       | Plugin manifests, approvals, running and restarting them  |
 | `src/workspace.rs`     | Title bar, tabs, pane tree, focus halo, palette overlay   |
 | `src/terminal_view.rs` | Grid rendering, cursor, selection, mouse and key input    |
