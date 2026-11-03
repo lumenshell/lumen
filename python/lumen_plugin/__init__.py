@@ -36,7 +36,7 @@ import sys
 import traceback
 import unicodedata
 
-__all__ = ["Plugin", "Pane", "Event", "LumenError", "quote", "EVENTS"]
+__all__ = ["Plugin", "Pane", "Event", "LumenError", "quote", "typeable", "EVENTS"]
 __version__ = "1.0.0"
 
 #: Events Lumen can send; see `Plugin.on`.
@@ -54,10 +54,22 @@ EVENTS = (
 _PLAIN = re.compile(r"[A-Za-z0-9_./:,@+-]+")
 
 
+# Control characters (Cc: newlines, escapes...) press keys rather than type
+# text. Format characters (Cf: bidi overrides, zero-width ones) and line and
+# paragraph separators (Zl, Zp) make text look different from what it is, so
+# a command shown for you to confirm could hide what actually runs.
+_UNSAFE = {"Cc", "Cf", "Zl", "Zp"}
+
+
+def typeable(text: str) -> bool:
+    """Can `text` be typed into a shell and shown to you as it really is? No
+    control characters, invisible formatting (such as right-to-left
+    overrides) or line separators."""
+    return not any(unicodedata.category(c) in _UNSAFE for c in str(text))
+
+
 def _control(text: str) -> bool:
-    """Has control characters (newlines, escapes...), which would press keys
-    in the shell rather than be typed as text."""
-    return any(unicodedata.category(c) == "Cc" for c in text)
+    return not typeable(text)
 
 
 def quote(word) -> str:
@@ -71,7 +83,7 @@ def quote(word) -> str:
     quotes, so every shell reads the word the same way.)"""
     word = str(word)
     if _control(word):
-        raise ValueError(f"can't safely type {word!r}: it contains control characters")
+        raise ValueError(f"can't safely type {word!r}: it contains control or invisible characters")
     if _PLAIN.fullmatch(word):
         return word
     out = []
@@ -111,7 +123,7 @@ def _command_text(command) -> str:
         return " ".join(quote(c) for c in command)
     command = str(command)
     if _control(command):
-        raise ValueError(f"can't safely type {command!r}: it contains control characters")
+        raise ValueError(f"can't safely type {command!r}: it contains control or invisible characters")
     return command
 
 

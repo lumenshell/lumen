@@ -18,7 +18,7 @@ import os
 import sys
 import time
 
-from lumen_plugin import Plugin, quote
+from lumen_plugin import Plugin, quote, typeable
 
 app = Plugin()
 MAC = sys.platform == "darwin"
@@ -164,7 +164,8 @@ async def ready(pane):
 
 @app.command("Search Command History", keys="cmd-shift-h" if MAC else "ctrl-shift-h")
 async def search(pane):
-    entries = newest_unique(history)[:500]
+    # Leave out anything that would look different from what it types.
+    entries = [e for e in newest_unique(history) if typeable(e["command"])][:500]
     if not entries:
         await app.notify("Command History", "Nothing yet: commands are kept as they finish.")
         return
@@ -183,6 +184,10 @@ async def rerun(pane):
         return
     if not await ready(pane):
         return
+    if not typeable(entry["command"]):
+        # It would press keys, or look different from what it is.
+        await app.notify("Command History", "That command can't be shown and typed safely.")
+        return
     command = entry["command"]
     where = entry.get("cwd")
     if where and where != cwds.get(pane.id) and os.path.isdir(where):
@@ -192,8 +197,8 @@ async def rerun(pane):
         return
     try:
         await pane.run(command)
-    except ValueError:  # control characters: never type those
-        await app.notify("Command History", "That command can't be typed safely.")
+    except ValueError:  # the folder name can't be typed safely
+        await app.notify("Command History", "That command's folder can't be typed safely.")
 
 
 @app.command("Clear Command History")

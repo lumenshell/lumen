@@ -131,10 +131,13 @@ yourself, use `lumen_plugin.quote` on anything you didn't write. It's safe in
 bash, zsh and fish; Python's `shlex.quote` isn't safe in fish, where `\'`
 inside single quotes is an escaped quote.
 
-Text with control characters (newlines, carriage returns, escape codes) is
-refused with `ValueError` by `run`, `quote` and `run=`: a carriage return
-would press Enter partway through, and no quoting makes them safe to type. If
-you mean to send keys, use `pane.send_text`.
+Text with control characters (newlines, carriage returns, escape codes) or
+invisible ones (right-to-left overrides, zero-width spaces, line separators)
+is refused with `ValueError` by `run`, `quote` and `run=`: a carriage return
+would press Enter partway through, and invisible characters can make a
+command look different from what it does. `typeable(text)` tells you in
+advance, which is worth checking before you show someone a command to
+confirm. If you mean to send keys, use `pane.send_text`.
 
 **Your plugin's files.** `app.dir` is the plugin's folder, for settings and
 files that ship with it (the `snippets` example reads `snippets.toml` from
@@ -252,11 +255,12 @@ else uses the most recently started Lumen.
 the other fields read like a dict: `event["exit"]`, `event.get("command")`,
 `event.data` for all of them.
 
-### quote
+### quote and typeable
 
 `quote(word)` quotes one word for the shell (bash, zsh or fish) and raises
-`ValueError` if it has control characters. Lists given to `run` and `run=`
-are quoted with it.
+`ValueError` if it has control or invisible characters. Lists given to `run`
+and `run=` are quoted with it. `typeable(text)` is False for text with those
+characters.
 
 ### Errors
 

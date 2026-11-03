@@ -474,7 +474,8 @@ would any other program.
 When a plugin types into a shell with `send-text`, anything it didn't write
 itself (a branch or file name, text from the screen) must be quoted for the
 shell first, and must not contain control characters (a carriage return
-presses Enter). Git branch names, for one, can contain `$`, `;` and backticks.
+presses Enter) or invisible ones such as right-to-left overrides, which make
+a command look different from what it does. Git branch names, for one, can contain `$`, `;` and backticks.
 Quote in a way fish also understands: POSIX single quotes aren't enough there,
 since fish reads `\'` inside them as an escaped quote (`lumen_plugin.quote`
 handles this; so does avoiding the shell, e.g. `new-tab`'s `cwd`).

@@ -25,14 +25,13 @@ shown every command and asked before anything runs.
 
 import os
 import sys
-import unicodedata
 
 try:
     import tomllib
 except ImportError:  # Python < 3.11
     tomllib = None
 
-from lumen_plugin import Plugin, quote
+from lumen_plugin import Plugin, quote, typeable
 
 app = Plugin()
 KEYS = "cmd-shift-l" if sys.platform == "darwin" else "ctrl-shift-l"
@@ -71,10 +70,11 @@ def load(path):
         if run is not None and not isinstance(run, (str, list)):
             raise ValueError(f"pane {i}: run should be a string or a list")
         words = [run] if isinstance(run, str) else [str(w) for w in run or []]
-        # A carriage return or escape code would press keys, and could hide
-        # part of a command from the confirmation; refuse the layout.
-        if any(unicodedata.category(c) == "Cc" for w in words for c in w):
-            raise ValueError(f"pane {i}: run contains control characters")
+        # A carriage return or escape code would press keys, and invisible
+        # characters (like right-to-left overrides) could make a command look
+        # different in the confirmation; refuse the layout.
+        if not all(typeable(w) for w in words):
+            raise ValueError(f"pane {i}: run contains control or invisible characters")
         out.append({"split": p.get("split", "right"), "of": of, "cwd": cwd, "run": run})
     return data.get("title"), out
 

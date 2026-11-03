@@ -237,7 +237,10 @@ class QuotingTests(unittest.TestCase):
                 self.assertEqual(out.stdout, word)
 
     def test_control_characters_are_refused(self):
-        for bad in ["a\nb", "a\rb", "\x1b[A", "x\x7f", "\x9b", "\t"]:
+        # Control characters, and invisible ones that disguise text: right-to-left
+        # override and isolate, zero-width space, line and paragraph separators.
+        for bad in ["a\nb", "a\rb", "\x1b[A", "x\x7f", "\x9b", "\t", "rm -rf ~ #\u202eexample",
+                    "a\u2066b\u2069", "a\u200bb", "a\u2028b", "a\u2029b"]:
             with self.assertRaises(ValueError):
                 self.quote(bad)
 

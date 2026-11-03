@@ -98,6 +98,12 @@ class CommandHistoryTests(unittest.TestCase):
         self.assertEqual(self.p["last_failure"](entries, 3)["command"], "make")
         self.assertIsNone(self.p["last_failure"]([e("ls", 0, 1)], 1))
 
+    def test_rerun_and_search_skip_disguised_commands(self):
+        typeable = self.p["typeable"]
+        self.assertTrue(typeable("git log --oneline"))
+        self.assertTrue(typeable("echo naïve 日本 ✓"))
+        self.assertFalse(typeable("ls #\u202e~ fr- mr"))
+
     def test_history_is_capped(self):
         self.p["KEEP"] = 10
         self.p["append"].__globals__["KEEP"] = 10
@@ -165,7 +171,8 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertEqual((title, [x["of"] for x in panes], panes[1]["cwd"]), ("api", [0, 1, 1], f"{d}/sub"))
         for bad in ['[[pane]]\n[[pane]]\nsplit="up"\n', '[[pane]]\n[[pane]]\nof=2\n', 'title="x"\n',
                     '[[pane]]\nrun=3\n', '[[pane]]\nrun="echo hi\\rrm -rf ~"\n',
-                    '[[pane]]\nrun=["echo", "\\u001b[2Khidden"]\n']:
+                    '[[pane]]\nrun=["echo", "\\u001b[2Khidden"]\n',
+                    '[[pane]]\nrun="echo safe #\\u202e ~ fr- mr"\n']:
             with open(path, "w") as f:
                 f.write(bad)
             with self.assertRaises(ValueError, msg=bad):
