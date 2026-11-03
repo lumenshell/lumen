@@ -249,3 +249,14 @@ class PomodoroTests(unittest.TestCase):
         self.p["count_session"]()
         self.p["count_session"]()
         self.assertEqual(self.p["today_count"](), 2)
+
+
+class PomodoroLabelTests(unittest.TestCase):
+    def test_the_label_follows_minutes_added_or_taken_off(self):
+        p = load("pomodoro")
+        t = [0.0]
+        timer = p["Timer"]("classic", now=lambda: t[0])
+        timer.adjust(-6 * 60)
+        strip = re.compile(r"\x1b\[[0-9;]*m")
+        head = strip.sub("", timer.render(80, 12, today=0)[1])
+        self.assertIn("19 min", head)

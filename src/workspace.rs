@@ -323,6 +323,22 @@ impl TabColor {
     }
 }
 
+/// Room a badge of `chars` characters takes in a tab, gap included.
+fn badge_width(chars: usize) -> f32 {
+    8.0 + 12.0 + 6.4 * chars as f32
+}
+
+/// `badge` as it fits in `room`: whole, shortened with "…", or not at all
+/// when not even three characters fit.
+fn fit_badge(badge: &str, room: f32) -> Option<String> {
+    let n = badge.chars().count();
+    if badge_width(n) <= room {
+        return Some(badge.to_string());
+    }
+    let fits = ((room - badge_width(0)) / 6.4).floor();
+    (fits >= 3.0).then(|| badge.chars().take(fits as usize - 1).chain(['…']).collect())
+}
+
 /// `a` with `t` of `b` mixed in.
 fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
     let (a, b): (Rgba, Rgba) = (a.into(), b.into());
@@ -1299,9 +1315,11 @@ impl Workspace {
                 .map(|ok| if ok { theme.ansi[2] } else { theme.ansi[1] });
             let fixed = fixed + if attention.is_some() { 15.0 } else { 0.0 };
             let tint = tab.color.map(|c| c.resolve(theme));
-            let badge = tab.badge.clone();
-            // Monospace, so a ticking countdown doesn't jiggle the title.
-            let fixed = fixed + badge.as_ref().map_or(0.0, |b| 8.0 + 12.0 + 6.4 * b.chars().count() as f32);
+            // Monospace, so a ticking countdown doesn't jiggle the title. In a
+            // narrow tab the badge gives way too, keeping a little of the
+            // title: shortened with an ellipsis, or left out.
+            let badge = tab.badge.as_deref().and_then(|b| fit_badge(b, width - fixed - 16.0));
+            let fixed = fixed + badge.as_ref().map_or(0.0, |b| badge_width(b.chars().count()));
             let title_width = (width - fixed).max(16.0);
             let title = truncate_title(title, title_width, cx);
             div()
@@ -2401,6 +2419,13 @@ mod tests {
         assert!(!reorder(&mut tabs, 1, 1));
         assert!(!reorder(&mut tabs, 1, 4));
         assert_eq!(tabs, ['d', 'b', 'c', 'a']);
+    }
+
+    #[test]
+    fn badges_shorten_or_go_in_narrow_tabs() {
+        assert_eq!(fit_badge("19:42", 200.0).as_deref(), Some("19:42"));
+        assert_eq!(fit_badge("web-1.staging", badge_width(6)).as_deref(), Some("web-1…"));
+        assert_eq!(fit_badge("web-1.staging", badge_width(2)), None);
     }
 
     #[test]

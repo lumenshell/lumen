@@ -146,7 +146,7 @@ class Timer:
         elif self.ready:
             ansi, status = "34", "press space to start"
         else:
-            status = f"{self.minutes(self.phase)} min"
+            status = f"{round(self.length / 60)} min"
         left = self.remaining()
         done = 1 - left / self.length if self.length else 1
         count = f"today {today} 🍅" if today else ""
