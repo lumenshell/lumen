@@ -45,10 +45,12 @@ A fast, good-looking terminal for Linux and macOS, built with Rust,
   [Scripting](#scripting-lumen-msg))
 - Built-in plugins to turn on from the Plugin Gallery: jump to recent folders,
   search every command you've run (and rerun the last failure), switch git
-  branches, SSH to a host, open project layouts, build status in the tab title
+  branches, SSH to a host, open project layouts, build status in the tab title,
+  and a pomodoro timer
 - Plugins in any language: Lumen runs them, restarts them if they crash, and
-  lets them add palette commands, key bindings and pickers, limited to the
-  permissions you approve. Python plugins get `lumen_plugin`, built in, with
+  lets them add palette commands, key bindings and pickers, draw panes of
+  their own, and put badges and colours on tabs, limited to the permissions
+  you approve. Python plugins get `lumen_plugin`, built in, with
   nothing to install (see [Plugins](#plugins) and the [plugin guide](docs/plugins.md))
 - Shell integration for bash, zsh and fish: jump between commands, copy the last
   command's output, a red mark beside commands that failed, and new panes that
@@ -623,7 +625,7 @@ socket API is on.
 | `src/plugins.rs`       | Plugin manifests, approvals, running and restarting them  |
 | `src/workspace.rs`     | Title bar, tabs, pane tree, focus halo, palette overlay   |
 | `src/terminal_view.rs` | Grid rendering, cursor, selection, mouse and key input    |
-| `src/pty.rs`           | Shell process + `alacritty_terminal` state and event loop |
+| `src/pty.rs`           | Shell process + `alacritty_terminal` state and event loop; plugin panes, which a plugin draws instead |
 | `src/input.rs`         | Keystroke → escape-sequence encoding, legacy and kitty keyboard protocol |
 | `src/links.rs`         | URL and OSC 8 hyperlink detection                         |
 | `src/search.rs`        | Find in scrollback: matching, navigation, highlights      |
