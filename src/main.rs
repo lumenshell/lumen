@@ -5,6 +5,7 @@ mod api;
 mod boxdraw;
 mod cli;
 mod glyphs;
+mod hotkey;
 mod info;
 mod input;
 mod keymap;
@@ -14,6 +15,7 @@ mod mouse;
 mod palette;
 mod plugins;
 mod pty;
+mod quick;
 mod scrollbar;
 mod search;
 mod session;
@@ -40,6 +42,7 @@ actions!(
     [
         NewTab,
         NewWindow,
+        ToggleQuickTerminal,
         ClosePane,
         SplitRight,
         SplitDown,
@@ -140,6 +143,10 @@ fn main() {
         });
 
         cx.on_action(|_: &NewWindow, cx| new_window(None, None, cx));
+        cx.on_action(|_: &ToggleQuickTerminal, cx| {
+            quick::toggle(cx);
+        });
+        quick::watch_hotkey(cx);
 
         // One window per saved window, or a fresh one.
         let saved = session::load();

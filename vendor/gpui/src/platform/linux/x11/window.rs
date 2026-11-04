@@ -315,7 +315,10 @@ impl rwh::HasDisplayHandle for RawWindow {
 
 impl rwh::HasWindowHandle for X11Window {
     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
-        unimplemented!()
+        // Lumen: the window's id, so an app can set window-manager hints on it
+        // (upstream leaves this unimplemented and panics).
+        let non_zero = NonZeroU32::new(self.0.x_window).ok_or(rwh::HandleError::Unavailable)?;
+        Ok(unsafe { rwh::WindowHandle::borrow_raw(rwh::XcbWindowHandle::new(non_zero).into()) })
     }
 }
 impl rwh::HasDisplayHandle for X11Window {

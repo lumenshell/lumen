@@ -45,6 +45,14 @@ Meanwhile GPUI loads the system fonts and Lumen starts the panes' shells, so
 they're ready by the first frame. With bash at 120 Hz on an NVIDIA GPU, the
 first prompt went from 516–600 ms after launch to 345–407 ms.
 
+## The window's X11 id (X11)
+
+`src/platform/linux/x11/window.rs`: `X11Window` implements
+`HasWindowHandle`, returning its X window, where upstream has
+`unimplemented!()` (so asking for it panicked). Lumen's quick terminal uses
+the id to set window-manager hints (above other windows, on every
+workspace, out of the taskbar) and to hide and show the window.
+
 ## Build fix
 
 `src/taffy.rs`: two float literals given an explicit `f32` type. Newer Rust

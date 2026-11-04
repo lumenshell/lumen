@@ -400,12 +400,27 @@ pub struct Workspace {
     window_id: u64,
     saved_on_quit: bool,
     window_state: Option<WindowState>,
+    /// This is the quick terminal: drawn flush to the screen's edges, with
+    /// no window buttons, and not saved in the session.
+    quick: bool,
     _autosave: Task<()>,
     _subs: Vec<Subscription>,
 }
 
 impl Workspace {
     pub fn new(saved: Option<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with(saved, false, window, cx)
+    }
+
+    /// The quick terminal's workspace: one fresh tab.
+    pub fn new_quick(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let this = Self::with(None, true, window, cx);
+        cx.observe_window_activation(window, |_, window, cx| crate::quick::activation_changed(window.is_window_active(), cx))
+            .detach();
+        this
+    }
+
+    fn with(saved: Option<Session>, quick: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             background_appearance: None,
             tab_scroll: gpui::ScrollHandle::new(),
@@ -419,10 +434,14 @@ impl Workspace {
             window_id: window.window_handle().window_id().as_u64(),
             saved_on_quit: false,
             window_state: saved.as_ref().and_then(|s| s.window),
+            quick,
             _autosave: Task::ready(()),
             _subs: Vec::new(),
         };
-        session::register(this.window_id);
+        // The quick terminal isn't saved (unregistered windows aren't written).
+        if !quick {
+            session::register(this.window_id);
+        }
         match saved {
             Some(saved) => this.restore(saved, window, cx),
             None => this.new_tab(&NewTab, window, cx),
@@ -589,6 +608,11 @@ impl Workspace {
 
     fn active_terminal(&self) -> Option<&Entity<TerminalView>> {
         self.tabs.get(self.active_tab).map(|t| &t.active)
+    }
+
+    /// Give the active pane the keyboard.
+    pub fn focus_active_pane(&self, window: &mut Window, cx: &mut App) {
+        self.focus_active(window, cx);
     }
 
     fn focus_active(&self, window: &mut Window, cx: &mut App) {
@@ -1536,12 +1560,14 @@ impl Workspace {
             .gap(px(4.0))
             .font_family(UI_FONT)
             .text_size(px(12.5))
-            .on_mouse_down(MouseButton::Left, |ev, window, _| {
-                if ev.click_count >= 2 {
-                    window.titlebar_double_click();
-                } else {
-                    window.start_window_move();
-                }
+            .when(!self.quick, |d| {
+                d.on_mouse_down(MouseButton::Left, |ev, window, _| {
+                    if ev.click_count >= 2 {
+                        window.titlebar_double_click();
+                    } else {
+                        window.start_window_move();
+                    }
+                })
             })
             .child(
                 div()
@@ -1556,7 +1582,7 @@ impl Workspace {
             )
             .child(new_tab)
             .child(div().flex_1())
-            .when(client && !cfg!(target_os = "macos"), |d| d.child(window_controls(theme)))
+            .when(client && !self.quick && !cfg!(target_os = "macos"), |d| d.child(window_controls(theme)))
     }
 }
 
@@ -2157,6 +2183,7 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
     let actions: Vec<(SharedString, Box<dyn gpui::Action>)> = vec![
         action::<NewTab>("New Tab"),
         action::<NewWindow>("New Window"),
+        action::<ToggleQuickTerminal>("Toggle Quick Terminal"),
         action::<SplitRight>("Split Right"),
         action::<SplitDown>("Split Down"),
         action::<ClosePane>("Close Pane"),
@@ -2307,8 +2334,13 @@ impl Render for Workspace {
             self.background_appearance = Some(appearance);
             window.set_background_appearance(appearance);
         }
-        let decorations = window.window_decorations();
-        let inset = px(SHADOW_INSET);
+        let decorations = match window.window_decorations() {
+            // The quick terminal sits flush against the screen's edges, like a
+            // tiled window: no shadow margin or rounded corners.
+            Decorations::Client { .. } if self.quick => Decorations::Client { tiling: gpui::Tiling::tiled() },
+            d => d,
+        };
+        let inset = if self.quick { px(0.0) } else { px(SHADOW_INSET) };
 
         if let Some(term) = self.active_terminal() {
             let title = term.read(cx).title.clone();

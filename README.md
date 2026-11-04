@@ -20,6 +20,9 @@ integration and plugins you can write in any language. Built with Rust,
   tab, or Ctrl+, / ⌘,); **+** opens a tab and a tab's **×**
   closes it with all its panes. Drag a tab along the bar to reorder it. Drag the
   title bar to move the window and double-click it to maximize
+- A quick terminal that drops down from the top of the screen on a key you
+  press from any app, and hides again with the same key, its shells still
+  running (see [Quick terminal](#quick-terminal))
 - As many windows as you like (New Window, Ctrl+Shift+N / ⌘N, opens in the
   current pane's folder). Closing a window's last pane closes the window;
   Lumen quits when its last window closes
@@ -225,6 +228,37 @@ Every shortcut can be changed in the config (see [Key bindings](#key-bindings))
 except Shift+PgUp/PgDn, Ctrl+click and the keys inside the find bar, palette
 and keyboard select mode.
 
+## Quick terminal
+
+A Lumen window that drops down from the top of the screen when you press a
+key, from any app, and goes away when you press it again. Hiding it only
+hides it: what's running in it keeps going, so it's back exactly as you left
+it. It has tabs, splits and everything else a Lumen window has.
+
+There are two ways to give it a key:
+
+- **In your desktop's keyboard settings** (works everywhere, including
+  Wayland): add a custom shortcut that runs `lumen msg quick-terminal`. In
+  Cinnamon that's System Settings > Keyboard > Shortcuts > Custom Shortcuts.
+  Lumen has to be running (add it to your startup applications).
+- **In `config.toml`** (X11): `quick-terminal-key = "f12"`, or any key such as
+  `"ctrl-grave"` or `"super-space"`. Lumen catches it from every app while
+  it's running. If another app already uses the key, the banner says so.
+
+On X11 it opens full width at the top of the monitor the pointer is on,
+`quick-terminal-height` of its height (0.45 by default), above other
+windows, on every workspace, and not in the taskbar or the Alt+Tab
+switcher. Pressing the key while it's shown but behind another window brings
+it to the front; while it's in front, hides it. With
+`quick-terminal-autohide = true` it also hides when you click into another
+window. Closing its last pane closes it; the next press opens a new one. It
+isn't saved in the session, and while it's open Lumen keeps running even
+with no other windows (Quit stops it). **Toggle Quick Terminal** in the
+palette does the same, as does the `quick-terminal` action in `[keys]`.
+
+On Wayland and macOS, apps can't place themselves at the top of the screen,
+so there it's an ordinary window that the key brings forward and minimizes.
+
 ## Keyboard select mode
 
 Ctrl+Shift+Space (⌘⇧Space) puts a pane into select mode: a second, accent
@@ -276,6 +310,9 @@ cursor-blink = true            # false: the cursor never blinks, even if a progr
 background-opacity = 1         # 0.3 to 1; below 1 the desktop shows through (needs a compositor on Linux)
 shell = "/usr/bin/fish --login" # program for new panes; defaults to $SHELL
 shell-integration = true       # mark prompts and commands in bash, zsh and fish
+quick-terminal-key = "f12"     # (X11) a key Lumen catches from any app for the quick terminal; "" for none
+quick-terminal-height = 0.45   # its height, as a share of the screen
+quick-terminal-autohide = false # hide it when you click into another window
 notify-after = 10              # seconds a command must run to notify when it ends; 0 = off
 socket-api = true              # let scripts control Lumen with `lumen msg`
 plugins = ["recent-dirs"]      # built-in plugins to run (see Plugins); the Plugin Gallery edits this
@@ -323,7 +360,7 @@ Plugin commands can be bound too, as `plugin:<plugin>:<command id>`, e.g.
 `alt-g = "plugin:git-branch:switch"`; that also overrides a key the plugin
 asked for.
 
-Actions: `new-tab`, `new-window`, `close-pane`, `split-right`, `split-down`, `next-tab`,
+Actions: `new-tab`, `new-window`, `quick-terminal`, `close-pane`, `split-right`, `split-down`, `next-tab`,
 `prev-tab`, `tab-1` … `tab-9`, `rename-tab`, `next-pane`, `focus-left`, `focus-right`,
 `focus-up`, `focus-down`, `toggle-zoom`, `command-palette`, `next-theme`,
 `increase-font`, `decrease-font`, `reset-font`, `copy`, `paste`, `find`,
@@ -441,6 +478,7 @@ lumen msg watch command-finished        # events as JSON lines, until Ctrl+C
 | `move-tab [--pane ID] N` | Move the pane's tab to position N in its window (1 is first) |
 | `tab-style [--pane ID] [--badge TEXT] [--short TEXT] [--color COLOR] [--clear]` | Put a short badge beside the tab's title, tint the tab (`red`, `green`, `yellow`, `blue`, `magenta`, `cyan` from your theme, or `#rrggbb`), or `--clear` both. `--short` (up to 8 characters) is shown instead of the badge when the tab is too narrow for it |
 | `notify TITLE [BODY]` | Desktop notification (`notify-send` on Linux) |
+| `quick-terminal` | Show the [quick terminal](#quick-terminal), or hide it if it's in front |
 | `action NAME [--pane ID]` | Run an action such as `split-right` or `find` |
 | `watch [EVENT...]` | Stream events (all of them, or the ones named) |
 | `call METHOD [JSON]` | Send any request and print the raw result |
@@ -505,10 +543,12 @@ Methods: `hello` (protocol version, Lumen version, actions and events),
 left out stays, `null` clears it, and a new `badge` drops the old
 `short_badge`; a plugin's go when it stops, a socket client's stay), `move-tab` (`pane`, `index`, counting from 0), `write`
 (`pane`, `text`; plugin panes only), `notify` (`title`, `body`),
-`run-action` (`action`, `pane`) and `subscribe` (`events`, a list; omit for
+`run-action` (`action`, `pane`), `quick-terminal` (no params; answers
+`{"shown": true}` or `false`) and `subscribe` (`events`, a list; omit for
 all). `pane` is optional everywhere and means the focused pane, in the active
 window. `list` covers every window: each tab has a `window` (0 for the first
-window opened) and `window_active`, and its `index` counts within its window.
+window opened), `window_active` and `quick` (it's in the quick terminal),
+and its `index` counts within its window.
 After
 `subscribe`, the connection also receives events as notifications:
 `{"jsonrpc":"2.0","method":"event","params":{"event":"bell","pane":4294967298}}`.
@@ -630,7 +670,7 @@ time Lumen sees the plugin (and again if its permissions or command change):
 
 | Permission | Allows |
 |---|---|
-| `panes` | `new-tab`, `split`, `focus`, `close`, `set-title`, `set-tab-style`, `move-tab`, and drawing its own plugin panes (`write`) |
+| `panes` | `new-tab`, `split`, `focus`, `close`, `set-title`, `set-tab-style`, `move-tab`, `quick-terminal`, and drawing its own plugin panes (`write`) |
 | `input` | `send-text`, `run-action`: typing into panes, which can run any command |
 | `screen` | `read-screen`, and the command text in `command-finished` events |
 
@@ -719,6 +759,8 @@ integration](#shell-integration) marks.
 | `src/boxdraw.rs`       | Box-drawing, block and powerline characters as shapes     |
 | `src/mouse.rs`         | Mouse event encoding for programs in mouse mode           |
 | `src/palette.rs`       | Command palette                                           |
+| `src/quick.rs`         | The quick terminal: opening, showing and hiding it, and its window hints (X11) |
+| `src/hotkey.rs`        | `quick-terminal-key`: parsing it and grabbing it from every app (X11) |
 | `src/theme.rs`         | Theme palettes and 256-colour table                       |
 | `src/settings.rs`      | Settings global and config file                           |
 | `src/session.rs`       | Saved windows and pane layouts (JSON) and loading/sanitising them |
@@ -739,7 +781,7 @@ integration](#shell-integration) marks.
 | `plugins/`             | The built-in plugins (built into Lumen; turned on in the Plugin Gallery), and tests |
 | `docs/plugins.md`      | Guide and reference for writing plugins in Python         |
 | `vendor/xim-ctext/`    | A patched copy of the decoder GPUI's X11 input-method client uses, so input methods can't crash Lumen ([why](vendor/xim-ctext/README-lumen.md)) |
-| `vendor/gpui/`         | A patched copy of GPUI that draws on X11 as soon as output arrives, instead of waiting for the next frame ([why](vendor/gpui/README-lumen.md)) |
+| `vendor/gpui/`         | A patched copy of GPUI that draws on X11 as soon as output arrives instead of waiting for the next frame, sets up the GPU in the background, and gives out a window's X11 id ([why](vendor/gpui/README-lumen.md)) |
 
 ## Tests
 

@@ -34,6 +34,8 @@ Commands:
                                       (red, green, yellow, blue, magenta, cyan, #rrggbb);
                                       --short is shown instead in a narrow tab
   notify TITLE [BODY]                 Show a desktop notification
+  quick-terminal                      Show the quick terminal, or hide it if it's in front
+                                      (bind this to a key in your desktop's settings)
   action NAME [--pane ID]             Run a key-binding action, e.g. split-right or find
   watch [EVENT...]                    Print events as JSON lines until interrupted
   call METHOD [JSON]                  Send any request and print the raw result
@@ -254,6 +256,11 @@ fn run_inner(args: &[String]) -> Result<(), String> {
                 .filter(|n| *n >= 1)
                 .ok_or("move-tab needs the position to move the tab to, from 1")?;
             Client::connect()?.call("move-tab", json!({ "pane": pane(&a)?, "index": n - 1 }))?;
+            Ok(())
+        }
+        "quick-terminal" => {
+            at_most(&parse(rest, &[], &[])?, 0)?;
+            Client::connect()?.call("quick-terminal", json!({}))?;
             Ok(())
         }
         "notify" => {

@@ -14,6 +14,7 @@ use crate::*;
 pub const ACTIONS: &[&str] = &[
     "new-tab",
     "new-window",
+    "quick-terminal",
     "close-pane",
     "split-right",
     "split-down",
@@ -65,6 +66,7 @@ pub fn action(name: &str) -> Option<Box<dyn Action>> {
     Some(match name {
         "new-tab" => Box::new(NewTab),
         "new-window" => Box::new(NewWindow),
+        "quick-terminal" => Box::new(ToggleQuickTerminal),
         "close-pane" => Box::new(ClosePane),
         "split-right" => Box::new(SplitRight),
         "split-down" => Box::new(SplitDown),

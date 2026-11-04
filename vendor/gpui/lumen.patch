@@ -82,7 +82,19 @@
  }
  
  impl X11WindowState {
-@@ -689,6 +691,7 @@
+@@ -313,7 +315,10 @@
+ 
+ impl rwh::HasWindowHandle for X11Window {
+     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+-        unimplemented!()
++        // Lumen: the window's id, so an app can set window-manager hints on it
++        // (upstream leaves this unimplemented and panics).
++        let non_zero = NonZeroU32::new(self.0.x_window).ok_or(rwh::HandleError::Unavailable)?;
++        Ok(unsafe { rwh::WindowHandle::borrow_raw(rwh::XcbWindowHandle::new(non_zero).into()) })
+     }
+ }
+ impl rwh::HasDisplayHandle for X11Window {
+@@ -689,6 +694,7 @@
                  client_side_decorations_supported,
                  decorations: WindowDecorations::Server,
                  last_insets: [0, 0, 0, 0],
@@ -90,7 +102,7 @@
                  edge_constraints: None,
                  counter_id: sync_request_counter,
                  last_sync_counter: None,
-@@ -1475,6 +1478,11 @@
+@@ -1475,6 +1481,11 @@
          inner.renderer.draw(scene);
      }
  

@@ -154,7 +154,8 @@ impl Caller {
 /// The permission a method needs, if any.
 fn required(method: &str) -> Option<Permission> {
     match method {
-        "new-tab" | "split" | "focus" | "close" | "set-title" | "move-tab" | "set-tab-style" | "write" => {
+        "new-tab" | "split" | "focus" | "close" | "set-title" | "move-tab" | "set-tab-style" | "write"
+        | "quick-terminal" => {
             Some(Permission::Panes)
         }
         "send-text" | "run-action" => Some(Permission::Input),
@@ -242,6 +243,9 @@ fn route(
     }
     let active = cx.active_window().map(|w| w.window_id());
     let is_active = |w: &WindowHandle<Workspace>| Some(w.window_id()) == active;
+    if method == "quick-terminal" {
+        return Some(Ok(json!({ "shown": crate::quick::toggle(cx) })));
+    }
     if method == "list" {
         // Every window's tabs, each marked with its window (0 is the first).
         let mut tabs = Vec::new();
@@ -255,6 +259,7 @@ fn route(
             for mut tab in list["tabs"].as_array().cloned().unwrap_or_default() {
                 tab["window"] = json!(i);
                 tab["window_active"] = json!(is_active(w));
+                tab["quick"] = json!(crate::quick::is_quick((*w).into(), cx));
                 tabs.push(tab);
             }
         }

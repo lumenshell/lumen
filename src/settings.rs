@@ -38,6 +38,13 @@ pub struct Settings {
     pub scrollback: usize,
     /// Show a scrollbar, with a mark for each command, while you scroll.
     pub scrollbar: bool,
+    /// The quick terminal's height, as a share of the monitor's (0.2 to 1).
+    pub quick_terminal_height: f32,
+    /// Hide the quick terminal when you click into another window.
+    pub quick_terminal_autohide: bool,
+    /// A key Lumen grabs from anywhere to toggle the quick terminal (X11),
+    /// like "f12" or "ctrl-grave"; empty for none.
+    pub quick_terminal_key: String,
     /// Cursor shape used until a program picks one.
     pub cursor_shape: CursorShape,
     /// Blink the cursor. Off, nothing blinks, even when a program asks.
@@ -75,6 +82,9 @@ impl Default for Settings {
             padding: 12.0,
             scrollback: 10_000,
             scrollbar: true,
+            quick_terminal_height: 0.45,
+            quick_terminal_autohide: false,
+            quick_terminal_key: String::new(),
             cursor_shape: CursorShape::Block,
             cursor_blink: true,
             background_opacity: 1.0,
@@ -211,6 +221,30 @@ impl Settings {
                         None
                     }
                     _ => Some(bad("\"block\", \"beam\" or \"underline\"")),
+                },
+                "quick-terminal-height" => match number(item) {
+                    Some(v) if (0.2..=1.0).contains(&v) => {
+                        s.quick_terminal_height = v as f32;
+                        None
+                    }
+                    _ => Some(bad("a number from 0.2 to 1")),
+                },
+                "quick-terminal-autohide" => match item.as_bool() {
+                    Some(v) => {
+                        s.quick_terminal_autohide = v;
+                        None
+                    }
+                    _ => Some(bad("true or false")),
+                },
+                "quick-terminal-key" => match item.as_str() {
+                    Some(v) => match crate::hotkey::parse(v) {
+                        Ok(_) => {
+                            s.quick_terminal_key = v.trim().to_lowercase();
+                            None
+                        }
+                        Err(e) => Some(bad(&e)),
+                    },
+                    _ => Some(bad("a key in quotes, like \"f12\" or \"ctrl-grave\"")),
                 },
                 "scrollbar" => match item.as_bool() {
                     Some(v) => {
@@ -366,6 +400,16 @@ impl Settings {
              # each command (red if it failed). Click or drag it to move through history.\n\
              scrollbar = {scrollbar}\n\
              \n\
+             # The quick terminal drops down from the top of the screen and hides again\n\
+             # with the same key, keeping its shells running. Bind `lumen msg quick-terminal`\n\
+             # to a key in your desktop's shortcut settings, or (X11) set a key here for\n\
+             # Lumen to catch from any app, like \"f12\" or \"ctrl-grave\".\n\
+             quick-terminal-key = \"{quick_key}\"\n\
+             # Its height, as a share of the screen (0.2 to 1).\n\
+             quick-terminal-height = {quick_height}\n\
+             # Hide it when you click into another window.\n\
+             quick-terminal-autohide = {quick_autohide}\n\
+             \n\
              # Cursor shape until a program picks one: \"block\", \"beam\" or \"underline\".\n\
              cursor-style = \"{cursor}\"\n\
              # Blink the cursor. When false it never blinks, even if a program asks it to.\n\
@@ -409,6 +453,9 @@ impl Settings {
             padding = self.padding,
             scrollback = self.scrollback,
             scrollbar = self.scrollbar,
+            quick_key = self.quick_terminal_key,
+            quick_height = self.quick_terminal_height,
+            quick_autohide = self.quick_terminal_autohide,
             blink = self.cursor_blink,
             opacity = self.background_opacity,
             integration = self.shell_integration,
