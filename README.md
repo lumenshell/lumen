@@ -328,6 +328,20 @@ or on a remote machine over SSH, source the script yourself: add
 in [`shell-integration/`](shell-integration). Directories reported by a remote
 host are ignored, so new panes still open locally.
 
+The marks can't be faked by what a command prints. Each pane gets a random
+key in `LUMEN_MARK_KEY`, the scripts add it to every mark, and once a pane's
+shell has used it, marks without it are dropped. So `cat`ing a file or
+visiting a hostile host can't make up a prompt, a command and its exit status
+(which plugins, Command History and notifications would otherwise believe).
+The shell's directory is only taken right after its own prompt mark, not from
+a background job printing at the prompt.
+
+That also means a shell started inside another, such as one on a remote host
+over SSH, isn't marked unless it has the key. For a host you trust, send it:
+add `SendEnv LUMEN_MARK_KEY` for the host in `~/.ssh/config` and
+`AcceptEnv LUMEN_MARK_KEY` to the server's `sshd_config`. A shell Lumen didn't
+set up (another shell, or `bash -l`) can still use plain marks without a key.
+
 Set `shell-integration = false` in the config to turn it off.
 
 ## System info (`lumen info`)
@@ -638,7 +652,8 @@ come back.
 Shells started by Lumen get `TERM=xterm-256color`, `COLORTERM=truecolor` and
 `TERM_PROGRAM=lumen`, so scripts can tell they're running in Lumen, plus
 `LUMEN_SOCKET` and `LUMEN_PANE` for [`lumen msg`](#scripting-lumen-msg) when the
-socket API is on.
+socket API is on, and `LUMEN_MARK_KEY` for the [shell
+integration](#shell-integration) marks.
 
 ## Layout
 

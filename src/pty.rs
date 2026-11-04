@@ -117,13 +117,18 @@ impl Pty {
             env.insert("LUMEN_PANE".into(), pane.to_string());
         }
 
+        // Our scripts put this on every mark, so output can't fake them.
+        let key = shell_integration::new_key();
+        env.insert("LUMEN_MARK_KEY".into(), key.clone());
+
         let shell = shell.map(<[String]>::to_vec).unwrap_or_else(shell_integration::default_shell);
-        let shell = if integrate {
+        let (shell, expect_key) = if integrate {
             let (cmd, extra) = shell_integration::inject(&shell);
+            let injected = !extra.is_empty();
             env.extend(extra);
-            cmd
+            (cmd, injected)
         } else {
-            shell
+            (shell, false)
         };
         let options = tty::Options {
             shell: shell
@@ -138,7 +143,7 @@ impl Pty {
         let pty = tty::new(&options, size.window_size(), 0)?;
         let child_pid = pty.child().id();
         let shell_state = Arc::new(Mutex::new(Shared::default()));
-        let pty = MarkedPty::new(pty, shell_state.clone(), pane)?;
+        let pty = MarkedPty::new(pty, shell_state.clone(), pane, key, expect_key)?;
         let event_loop = EventLoop::new(term.clone(), Listener(tx), pty, false, false)?;
         let notifier = Notifier(event_loop.channel());
         event_loop.spawn();
