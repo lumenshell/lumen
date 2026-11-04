@@ -117,7 +117,7 @@ if choice and await app.confirm(f"Deploy to {choice}?"):
 text = await pane.read_screen(lines=20)          # needs `screen`
 ```
 
-**Typing commands safely.** `pane.run(...)` types a command and presses Enter.
+**Typing commands safely:** `pane.run(...)` types a command and presses Enter.
 Give it a **list** and each word is quoted for the shell, so a branch or file
 name can't run anything:
 
@@ -136,15 +136,16 @@ invisible ones (right-to-left overrides, zero-width spaces, line separators)
 is refused with `ValueError` by `run`, `quote` and `run=`: a carriage return
 would press Enter partway through, and invisible characters can make a
 command look different from what it does. `typeable(text)` tells you in
-advance, which is worth checking before you show someone a command to
-confirm. If you mean to send keys, use `pane.send_text`.
+advance: check it before you show someone a command to confirm, so the
+command they approve is the one that runs. If you mean to send keys, use
+`pane.send_text`.
 
-**Your plugin's files.** `app.dir` is the plugin's folder, for settings and
+**Your plugin's files:** `app.dir` is the plugin's folder, for settings and
 files that ship with it (the `snippets` example reads `snippets.toml` from
 there). `app.data_dir` is a folder for what it collects (history, caches),
 kept across updates and readable only by you. `app.name` is its name.
 
-**Logging.** `print()` goes to the plugin's log, as does `app.log(...)`;
+**Logging:** `print()` goes to the plugin's log, as does `app.log(...)`;
 stdout belongs to the protocol, so the package moves `print` out of the way.
 
 ## Drawing your own pane
@@ -183,7 +184,7 @@ when your plugin stops, and it isn't brought back with the session. Its tab
 is named after your plugin until you `set_title`. `new_tab(plugin_pane=True)`
 gives a whole tab to it.
 
-**Marking tabs.** `pane.set_tab_style(badge="🍅 24:59", color="red")` puts a
+**Marking tabs:** `pane.set_tab_style(badge="🍅 24:59", color="red")` puts a
 short badge beside the tab's title and tints the tab, which you can see from
 any tab. Colours are `red`, `green`, `yellow`, `blue`, `magenta` and `cyan`
 from your theme (so they suit it), or `"#rrggbb"`. Pass `None` to remove one;

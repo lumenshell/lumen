@@ -112,9 +112,13 @@ fn main() {
         }
         return;
     }
+    if matches!(args.first().map(String::as_str), Some("-V" | "--version")) {
+        println!("lumen {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if let Some(arg) = args.first() {
         let help = matches!(arg.as_str(), "-h" | "--help" | "help");
-        eprintln!("Usage: lumen              open a window\n       lumen msg ...      control a running Lumen (lumen msg help)\n       lumen info         system facts and this Lumen's settings, beside a flame\n       lumen python-path  where the lumen_plugin Python package is");
+        eprintln!("Usage: lumen              open a window\n       lumen msg ...      control a running Lumen (lumen msg help)\n       lumen info         system facts and this Lumen's settings, beside a flame\n       lumen python-path  where the lumen_plugin Python package is\n       lumen --version    which version this is");
         std::process::exit(if help { 0 } else { 2 });
     }
     Application::new().run(|cx: &mut App| {

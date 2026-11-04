@@ -2,7 +2,8 @@
 
 # Lumen
 
-A fast, good-looking terminal for Linux and macOS, built with Rust,
+A GPU-rendered terminal for Linux and macOS, with tabs, split panes, shell
+integration and plugins you can write in any language. Built with Rust,
 [GPUI](https://gpui.rs) (Zed's GPU UI framework) and
 [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
 
@@ -100,6 +101,39 @@ countdown, a staging server, what's left to do.
 </tr>
 </table>
 
+## Install
+
+```sh
+curl -fsSL https://lumenshell.dev/install | sh
+```
+
+This installs the latest release for your user, without sudo. On Linux
+(x86_64 and arm64) the `lumen` command goes in `~/.local/bin`, with a menu
+entry and icon. On macOS, `Lumen.app` goes in Applications and `lumen` is
+linked into `~/.local/bin`. Run it again to update.
+
+Set `LUMEN_VERSION=0.2.0` to install a particular version, or `LUMEN_BIN_DIR`
+to put the command somewhere else. To remove Lumen (your settings stay):
+
+```sh
+curl -fsSL https://lumenshell.dev/install | sh -s -- --uninstall
+```
+
+On macOS you can use Homebrew instead:
+
+```sh
+brew install --cask lumenshell/tap/lumen
+```
+
+The macOS app isn't notarized by Apple yet, so the first time you open it,
+macOS may say it can't check it for malware: right-click Lumen.app, choose
+**Open**, then **Open** again (or allow it in System Settings > Privacy & Security).
+
+Every release on the [releases page](https://github.com/lumenshell/lumen/releases)
+also has the files to install by hand: `lumen-linux-<arch>.tar.gz` (laid out
+like a prefix: `bin/`, `share/`), `lumen-macos.zip` (a universal Lumen.app),
+and `SHA256SUMS`. Or build it yourself, below.
+
 ## Build
 
 ```sh
@@ -122,7 +156,7 @@ checkout, installs it, adds the app menu entry and icon on Linux (or
 `lumen` opens a window; `lumen msg ...` controls a running one (see
 [Scripting](#scripting-lumen-msg)); `lumen --help` lists both.
 
-**Linux app menu and icon.** After `cargo install`, run
+**Linux app menu and icon:** after `cargo install`, run
 `scripts/install-linux.sh` to add Lumen to your app menu with its icon, for
 your user only. The taskbar and Alt+Tab switcher then show the icon too (they
 match Lumen's windows to the menu entry); restart Lumen if it was open.
@@ -130,7 +164,7 @@ match Lumen's windows to the menu entry); restart Lumen if it was open.
 entry is `assets/linux/lumen.desktop` and the icons are a `hicolor` theme
 tree in `assets/icons/linux/`.
 
-**macOS.** You only need Xcode command-line tools. `scripts/bundle-macos.sh`
+**macOS:** you only need Xcode command-line tools. `scripts/bundle-macos.sh`
 builds `target/release/Lumen.app` with Lumen's icon for the Dock and app
 switcher; drag it into Applications. Its binary is
 `Lumen.app/Contents/MacOS/lumen`, which you can link onto your PATH for
@@ -369,8 +403,8 @@ or with `NO_COLOR=1`, it prints plain text.
 ## Scripting (`lumen msg`)
 
 Lumen can be driven from scripts, shell aliases and plugins. `lumen msg`
-is the same `lumen` binary, so it needs to be on your PATH (`cargo install
---locked --path .` does that). Inside a Lumen pane, `lumen msg` talks to that Lumen and acts on that pane by default;
+is the same `lumen` binary, so it needs to be on your PATH; the installer,
+Homebrew and `cargo install` all put it there. Inside a Lumen pane, `lumen msg` talks to that Lumen and acts on that pane by default;
 from anywhere else it finds the most recently started Lumen. From Python,
 `lumen_plugin` does the same with less ceremony; see
 [Scripts outside Lumen](docs/plugins.md#scripts-outside-lumen).
@@ -471,7 +505,7 @@ After
 `subscribe`, the connection also receives events as notifications:
 `{"jsonrpc":"2.0","method":"event","params":{"event":"bell","pane":4294967298}}`.
 
-**Plugin panes.** `"plugin_pane": true` on `new-tab` or `split` opens a pane
+**Plugin panes:** `"plugin_pane": true` on `new-tab` or `split` opens a pane
 that runs no program: the connection that opened it draws it with `write`
 (text with escape sequences, as a program would print; nobody else may write
 to it), and is sent what happens to it as `pane` notifications:
@@ -522,7 +556,7 @@ you can copy one from [`plugins/`](plugins/) and change it.
 A plugin is a program in its own folder under `~/.config/lumen/plugins/`
 (`$XDG_CONFIG_HOME/lumen/plugins`), written in any language. For Python,
 Lumen comes with `lumen_plugin`, which needs no installing; see the
-**[plugin guide](docs/plugins.md)** to write one in a few lines:
+[plugin guide](docs/plugins.md) to write one in a few lines:
 
 ```python
 from lumen_plugin import Plugin
@@ -558,9 +592,9 @@ command = "python3 main.py"      # run in the plugin's folder; or a list: ["node
 permissions = ["input"]           # any of "panes", "input", "screen"; leave out if none
 ```
 
-A plugin talks to Lumen over its **stdin and stdout**, using the same
+A plugin talks to Lumen over its stdin and stdout, using the same
 JSON-RPC 2.0 messages as the [socket API](#protocol), one per line. Anything it
-writes to **stderr** goes to its log, which **Plugin Log: <name>** in the
+writes to stderr goes to its log, which **Plugin Log: <name>** in the
 palette opens in a new tab. It should exit when stdin closes. It gets
 `LUMEN_PLUGIN` (its name), `LUMEN_PLUGIN_DIR` (its folder), `LUMEN_PLUGIN_DATA`
 (a folder for its own data, kept across updates and readable only by you) in
@@ -581,7 +615,7 @@ Besides the socket API's methods, plugins can:
 - **Mark tabs**: `set-tab-style` puts a badge beside a tab's title and tints
   it, for a countdown, a build that broke or a production server.
 
-**Permissions.** Without any, a plugin can list panes, subscribe to events,
+**Permissions:** without any, a plugin can list panes, subscribe to events,
 show notifications, add commands and show pickers. Anything more is declared
 in `plugin.toml` and needs your approval, asked once in the palette the first
 time Lumen sees the plugin (and again if its permissions or command change):
@@ -687,7 +721,10 @@ integration](#shell-integration) marks.
 | `assets/screenshot.png` | The screenshot at the top of this README                |
 | `assets/screenshots/`  | The rest of the README's screenshots                    |
 | `install.sh`           | Build and install this checkout for testing (menu entry, icon, `Lumen.app`) |
-| `scripts/`             | `install-linux.sh` (menu entry and icons), `bundle-macos.sh` (`Lumen.app`) |
+| `scripts/`             | `install-linux.sh` (menu entry and icons), `bundle-macos.sh` (`Lumen.app`), `package-linux.sh` (the Linux release tarball) |
+| `dist/install.sh`      | The installer `lumenshell.dev/install` serves: downloads a release, checks it and installs it |
+| `dist/homebrew/lumen.rb` | The Homebrew cask; each release fills it in and pushes it to `lumenshell/homebrew-tap` |
+| `.github/workflows/release.yml` | Builds Linux and macOS releases when a `v*` tag is pushed ([how to release](#releasing)) |
 | `examples/`            | Scripts using `lumen msg` and the socket API, and example plugins |
 | `python/`              | `lumen_plugin`, the Python package for plugins (built into Lumen), and its tests |
 | `plugins/`             | The built-in plugins (built into Lumen; turned on in the Plugin Gallery), and tests |
@@ -702,6 +739,19 @@ cargo test
 python3 -m unittest discover -s python/tests   # the Python package
 python3 -m unittest discover -s plugins/tests  # the built-in plugins
 ```
+
+## Releasing
+
+1. Set `version` in `Cargo.toml` (and run `cargo build` so `Cargo.lock` follows), and commit.
+2. Tag it and push the tag: `git tag v0.2.0 && git push origin v0.2.0`.
+
+The [release workflow](.github/workflows/release.yml) builds Linux x86_64 and
+arm64 and a universal macOS app, publishes the release with `SHA256SUMS`, and
+updates the cask in `lumenshell/homebrew-tap` (it needs a `HOMEBREW_TAP_TOKEN`
+secret: a fine-grained token with Contents read and write on that repo). A tag
+with a hyphen, like `v0.2.0-rc.1`, makes a pre-release and leaves Homebrew
+alone. To try a build without releasing, run the workflow by hand from the
+Actions tab; the files are attached to the run.
 
 ## Next up
 

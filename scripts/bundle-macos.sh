@@ -34,7 +34,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <dict>
     <key>CFBundleName</key><string>Lumen</string>
     <key>CFBundleDisplayName</key><string>Lumen</string>
-    <key>CFBundleIdentifier</key><string>io.github.sn.lumen</string>
+    <key>CFBundleIdentifier</key><string>dev.lumenshell.lumen</string>
     <key>CFBundleExecutable</key><string>lumen</string>
     <key>CFBundleIconFile</key><string>Lumen</string>
     <key>CFBundlePackageType</key><string>APPL</string>

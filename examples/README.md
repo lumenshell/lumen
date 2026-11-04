@@ -2,7 +2,7 @@
 
 Small, working scripts built on [`lumen msg`](../README.md#scripting-lumen-msg)
 and the socket API. Copy them somewhere on your PATH and adapt them. They need
-`lumen` on your PATH (`cargo install --path .`), or set `LUMEN` to the binary,
+`lumen` on your PATH (the installer puts it there), or set `LUMEN` to the binary,
 and most use [`jq`](https://jqlang.org) to read JSON.
 
 | Script | What it does | Shows off |
