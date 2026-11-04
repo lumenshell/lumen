@@ -247,6 +247,27 @@ impl Builtin {
     }
 
     /// Your own plugin folder with the same name, which runs instead.
+    /// Its one-line description, without the shortcuts in brackets at the
+    /// end, for the Plugin Gallery's list.
+    pub fn summary(&self) -> String {
+        let toml = self.files.iter().find(|(f, _)| *f == "plugin.toml").map_or("", |(_, t)| *t);
+        let description = parse_manifest(Path::new(self.name), toml).map(|m| m.description).unwrap_or_default();
+        // Drop each " (…)" that holds a shortcut.
+        let mut out = String::new();
+        let mut rest = description.as_str();
+        while let Some(i) = rest.find(" (") {
+            let Some(j) = rest[i..].find(')') else { break };
+            let inside = &rest[i + 2..i + j];
+            out.push_str(&rest[..i]);
+            if !(inside.contains("Ctrl") || inside.contains("Alt") || inside.contains('⌘')) {
+                out.push_str(&rest[i..=i + j]);
+            }
+            rest = &rest[i + j + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     pub fn overridden(&self) -> bool {
         plugins_dir().is_some_and(|d| d.join(self.name).join("plugin.toml").is_file())
     }
@@ -654,6 +675,14 @@ mod tests {
             m.builtin = true;
             assert_eq!(m.approval_key(), format!("builtin:{}", b.name));
         }
+    }
+
+    #[test]
+    fn gallery_summaries_leave_out_shortcuts() {
+        let summary = |name| builtin(name).unwrap().summary();
+        assert_eq!(summary("command-history"), "Search commands from every pane with how they went, and rerun the last failure");
+        assert_eq!(summary("recent-dirs"), "Jump to folders you've visited, most used first");
+        assert_eq!(summary("build-status"), "Show how the last build or test went in the tab title, like ✓ cargo test · 12s");
     }
 
     #[test]

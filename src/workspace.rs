@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::api::{self, ApiError, ApiResult};
 use crate::keymap;
-use crate::palette::{CommandPalette, PaletteEvent, PaletteFn, PaletteItem};
+use crate::palette::{CommandPalette, Dot, PaletteEvent, PaletteFn, PaletteItem};
 use crate::session::{self, Axis, NodeState, Session, TabState, WindowState};
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
 use crate::pty::{GridSize, Owner};
@@ -906,26 +906,22 @@ impl Workspace {
             .iter()
             .map(|b| {
                 let on = enabled.iter().any(|n| n == b.name);
-                let status = match (on, b.overridden()) {
-                    (_, true) => "your own copy runs instead".to_string(),
-                    (true, _) => "on".to_string(),
-                    (false, _) => "off".to_string(),
-                };
+                let note = if b.overridden() { "your own copy runs instead".to_string() } else { b.summary() };
                 let ws = ws.clone();
                 let name = b.name;
-                PaletteItem {
-                    label: format!("{} {}", if on { "●" } else { "○" }, b.title).into(),
-                    detail: status.into(),
-                    run: Rc::new(move |window, cx| {
+                PaletteItem::new(
+                    b.title,
+                    Rc::new(move |window, cx| {
                         let _ = ws.update(cx, |ws, cx| ws.open_gallery_item(name, window, cx));
                     }),
-                }
+                )
+                .dot(if on { Dot::On } else { Dot::Off })
+                .note(note)
             })
             .collect();
         let palette = cx.new(|cx| {
-            CommandPalette::picker(items, "Plugin Gallery: choose one to turn it on or off".into(), None, cx).with_message(
-                "Plugins that come with Lumen. Each runs as its own program, only once you turn it on.",
-            )
+            CommandPalette::picker(items, "Plugin Gallery: choose one to turn it on or off".into(), None, cx)
+                .with_message("Built-in plugins. Each runs as its own program, once you turn it on.")
         });
         self.open_palette(palette, window, cx);
     }
@@ -974,22 +970,21 @@ impl Workspace {
         let back: PaletteFn = Rc::new(move |window, cx| {
             let _ = ws.update(cx, |ws, cx| ws.open_gallery(window, cx));
         });
-        let mut items = vec![PaletteItem {
-            label: if on { "Turn off".into() } else { "Turn on".into() },
-            detail: if on { "stop it and forget the setting".into() } else { "start it now and whenever Lumen opens".into() },
-            run: toggle,
-        }];
+        let mut items = vec![PaletteItem::new(if on { "Turn off" } else { "Turn on" }, toggle).note(if on {
+            "stop it and forget the setting"
+        } else {
+            "start it now and whenever Lumen opens"
+        })];
         if on {
             let ws = cx.entity().downgrade();
-            items.push(PaletteItem {
-                label: "Open its log".into(),
-                detail: "".into(),
-                run: Rc::new(move |window, cx| {
+            items.push(PaletteItem::new(
+                "Open its log",
+                Rc::new(move |window, cx| {
                     let _ = ws.update(cx, |ws, cx| ws.open_plugin_log(name, window, cx));
                 }),
-            });
+            ));
         }
-        items.push(PaletteItem { label: "Back to the gallery".into(), detail: "".into(), run: back });
+        items.push(PaletteItem::new("Back to the gallery", back));
         let palette = cx.new(|cx| CommandPalette::picker(items, b.title.into(), None, cx).with_message(message));
         self.open_palette(palette, window, cx);
     }
@@ -1024,16 +1019,10 @@ impl Workspace {
             })
         };
         let items = vec![
-            PaletteItem {
-                label: format!("Allow and start \"{}\"", m.name).into(),
-                detail: m.command.join(" ").into(),
-                run: choice(true, m.clone(), ws.clone()),
-            },
-            PaletteItem {
-                label: "Don't allow".into(),
-                detail: "it won't run; you can allow it later from the palette".into(),
-                run: choice(false, m.clone(), ws.clone()),
-            },
+            PaletteItem::new(format!("Allow and start \"{}\"", m.name), choice(true, m.clone(), ws.clone()))
+                .note(m.command.join(" ")),
+            PaletteItem::new("Don't allow", choice(false, m.clone(), ws.clone()))
+                .note("it won't run; you can allow it later from the palette"),
         ];
         // Esc: decide later (it's asked again next launch).
         let later: PaletteFn = Rc::new(move |window, cx| {
@@ -1094,11 +1083,7 @@ impl Workspace {
             .into_iter()
             .map(|(id, label, detail)| {
                 let answer = answer.clone();
-                PaletteItem {
-                    label: label.into(),
-                    detail: detail.into(),
-                    run: Rc::new(move |_, _| answer.send(id.clone())),
-                }
+                PaletteItem::new(label, Rc::new(move |_, _| answer.send(id.clone()))).note(detail)
             })
             .collect();
         let cancel_answer = answer.clone();
@@ -1756,6 +1741,16 @@ fn window_controls(theme: &Theme) -> impl IntoElement {
         )
 }
 
+/// A plugin's status (from `plugins::list`) as a palette dot.
+fn plugin_dot(status: &str) -> Dot {
+    match status {
+        "running" => Dot::Good,
+        "starting" | "waiting for your approval" => Dot::Busy,
+        s if s.contains("restarting") => Dot::Busy,
+        _ => Dot::Bad,
+    }
+}
+
 fn shortcut_label(action: &dyn gpui::Action, window: &Window) -> SharedString {
     window
         .highest_precedence_binding_for_action(action)
@@ -2188,30 +2183,28 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
         .map(|(label, act)| {
             let detail = shortcut_label(act.as_ref(), window);
             let act: Rc<dyn gpui::Action> = act.into();
-            PaletteItem {
-                label,
-                detail,
-                run: Rc::new(move |window, cx| window.dispatch_action(act.boxed_clone(), cx)),
-            }
+            PaletteItem::new(label, Rc::new(move |window, cx| window.dispatch_action(act.boxed_clone(), cx)))
+                .keys(detail)
         })
         .collect();
     if let Some(path) = settings::config_path() {
-        items.push(PaletteItem {
-            label: "Open Config File".into(),
-            detail: path.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~").into(),
-            run: Rc::new(move |_, cx| cx.open_url(&format!("file://{}", path.display()))),
-        });
+        let shown = path.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~");
+        items.push(
+            PaletteItem::new("Open Config File", Rc::new(move |_, cx| cx.open_url(&format!("file://{}", path.display()))))
+                .note(shown),
+        );
     }
     // Plugin commands, then a way to see each plugin's log, or to allow one.
     for info in crate::plugins::list() {
         for c in &info.commands {
             let act = RunPluginCommand { plugin: info.manifest.name.clone(), id: c.id.clone() };
             let shortcut = shortcut_label(&act, window);
-            items.push(PaletteItem {
-                label: c.title.clone().into(),
-                detail: if shortcut.is_empty() { info.manifest.name.clone().into() } else { shortcut },
-                run: Rc::new(move |window, cx| window.dispatch_action(Box::new(act.clone()), cx)),
-            });
+            let item = PaletteItem::new(
+                c.title.clone(),
+                Rc::new(move |window, cx| window.dispatch_action(Box::new(act.clone()), cx)),
+            );
+            // Its shortcut if it has one, else which plugin it's from.
+            items.push(if shortcut.is_empty() { item.note(info.manifest.name.clone()) } else { item.keys(shortcut) });
         }
     }
     let ws = window.root::<Workspace>().flatten().map(|w| w.downgrade());
@@ -2220,55 +2213,65 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
         let ws = ws.clone();
         if info.status == "not allowed" || info.status == "waiting for your approval" {
             let m = info.manifest.clone();
-            items.push(PaletteItem {
-                label: format!("Allow Plugin: {name}").into(),
-                detail: info.status.clone().into(),
-                run: Rc::new(move |window, cx| {
-                    if let Some(ws) = &ws {
-                        let _ = ws.update(cx, |ws, cx| {
-                            ws.pending_approvals.push(m.clone());
-                            ws.ask_next_approval(window, cx);
-                        });
-                    }
-                }),
-            });
+            items.push(
+                PaletteItem::new(
+                    format!("Allow Plugin: {name}"),
+                    Rc::new(move |window, cx| {
+                        if let Some(ws) = &ws {
+                            let _ = ws.update(cx, |ws, cx| {
+                                ws.pending_approvals.push(m.clone());
+                                ws.ask_next_approval(window, cx);
+                            });
+                        }
+                    }),
+                )
+                .dot(Dot::Busy)
+                .note(info.status.clone()),
+            );
         } else {
-            items.push(PaletteItem {
-                label: format!("Plugin Log: {name}").into(),
-                detail: info.status.clone().into(),
-                run: Rc::new(move |window, cx| {
+            // How it's doing as a dot; the words only when something's up.
+            let dot = plugin_dot(&info.status);
+            let item = PaletteItem::new(
+                format!("Plugin Log: {name}"),
+                Rc::new(move |window, cx| {
                     if let Some(ws) = &ws {
                         let _ = ws.update(cx, |ws, cx| ws.open_plugin_log(&name, window, cx));
                     }
                 }),
-            });
+            )
+            .dot(dot);
+            items.push(if dot == Dot::Good { item } else { item.note(info.status.clone()) });
         }
     }
     if let Some(ws) = ws.clone() {
-        items.push(PaletteItem {
-            label: "Plugin Gallery".into(),
-            detail: "turn on the plugins that come with Lumen".into(),
-            run: Rc::new(move |window, cx| {
-                let _ = ws.update(cx, |ws, cx| ws.open_gallery(window, cx));
-            }),
-        });
+        items.push(
+            PaletteItem::new(
+                "Plugin Gallery",
+                Rc::new(move |window, cx| {
+                    let _ = ws.update(cx, |ws, cx| ws.open_gallery(window, cx));
+                }),
+            )
+            .note("turn on the plugins that come with Lumen"),
+        );
     }
     if let Some(ws) = ws.clone() {
-        items.push(PaletteItem {
-            label: "Reload Plugins".into(),
-            detail: "restart every plugin and re-read plugin.toml files".into(),
-            run: Rc::new(move |window, cx| {
-                let _ = ws.update(cx, |ws, cx| ws.reload_plugins(window, cx));
-            }),
-        });
+        items.push(
+            PaletteItem::new(
+                "Reload Plugins",
+                Rc::new(move |window, cx| {
+                    let _ = ws.update(cx, |ws, cx| ws.reload_plugins(window, cx));
+                }),
+            )
+            .note("restart every plugin and re-read plugin.toml files"),
+        );
     }
     let settings = Settings::get(cx);
     for (i, theme) in settings.themes.iter().enumerate() {
-        items.push(PaletteItem {
-            label: format!("Theme: {}", theme.name).into(),
-            detail: if i == settings.theme_index { "current".into() } else { "".into() },
-            run: Rc::new(move |_, cx| Settings::update(cx, |s| s.theme_index = i)),
-        });
+        let item = PaletteItem::new(
+            format!("Theme: {}", theme.name),
+            Rc::new(move |_, cx| Settings::update(cx, |s| s.theme_index = i)),
+        );
+        items.push(if i == settings.theme_index { item.note("current") } else { item });
     }
     items
 }
@@ -2410,7 +2413,9 @@ impl Render for Workspace {
                         .justify_center()
                         .items_start()
                         .pt(px(crate::palette::PALETTE_TOP))
-                        .bg(alpha(gpui::black(), 0.25))
+                        // Dark enough that the panes behind don't compete with
+                        // the list; lighter on a light theme, which greys fast.
+                        .bg(alpha(gpui::black(), if theme.is_light { 0.25 } else { 0.45 }))
                         .when_some(tiling, |d, t| d.when(!t.is_tiled(), |d| d.rounded(px(WINDOW_RADIUS))))
                         .on_mouse_down(
                             MouseButton::Left,
