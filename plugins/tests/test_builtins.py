@@ -216,6 +216,16 @@ class PomodoroTests(unittest.TestCase):
             phases.append(timer.phase)
         self.assertEqual(phases, ["break", "break", "break", "long"])
 
+    def test_narrow_tabs_get_whole_minutes(self):
+        timer = self.timer
+        self.assertEqual(timer.short_badge(), "25m")
+        self.t += 61
+        self.assertEqual(timer.short_badge(), "24m")  # 23:59 left
+        self.t += 23 * 60 - 1
+        self.assertEqual(timer.short_badge(), "60s")
+        self.t += 45
+        self.assertEqual(timer.short_badge(), "15s")
+
     def test_pause_holds_the_time(self):
         timer = self.timer
         self.t += 60

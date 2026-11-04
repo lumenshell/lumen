@@ -188,7 +188,9 @@ gives a whole tab to it.
 short badge beside the tab's title and tints the tab, which you can see from
 any tab. Colours are `red`, `green`, `yellow`, `blue`, `magenta` and `cyan`
 from your theme (so they suit it), or `"#rrggbb"`. Pass `None` to remove one;
-what you leave out stays as it is. They're removed when your plugin stops, so a
+what you leave out stays as it is. When tabs get narrow the title shortens
+first, then the badge: give a `short_badge` such as `"24m"` to show instead,
+or it's cut with "…". They're removed when your plugin stops, so a
 plugin that crashes or is reloaded leaves no stale badge behind.
 
 The built-in [Pomodoro Timer](../plugins/pomodoro/main.py) uses both, in
@@ -299,7 +301,7 @@ else uses the most recently started Lumen.
 | `await read_screen(lines=None)` | The screen's text, or its last `lines` lines. `screen` |
 | `await split(direction="right", cwd=None, run=None, focus=True, size=None, plugin_pane=False)` | Split it; returns the new `Pane` (a `PluginPane` with `plugin_pane=True`). `size`: a fraction, or rows/columns. `panes` |
 | `await set_title(title=None)` | Name its tab; None goes back to the program's title. `panes` |
-| `await set_tab_style(badge=…, color=…)` | Badge beside its tab's title (up to 24 characters) and a tint (`TAB_COLORS` or `"#rrggbb"`); None removes, left out stays. `panes` |
+| `await set_tab_style(badge=…, color=…, short_badge=None)` | Badge beside its tab's title (up to 24 characters) and a tint (`TAB_COLORS` or `"#rrggbb"`); None removes, left out stays. `short_badge` (up to 8 characters) shows instead when the tab is too narrow. `panes` |
 | `await move_tab(position)` | Move its tab to `position` in its window, 1 being first. `panes` |
 | `await focus()`, `await close()` | `panes` |
 | `await run_action(action)` | Run a Lumen action in this pane. `input` |

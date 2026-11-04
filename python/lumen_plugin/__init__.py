@@ -235,14 +235,18 @@ class Pane:
         )
         return Pane(self.app, result["pane"])
 
-    async def set_tab_style(self, *, badge=_KEEP, color=_KEEP) -> None:
+    async def set_tab_style(self, *, badge=_KEEP, color=_KEEP, short_badge=None) -> None:
         """Mark this pane's tab: `badge` is a short label beside its title (up
         to 24 characters, like "🍅 18:42"), `color` tints it: one of
         TAB_COLORS, or "#rrggbb". None removes either; what you leave out
-        stays. Needs `panes`."""
+        stays. `short_badge` (up to 8 characters, like "18m") is shown
+        instead when the tab is too narrow for the badge; it goes with the
+        badge it was given with. Needs `panes`."""
         params = {"pane": self.id}
         if badge is not _KEEP:
             params["badge"] = badge
+            if short_badge is not None:
+                params["short_badge"] = short_badge
         if color is not _KEEP:
             params["color"] = color
         await self.app.request("set-tab-style", params)

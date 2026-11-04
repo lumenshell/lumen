@@ -36,6 +36,8 @@ const TAB_MIN_WIDTH: f32 = 56.0;
 const COMPACT_TAB_WIDTH: f32 = 140.0;
 /// A tab's close button and the gap before it.
 const CLOSE_WIDTH: f32 = 26.0;
+/// Width of the split-window icon beside a tab's pane count.
+const PANES_ICON_WIDTH: f32 = 10.0;
 /// Widest a tab gets.
 const TAB_MAX_WIDTH: f32 = 220.0;
 const RADIUS: f32 = 10.0;
@@ -264,6 +266,9 @@ struct Tab {
     /// A short label beside the title (a countdown, a count), set over the
     /// socket API. Not saved.
     badge: Option<String>,
+    /// What to show instead of the badge when the tab is too narrow for it
+    /// ("18m" for "🍅 18:42"). Set with the badge, and cleared with it.
+    short_badge: Option<String>,
     /// A colour tinting the tab, set over the socket API. Not saved.
     color: Option<TabColor>,
     /// The plugin connection that set the badge and colour: they go when it
@@ -326,20 +331,37 @@ impl TabColor {
     }
 }
 
-/// Room a badge of `chars` characters takes in a tab, gap included.
-fn badge_width(chars: usize) -> f32 {
-    8.0 + 12.0 + 6.4 * chars as f32
-}
+/// Room a badge takes in a tab beside its text: the gap before it and its
+/// padding.
+const BADGE_CHROME: f32 = 8.0 + 12.0;
 
-/// `badge` as it fits in `room`: whole, shortened with "…", or not at all
-/// when not even three characters fit.
-fn fit_badge(badge: &str, room: f32) -> Option<String> {
-    let n = badge.chars().count();
-    if badge_width(n) <= room {
+/// Room the title keeps beside a badge: its whole width when it's short,
+/// else enough for a couple of letters and "…".
+const MIN_TITLE_WIDTH: f32 = 32.0;
+
+/// Which badge to show in `room` (the tab's width left for title and badge),
+/// leaving the title `title_room`: the badge whole; else its short form; else
+/// shortened with "…" when at least three characters fit; else none.
+/// `measure` gives a text's width.
+fn fit_badge(
+    badge: &str,
+    short: Option<&str>,
+    room: f32,
+    title_room: f32,
+    measure: impl Fn(&str) -> f32,
+) -> Option<String> {
+    let fits = |text: &str| BADGE_CHROME + measure(text) + title_room <= room;
+    if fits(badge) {
         return Some(badge.to_string());
     }
-    let fits = ((room - badge_width(0)) / 6.4).floor();
-    (fits >= 3.0).then(|| badge.chars().take(fits as usize - 1).chain(['…']).collect())
+    if let Some(short) = short {
+        return fits(short).then(|| short.to_string());
+    }
+    let chars: Vec<char> = badge.chars().collect();
+    (2..chars.len())
+        .rev()
+        .map(|n| chars[..n].iter().chain(['…'].iter()).collect::<String>())
+        .find(|cut| fits(cut))
 }
 
 /// `a` with `t` of `b` mixed in.
@@ -455,6 +477,7 @@ impl Workspace {
                 zoomed,
                 title: tab.title.filter(|t| !t.trim().is_empty()),
                 badge: None,
+                short_badge: None,
                 color: None,
                 style_owner: None,
             });
@@ -610,6 +633,7 @@ impl Workspace {
                 zoomed: false,
                 title: None,
                 badge: None,
+                short_badge: None,
                 color: None,
                 style_owner: None,
             },
@@ -1295,20 +1319,35 @@ impl Workspace {
             self.tab_scroll.scroll_to_item(self.active_tab);
         }
         let accent = theme.accent;
+        // Real widths, from the fonts as drawn: an estimate per character
+        // clipped titles, and emoji in badges are wider than letters.
+        let text_system = window.text_system().clone();
+        let measure = move |text: &str, family: &'static str, size: f32| -> f32 {
+            if text.is_empty() {
+                return 0.0;
+            }
+            let run = gpui::TextRun {
+                len: text.len(),
+                font: gpui::font(family),
+                color: gpui::black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            f32::from(text_system.shape_line(text.to_string().into(), px(size), &[run], None).width)
+        };
         let tabs = self.tabs.iter().enumerate().map(|(i, tab)| {
             let active = i == self.active_tab;
             let title: SharedString =
                 tab.title.clone().unwrap_or_else(|| tab.active.read(cx).title.clone()).into();
             let panes = tab.leaves().len();
             let show_close = active || !compact;
-            let show_panes = panes > 1 && !compact;
             let width = share + if active { active_extra } else { 0.0 };
             // Room left for the title after the tab's padding, number, close
             // button, and dot or pane count if shown.
-            let number = 7.0 * (i + 1).to_string().len() as f32;
-            let fixed = 16.0 + number + 8.0
-                + if show_close { CLOSE_WIDTH } else { 0.0 }
-                + if show_panes { 8.0 + 10.0 + 6.5 * panes.to_string().len() as f32 } else { 0.0 };
+            let number = measure(&(i + 1).to_string(), MONO_FONT, 11.0);
+            let pane_count = panes.to_string();
+            let fixed = 16.0 + number + 8.0 + if show_close { CLOSE_WIDTH } else { 0.0 };
             // A long command finished in a pane you haven't looked at since.
             let attention = tab
                 .leaves()
@@ -1319,10 +1358,19 @@ impl Workspace {
             let fixed = fixed + if attention.is_some() { 15.0 } else { 0.0 };
             let tint = tab.color.map(|c| c.resolve(theme));
             // Monospace, so a ticking countdown doesn't jiggle the title. In a
-            // narrow tab the badge gives way too, keeping a little of the
-            // title: shortened with an ellipsis, or left out.
-            let badge = tab.badge.as_deref().and_then(|b| fit_badge(b, width - fixed - 16.0));
-            let fixed = fixed + badge.as_ref().map_or(0.0, |b| badge_width(b.chars().count()));
+            // narrow tab the title gives way first, down to a few letters;
+            // then the badge does: its short form, shortened with an
+            // ellipsis, or left out.
+            let title_room = measure(&title, UI_FONT, 12.5).min(MIN_TITLE_WIDTH);
+            let badge = tab.badge.as_deref().and_then(|b| {
+                fit_badge(b, tab.short_badge.as_deref(), width - fixed, title_room, |t| measure(t, MONO_FONT, 10.5))
+            });
+            let fixed = fixed + badge.as_ref().map_or(0.0, |b| BADGE_CHROME + measure(b, MONO_FONT, 10.5));
+            // The pane count goes before the badge does: a badge was put
+            // there on purpose.
+            let panes_width = 8.0 + PANES_ICON_WIDTH + 3.0 + measure(&pane_count, MONO_FONT, 10.5);
+            let show_panes = panes > 1 && !compact && width - fixed - panes_width >= title_room;
+            let fixed = fixed + if show_panes { panes_width } else { 0.0 };
             let title_width = (width - fixed).max(16.0);
             let title = truncate_title(title, title_width, cx);
             div()
@@ -1339,8 +1387,12 @@ impl Workspace {
                 .max_w(px(width))
                 .cursor_pointer()
                 .text_color(if active { theme.text } else { theme.muted })
+                // The active tab's fill is lighter than any other tab's, and
+                // inactive tints stay faint, so a tinted tab can't look like
+                // the one you're on.
                 .when(active, |d| {
-                    d.bg(tint.map_or(theme.raised, |t| mix(theme.raised, t, 0.2))).shadow(vec![BoxShadow {
+                    let fill = mix(theme.raised, theme.text, 0.1);
+                    d.bg(tint.map_or(fill, |t| mix(fill, t, 0.18))).shadow(vec![BoxShadow {
                         color: alpha(gpui::black(), 0.18),
                         offset: point(px(0.0), px(1.0)),
                         blur_radius: px(3.0),
@@ -1348,7 +1400,7 @@ impl Workspace {
                     }])
                 })
                 .when(!active, |d| match tint {
-                    Some(t) => d.bg(alpha(t, 0.12)).hover(move |d| d.bg(alpha(t, 0.2))),
+                    Some(t) => d.bg(alpha(t, 0.07)).hover(move |d| d.bg(alpha(t, 0.13))),
                     None => d.hover(|d| d.bg(alpha(theme.raised, 0.55))),
                 })
                 .on_drag(
@@ -1410,16 +1462,31 @@ impl Workspace {
                             .child(badge),
                     )
                 })
+                // The pane count: a little split-window icon and the number,
+                // without a pill, so it doesn't read as another badge.
                 .when(show_panes, |d| {
+                    let color = if active { theme.subtext } else { theme.muted };
                     d.child(
                         div()
+                            .flex()
                             .flex_none()
+                            .items_center()
+                            .gap(px(3.0))
+                            .font_family(MONO_FONT)
                             .text_size(px(10.5))
-                            .px(px(5.0))
-                            .rounded(px(4.0))
-                            .bg(alpha(theme.muted, 0.18))
-                            .text_color(theme.subtext)
-                            .child(format!("{panes}")),
+                            .text_color(color)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .w(px(PANES_ICON_WIDTH))
+                                    .h(px(9.0))
+                                    .border_1()
+                                    .border_color(color)
+                                    .rounded(px(2.0))
+                                    .child(div().w(px(4.0)).h_full().border_r_1().border_color(color)),
+                            )
+                            .child(pane_count),
                     )
                 })
                 .when(show_close, |d| d.child(
@@ -1788,6 +1855,7 @@ impl Workspace {
                     "active": i == self.active_tab,
                     "zoomed": tab.zoomed,
                     "badge": tab.badge,
+                    "short_badge": tab.short_badge,
                     "color": tab.color.map(|c| match c {
                         TabColor::Ansi(i) => TabColor::NAMES.iter().find(|(_, n)| *n == i).map_or("", |(name, _)| name).to_string(),
                         TabColor::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
@@ -1989,6 +2057,21 @@ impl Workspace {
                     }
                     Some(_) => return Err(ApiError::invalid_params("`badge` should be a string or null")),
                 };
+                // A new badge drops the old short form unless it brings one.
+                let short_badge = match params.get("short_badge") {
+                    None if params.get("badge").is_some() => None,
+                    None => self.tabs[tab].short_badge.clone(),
+                    Some(Value::Null) => None,
+                    Some(Value::String(b)) => {
+                        let b = b.trim();
+                        if b.chars().count() > 8 {
+                            return Err(ApiError::invalid_params("`short_badge` should be at most 8 characters"));
+                        }
+                        (!b.is_empty()).then(|| b.to_string())
+                    }
+                    Some(_) => return Err(ApiError::invalid_params("`short_badge` should be a string or null")),
+                };
+                let short_badge = short_badge.filter(|_| badge.is_some());
                 let color = match params.get("color") {
                     None => self.tabs[tab].color,
                     Some(Value::Null) => None,
@@ -2002,6 +2085,7 @@ impl Workspace {
                 let t = &mut self.tabs[tab];
                 t.style_owner = if badge.is_none() && color.is_none() { None } else { owner };
                 t.badge = badge;
+                t.short_badge = short_badge;
                 t.color = color;
                 cx.notify();
                 Ok(json!({}))
@@ -2035,7 +2119,7 @@ impl Workspace {
                 }
                 for tab in &mut self.tabs {
                     if conn.is_some() && tab.style_owner == conn {
-                        (tab.badge, tab.color, tab.style_owner) = (None, None, None);
+                        (tab.badge, tab.short_badge, tab.color, tab.style_owner) = (None, None, None, None);
                     }
                 }
                 cx.notify();
@@ -2525,9 +2609,20 @@ mod tests {
 
     #[test]
     fn badges_shorten_or_go_in_narrow_tabs() {
-        assert_eq!(fit_badge("19:42", 200.0).as_deref(), Some("19:42"));
-        assert_eq!(fit_badge("web-1.staging", badge_width(6)).as_deref(), Some("web-1…"));
-        assert_eq!(fit_badge("web-1.staging", badge_width(2)), None);
+        // Monospace at 6 px a character, emoji twice that.
+        let measure = |t: &str| t.chars().map(|c| if c == '🍅' { 12.0 } else { 6.0 }).sum::<f32>();
+        let room = |chars: f32| BADGE_CHROME + 6.0 * chars + MIN_TITLE_WIDTH;
+        let fit = |b, short, chars| fit_badge(b, short, room(chars), MIN_TITLE_WIDTH, measure);
+        assert_eq!(fit("19:42", None, 20.0).as_deref(), Some("19:42"));
+        assert_eq!(fit("web-1.staging", None, 6.0).as_deref(), Some("web-1…"));
+        assert_eq!(fit("web-1.staging", None, 2.0), None);
+        // The emoji counts double: "🍅 18:42" needs 8 characters' room.
+        assert_eq!(fit("🍅 18:42", Some("18m"), 8.0).as_deref(), Some("🍅 18:42"));
+        assert_eq!(fit("🍅 18:42", Some("18m"), 7.0).as_deref(), Some("18m"));
+        // A short form that doesn't fit either means no badge, not a cut one.
+        assert_eq!(fit("🍅 18:42", Some("18m"), 2.0), None);
+        // The title keeps its room: with less, the badge gives way.
+        assert_eq!(fit_badge("19:42", None, room(5.0), MIN_TITLE_WIDTH + 1.0, measure).as_deref(), Some("19:…"));
     }
 
     #[test]

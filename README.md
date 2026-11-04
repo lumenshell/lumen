@@ -432,7 +432,7 @@ lumen msg watch command-finished        # events as JSON lines, until Ctrl+C
 | `read-screen [--pane ID] [--lines N]` | Print the screen, or the last N lines including history |
 | `set-title [--pane ID] [TITLE]` | Name a tab; without TITLE the program's title is shown again |
 | `move-tab [--pane ID] N` | Move the pane's tab to position N in its window (1 is first) |
-| `tab-style [--pane ID] [--badge TEXT] [--color COLOR] [--clear]` | Put a short badge beside the tab's title, tint the tab (`red`, `green`, `yellow`, `blue`, `magenta`, `cyan` from your theme, or `#rrggbb`), or `--clear` both |
+| `tab-style [--pane ID] [--badge TEXT] [--short TEXT] [--color COLOR] [--clear]` | Put a short badge beside the tab's title, tint the tab (`red`, `green`, `yellow`, `blue`, `magenta`, `cyan` from your theme, or `#rrggbb`), or `--clear` both. `--short` (up to 8 characters) is shown instead of the badge when the tab is too narrow for it |
 | `notify TITLE [BODY]` | Desktop notification (`notify-send` on Linux) |
 | `action NAME [--pane ID]` | Run an action such as `split-right` or `find` |
 | `watch [EVENT...]` | Stream events (all of them, or the ones named) |
@@ -494,8 +494,9 @@ Methods: `hello` (protocol version, Lumen version, actions and events),
 `list`, `new-tab` (`cwd`, `run`, `plugin_pane`), `split` (`pane`, `direction`,
 `cwd`, `run`, `focus`, `size`, `plugin_pane`), `focus`, `close`, `send-text`
 (`pane`, `text`), `read-screen` (`pane`, `lines`), `set-title` (`pane`,
-`title`), `set-tab-style` (`pane`, `badge`, `color`; a field left out stays,
-`null` clears it; a plugin's go when it stops, a socket client's stay), `move-tab` (`pane`, `index`, counting from 0), `write`
+`title`), `set-tab-style` (`pane`, `badge`, `short_badge`, `color`; a field
+left out stays, `null` clears it, and a new `badge` drops the old
+`short_badge`; a plugin's go when it stops, a socket client's stay), `move-tab` (`pane`, `index`, counting from 0), `write`
 (`pane`, `text`; plugin panes only), `notify` (`title`, `body`),
 `run-action` (`action`, `pane`) and `subscribe` (`events`, a list; omit for
 all). `pane` is optional everywhere and means the focused pane, in the active

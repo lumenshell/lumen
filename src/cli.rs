@@ -29,9 +29,10 @@ Commands:
   read-screen [--pane ID] [--lines N] Print the screen, or the last N lines with history
   set-title [--pane ID] [TITLE]       Set the pane's tab title; no TITLE goes back to normal
   move-tab [--pane ID] N              Move the pane's tab to position N (1 is first)
-  tab-style [--pane ID] [--badge TEXT] [--color COLOR] [--clear]
+  tab-style [--pane ID] [--badge TEXT] [--short TEXT] [--color COLOR] [--clear]
                                       Mark the pane's tab with a badge and a colour
-                                      (red, green, yellow, blue, magenta, cyan, #rrggbb)
+                                      (red, green, yellow, blue, magenta, cyan, #rrggbb);
+                                      --short is shown instead in a narrow tab
   notify TITLE [BODY]                 Show a desktop notification
   action NAME [--pane ID]             Run a key-binding action, e.g. split-right or find
   watch [EVENT...]                    Print events as JSON lines until interrupted
@@ -224,7 +225,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "tab-style" => {
-            let a = parse(rest, &["pane", "badge", "color"], &["clear"])?;
+            let a = parse(rest, &["pane", "badge", "short", "color"], &["clear"])?;
             at_most(&a, 0)?;
             let mut params = Map::new();
             params.insert("pane".into(), pane(&a)?);
@@ -232,8 +233,8 @@ fn run_inner(args: &[String]) -> Result<(), String> {
                 params.insert("badge".into(), Value::Null);
                 params.insert("color".into(), Value::Null);
             }
-            for key in ["badge", "color"] {
-                if let Some(v) = a.options.get(key) {
+            for (option, key) in [("badge", "badge"), ("short", "short_badge"), ("color", "color")] {
+                if let Some(v) = a.options.get(option) {
                     params.insert(key.into(), v.clone());
                 }
             }

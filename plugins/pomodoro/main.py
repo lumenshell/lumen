@@ -133,6 +133,14 @@ class Timer:
         icon = "‖" if self.paused else PHASES[self.phase][1]
         return f"{icon} {'ready' if self.ready else clock(self.remaining())}"
 
+    def short_badge(self) -> str:
+        """The badge for a narrow tab: minutes left, rounded up like the
+        clock ("18m" from 17:01 to 18:00), or seconds in the last minute."""
+        if self.ready:
+            return "ready"
+        left = max(0, int(self.remaining() + 0.999))
+        return f"{(left + 59) // 60}m" if left > 60 else f"{left}s"
+
     def color(self) -> str:
         if self.ready:
             return "blue"
@@ -220,7 +228,9 @@ class Running:
             return
         try:
             await self.view.draw(self.timer.render(self.view.cols, self.view.rows, today_count()))
-            await self.view.set_tab_style(badge=self.timer.badge(), color=self.timer.color())
+            await self.view.set_tab_style(
+                badge=self.timer.badge(), short_badge=self.timer.short_badge(), color=self.timer.color()
+            )
         except LumenError:
             pass  # closed while drawing
 

@@ -144,7 +144,7 @@ class PluginModeTests(unittest.TestCase):
                 def closed():
                     print("closed", view.closed)
 
-                await view.set_tab_style(badge="5:00", color="red")
+                await view.set_tab_style(badge="🍅 5:00", short_badge="5m", color="red")
                 await view.set_tab_style(badge=None)
 
             app.run()
@@ -161,7 +161,7 @@ class PluginModeTests(unittest.TestCase):
             lumen.reply(got[-1])
         by_method = sorted((m["method"], json.dumps(m["params"], sort_keys=True)) for m in got)
         self.assertEqual(by_method, sorted([
-            ("set-tab-style", json.dumps({"pane": 9, "badge": "5:00", "color": "red"}, sort_keys=True)),
+            ("set-tab-style", json.dumps({"pane": 9, "badge": "🍅 5:00", "short_badge": "5m", "color": "red"}, sort_keys=True)),
             ("set-tab-style", json.dumps({"pane": 9, "badge": None}, sort_keys=True)),
             ("write", json.dumps({"pane": 9, "text": "\x1b[?25l\x1b[H\x1b[2J40x6"}, sort_keys=True)),
         ]))
