@@ -62,6 +62,10 @@ integration and plugins you can write in any language. Built with Rust,
   Moon, Catppuccin Mocha, Tokyo Night, Rosé Pine Dawn (light)
 - Mouse selection (drag, double-click word, triple-click line, Shift+click to
   extend), primary-selection copy and middle-click paste on Linux, bracketed paste
+- A scrollbar while you scroll, with a mark for every command (red for the
+  ones that failed): click a mark to jump to that command, or drag the bar.
+  It fades out when you stop; point at a pane's right edge to bring it back.
+  `scrollbar = false` turns it off
 - The wheel scrolls history, or in full-screen programs such as `less` and
   `man` (which don't use the mouse) it moves through the text with arrow keys
 - Clickable links: hold Ctrl (⌘ on macOS) to underline URLs and OSC 8 hyperlinks
@@ -266,6 +270,7 @@ font-size = 14
 line-height = 1.35             # multiple of the font size
 padding = 12                   # pixels between a pane's edge and its text
 scrollback = 10000             # lines of history per pane
+scrollbar = true               # a scrollbar with command marks while you scroll; false: none
 cursor-style = "block"         # "block", "beam" or "underline", until a program picks one
 cursor-blink = true            # false: the cursor never blinks, even if a program asks
 background-opacity = 1         # 0.3 to 1; below 1 the desktop shows through (needs a compositor on Linux)
@@ -336,7 +341,9 @@ shell's directory. That gives you:
 - **Copy the last command's output** with Ctrl+Shift+O (⌘⇧O). It's selected
   too, so you can see what was copied.
 - **Failure marks**: a bar in the left margin beside each prompt, red if the
-  command run there failed and grey if it succeeded.
+  command run there failed (with its prompt's line tinted red too) and grey
+  if it succeeded. The scrollbar marks every command the same way, so you can
+  find failures far back in the history and click to jump to them.
 - **Notifications for long commands**: when a command that ran for at least
   `notify-after` seconds (10 by default) finishes and you're not looking at
   its pane (another pane or tab is focused, or Lumen isn't the active window),
@@ -706,6 +713,7 @@ integration](#shell-integration) marks.
 | `src/input.rs`         | Keystroke → escape-sequence encoding, legacy and kitty keyboard protocol |
 | `src/links.rs`         | URL and OSC 8 hyperlink detection                         |
 | `src/search.rs`        | Find in scrollback: matching, navigation, highlights      |
+| `src/scrollbar.rs`     | Scrollbar geometry: the thumb, command marks, and where a click or drag scrolls to |
 | `src/vi.rs`            | Keyboard select mode: keys, motions, selections           |
 | `src/glyphs.rs`        | Per-character glyph cache used to draw the grid           |
 | `src/boxdraw.rs`       | Box-drawing, block and powerline characters as shapes     |

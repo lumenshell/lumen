@@ -14,6 +14,7 @@ mod mouse;
 mod palette;
 mod plugins;
 mod pty;
+mod scrollbar;
 mod search;
 mod session;
 mod settings;

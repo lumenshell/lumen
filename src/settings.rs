@@ -36,6 +36,8 @@ pub struct Settings {
     pub padding: f32,
     /// Lines of history kept per pane.
     pub scrollback: usize,
+    /// Show a scrollbar, with a mark for each command, while you scroll.
+    pub scrollbar: bool,
     /// Cursor shape used until a program picks one.
     pub cursor_shape: CursorShape,
     /// Blink the cursor. Off, nothing blinks, even when a program asks.
@@ -72,6 +74,7 @@ impl Default for Settings {
             line_height: 1.35,
             padding: 12.0,
             scrollback: 10_000,
+            scrollbar: true,
             cursor_shape: CursorShape::Block,
             cursor_blink: true,
             background_opacity: 1.0,
@@ -208,6 +211,13 @@ impl Settings {
                         None
                     }
                     _ => Some(bad("\"block\", \"beam\" or \"underline\"")),
+                },
+                "scrollbar" => match item.as_bool() {
+                    Some(v) => {
+                        s.scrollbar = v;
+                        None
+                    }
+                    _ => Some(bad("true or false")),
                 },
                 "cursor-blink" => match item.as_bool() {
                     Some(v) => {
@@ -352,6 +362,9 @@ impl Settings {
              \n\
              # Lines of history kept per pane.\n\
              scrollback = {scrollback}\n\
+             # Show a scrollbar on a pane's right edge while you scroll, with a mark for\n\
+             # each command (red if it failed). Click or drag it to move through history.\n\
+             scrollbar = {scrollbar}\n\
              \n\
              # Cursor shape until a program picks one: \"block\", \"beam\" or \"underline\".\n\
              cursor-style = \"{cursor}\"\n\
@@ -395,6 +408,7 @@ impl Settings {
             line_height = self.line_height,
             padding = self.padding,
             scrollback = self.scrollback,
+            scrollbar = self.scrollbar,
             blink = self.cursor_blink,
             opacity = self.background_opacity,
             integration = self.shell_integration,

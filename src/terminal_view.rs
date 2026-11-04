@@ -28,6 +28,7 @@ use gpui::{AppContext, Entity, Reservation,
 use crate::boxdraw;
 use crate::glyphs::{self, Glyph, GlyphCache};
 use crate::links::{self, Link, LinkFinder};
+use crate::scrollbar::{self, Position};
 use crate::search::Search;
 use crate::shell_integration;
 use crate::marks;
@@ -47,6 +48,31 @@ pub enum TerminalEvent {
     Attention,
     Exited,
     Focused,
+}
+
+/// The scrollbar's state between frames.
+#[derive(Default)]
+struct ScrollbarState {
+    /// When it was last shown by a scroll; it fades out after.
+    shown_at: Option<Instant>,
+    /// The view offset and top line at the last draw, to tell your scrolling
+    /// (both change) from output arriving (the offset changes to keep the
+    /// view still, or the top line does at the bottom).
+    last: (usize, usize),
+    /// The pointer is over it: it stays, and widens.
+    hovered: bool,
+    /// Dragging the thumb, grabbed this far below its top.
+    drag: Option<f32>,
+    fade: Option<Task<()>>,
+}
+
+/// The scrollbar as drawn this frame.
+struct ScrollbarDraw {
+    track: Bounds<Pixels>,
+    thumb: Bounds<Pixels>,
+    /// Command marks: height, and whether the command failed.
+    ticks: Vec<(f32, bool)>,
+    opacity: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -87,7 +113,11 @@ pub struct TerminalView {
     search_rescan: Option<Task<()>>,
     /// Exit status of each command, by prompt link id (shell integration).
     exits: Rc<std::collections::HashMap<String, Option<i32>>>,
+    /// Each finished command's prompt line, counted from the oldest line,
+    /// and whether it failed: the scrollbar's marks.
+    command_lines: Rc<Vec<(usize, bool)>>,
     marks_rescan: Option<Task<()>>,
+    scrollbar: ScrollbarState,
     /// Prompt last jumped to, highlighted until you type.
     jump_target: Option<String>,
     /// Keyboard select mode: keys typed toward a count or `gg`.
@@ -278,7 +308,9 @@ impl TerminalView {
             search: None,
             search_rescan: None,
             exits: Rc::default(),
+            command_lines: Rc::default(),
             marks_rescan: None,
+            scrollbar: ScrollbarState::default(),
             jump_target: None,
             vi: ViState::default(),
             last_search: None,
@@ -893,11 +925,92 @@ impl TerminalView {
         }));
     }
 
-    /// Find every prompt again and refresh the exit statuses shown in the margin.
+    /// Find every prompt again and refresh the exit statuses shown in the
+    /// margin and the scrollbar.
     fn rescan_marks(&mut self) -> Vec<marks::Prompt> {
-        let prompts = marks::prompts(&self.pty.term.lock());
-        self.exits = Rc::new(marks::exits(&prompts));
+        let term = self.pty.term.lock();
+        let prompts = marks::prompts(&term);
+        let history = alacritty_terminal::grid::Dimensions::history_size(term.grid()) as i32;
+        drop(term);
+        let exits = marks::exits(&prompts);
+        self.command_lines = Rc::new(
+            prompts
+                .iter()
+                .filter_map(|p| {
+                    let exit = (*exits.get(&p.id)?)?;
+                    Some(((p.line.0 + history).max(0) as usize, exit != 0))
+                })
+                .collect(),
+        );
+        self.exits = Rc::new(exits);
         prompts
+    }
+
+    /// Show the scrollbar (you scrolled), and fade it out once you stop.
+    fn show_scrollbar(&mut self, cx: &mut Context<Self>) {
+        let was_hidden = scrollbar::opacity(self.scrollbar.shown_at, Instant::now(), false) == 0.0;
+        self.scrollbar.shown_at = Some(Instant::now());
+        if was_hidden && self.pty.shell_state.lock().unwrap().active {
+            // Its marks are counted from the oldest line, which moves once
+            // the history is full: bring them up to date.
+            self.rescan_marks();
+        }
+        self.scrollbar.fade = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(scrollbar::SHOW_FOR).await;
+            let end = Instant::now() + scrollbar::FADE_FOR;
+            loop {
+                if this.update(cx, |_, cx| cx.notify()).is_err() || Instant::now() >= end {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_millis(16)).await;
+            }
+            let _ = this.update(cx, |_, cx| cx.notify());
+        }));
+    }
+
+    /// Scroll so the view is `offset` lines up from the bottom.
+    fn scroll_to_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let mut term = self.pty.term.lock();
+        let now = term.grid().display_offset() as i32;
+        term.scroll_display(Scroll::Delta(offset as i32 - now));
+        drop(term);
+        self.jump_target = None;
+        cx.notify();
+    }
+
+    /// The scroll position now, for the scrollbar.
+    fn scroll_position(&self) -> Option<Position> {
+        let rows = self.layout.get()?.rows;
+        let term = self.pty.term.lock();
+        let history = alacritty_terminal::grid::Dimensions::history_size(term.grid());
+        Some(Position { history, rows, offset: term.grid().display_offset() })
+    }
+
+    /// A press on the scrollbar: on a command's mark, jump to that command;
+    /// on the thumb, start dragging it; elsewhere, move the thumb there and
+    /// drag from its middle.
+    fn scrollbar_press(&mut self, track: Bounds<Pixels>, y: f32, cx: &mut Context<Self>) {
+        let Some(pos) = self.scroll_position() else { return };
+        let near = self
+            .command_lines
+            .iter()
+            .map(|&(line, _)| (line, (scrollbar::line_y(track, pos, line) - y).abs()))
+            .filter(|&(_, d)| d <= scrollbar::TICK_REACH)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((line, _)) = near {
+            self.scroll_to_offset(scrollbar::offset_to_show(pos, line), cx);
+            return;
+        }
+        let thumb = scrollbar::thumb(track, pos);
+        let (top, height) = (f32::from(thumb.origin.y), f32::from(thumb.size.height));
+        let grab = if (top..top + height).contains(&y) { y - top } else { height / 2.0 };
+        self.scrollbar.drag = Some(grab);
+        self.scrollbar_drag(track, y, cx);
+    }
+
+    fn scrollbar_drag(&mut self, track: Bounds<Pixels>, y: f32, cx: &mut Context<Self>) {
+        let (Some(grab), Some(pos)) = (self.scrollbar.drag, self.scroll_position()) else { return };
+        self.scroll_to_offset(scrollbar::offset_for(track, pos, y - grab), cx);
     }
 
     fn prev_prompt(&mut self, _: &PrevPrompt, _: &mut Window, cx: &mut Context<Self>) {
@@ -1152,6 +1265,10 @@ struct Frame {
     preedit: Option<(Bounds<Pixels>, ShapedLine)>,
     /// Target of the hovered link, shown in a pill at the bottom of the pane.
     link_label: Option<(ShapedLine, Hsla, Hsla)>,
+    /// Where the scrollbar's track goes (for the mouse, even while it's
+    /// hidden), and what to draw, if anything.
+    scrollbar_track: Option<Bounds<Pixels>>,
+    scrollbar: Option<ScrollbarDraw>,
 }
 
 struct GlyphDraw {
@@ -1469,6 +1586,36 @@ impl Render for TerminalView {
         let exits = self.exits.clone();
         let jump_target = self.jump_target.clone();
 
+        // The scrollbar: there when there's history to scroll through,
+        // outside full-screen programs (they scroll themselves), unless
+        // turned off. You scrolling shows it; output arriving doesn't.
+        let scrollbar_setting = Settings::get(cx).scrollbar;
+        let scrollbar_on = {
+            let term = self.pty.term.lock();
+            let history = alacritty_terminal::grid::Dimensions::history_size(term.grid());
+            let offset = term.grid().display_offset();
+            let top = history.saturating_sub(offset);
+            let last = std::mem::replace(&mut self.scrollbar.last, (offset, top));
+            let on = scrollbar_setting && history > 0 && !term.mode().contains(TermMode::ALT_SCREEN);
+            drop(term);
+            if on && offset != last.0 && top != last.1 {
+                self.show_scrollbar(cx);
+            }
+            if !on {
+                self.scrollbar.hovered = false;
+                self.scrollbar.drag = None;
+            }
+            on
+        };
+        let settings = Settings::get(cx);
+        let held = self.scrollbar.hovered || self.scrollbar.drag.is_some();
+        let scrollbar_opacity = scrollbar::opacity(self.scrollbar.shown_at, Instant::now(), held);
+        let scrollbar_width = if held { scrollbar::HOVER_WIDTH } else { scrollbar::WIDTH };
+        let padding = settings.padding;
+        let command_lines = self.command_lines.clone();
+        let scrollbar_entity = cx.entity();
+        let (theme_text, theme_muted, theme_red) = (theme.text, theme.muted, theme.ansi[1]);
+
         let prepaint = move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| -> Frame {
             let text_system = window.text_system().clone();
             let base_font = font(font_family.clone());
@@ -1514,6 +1661,7 @@ impl Render for TerminalView {
             let term = term.lock();
             let content = term.renderable_content();
             let offset = content.display_offset as i32;
+            let history = alacritty_terminal::grid::Dimensions::history_size(term.grid());
             let selection = content.selection;
             let colors = content.colors;
             let cursor = content.cursor;
@@ -1725,21 +1873,27 @@ impl Render for TerminalView {
             if let Some((r, start, end, c)) = bg_run.take() {
                 backgrounds.push((cell_bounds(r, start, end - start), c));
             }
-            // Margin marks beside each prompt: muted for success, red for failure.
+            // Margin marks beside each prompt: muted for success, red for
+            // failure, which also tints its prompt's line faintly so it can't
+            // be missed.
             let mut marks = Vec::new();
             for (row, id) in &prompt_rows {
                 let top = cell_bounds(*row, 0, 1).origin;
                 if jump_target.as_deref() == Some(id) {
                     backgrounds.insert(0, (cell_bounds(*row, 0, cols), alpha(theme.accent, 0.14)));
                 }
-                let color = match exits.get(id) {
-                    Some(Some(0)) => alpha(theme.muted, 0.55),
-                    Some(Some(_)) => theme.ansi[1],
+                let (color, width) = match exits.get(id) {
+                    Some(Some(0)) => (alpha(theme.muted, 0.55), 3.0),
+                    Some(Some(_)) => {
+                        let tint = if theme.is_light { 0.10 } else { 0.08 };
+                        backgrounds.insert(0, (cell_bounds(*row, 0, cols), alpha(theme.ansi[1], tint)));
+                        (theme.ansi[1], 4.0)
+                    }
                     _ => continue,
                 };
-                let inset = (line_height * 0.2).round();
+                let inset = (line_height * 0.15).round();
                 marks.push((
-                    Bounds::new(point(top.x - px(8.0), top.y + inset), size(px(3.0), line_height - inset * 2.0)),
+                    Bounds::new(point(top.x - px(9.0), top.y + inset), size(px(width), line_height - inset * 2.0)),
                     color,
                 ));
             }
@@ -1804,7 +1958,23 @@ impl Render for TerminalView {
                 (shaped, theme.raised, theme.border)
             });
 
+            let scrollbar_track = scrollbar_on.then(|| scrollbar::track(bounds, padding, scrollbar_width));
+            let scrollbar = scrollbar_track.filter(|_| scrollbar_opacity > 0.0).map(|track| {
+                let pos = Position { history, rows, offset: offset as usize };
+                ScrollbarDraw {
+                    track,
+                    thumb: scrollbar::thumb(track, pos),
+                    ticks: command_lines
+                        .iter()
+                        .map(|&(line, failed)| (scrollbar::line_y(track, pos, line), failed))
+                        .collect(),
+                    opacity: scrollbar_opacity,
+                }
+            });
+
             Frame {
+                scrollbar_track,
+                scrollbar,
                 backgrounds,
                 glyphs,
                 shapes,
@@ -1899,6 +2069,66 @@ impl Render for TerminalView {
             }
             if focused {
                 window.handle_input(&ime_focus, ElementInputHandler::new(bounds, ime_entity.clone()), cx);
+            }
+            if let Some(bar) = &frame.scrollbar {
+                let o = bar.opacity;
+                window.paint_quad(fill(bar.track, alpha(theme_text, 0.05 * o)).corner_radii(px(3.0)));
+                window.paint_quad(fill(bar.thumb, alpha(theme_text, if held { 0.38 } else { 0.26 } * o)).corner_radii(px(3.0)));
+                // A command's mark across the track: red if it failed.
+                for &(y, failed) in &bar.ticks {
+                    let color = if failed { alpha(theme_red, o) } else { alpha(theme_muted, 0.7 * o) };
+                    let tick = Bounds::new(
+                        point(bar.track.origin.x - px(1.0), px(y.round())),
+                        size(bar.track.size.width + px(2.0), px(if failed { 3.0 } else { 2.0 })),
+                    );
+                    window.paint_quad(fill(tick, color).corner_radii(px(1.0)));
+                }
+            }
+            if let Some(track) = frame.scrollbar_track {
+                // A little wider than the track, so it's easy to hit.
+                let zone = Bounds::new(
+                    point(track.origin.x - px(4.0), track.origin.y),
+                    size(track.size.width + px(8.0), track.size.height),
+                );
+                let entity = scrollbar_entity.clone();
+                window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    let inside = zone.contains(&ev.position);
+                    entity.update(cx, |this, cx| {
+                        if this.scrollbar.drag.is_some() {
+                            this.scrollbar_drag(track, f32::from(ev.position.y), cx);
+                        } else if inside != this.scrollbar.hovered {
+                            this.scrollbar.hovered = inside;
+                            if !inside {
+                                // Stay a moment after the pointer leaves.
+                                this.show_scrollbar(cx);
+                            }
+                            cx.notify();
+                        }
+                    });
+                });
+                let entity = scrollbar_entity.clone();
+                window.on_mouse_event(move |ev: &MouseDownEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Capture || ev.button != MouseButton::Left || !zone.contains(&ev.position) {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    entity.update(cx, |this, cx| this.scrollbar_press(track, f32::from(ev.position.y), cx));
+                });
+                let entity = scrollbar_entity.clone();
+                window.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Bubble || ev.button != MouseButton::Left {
+                        return;
+                    }
+                    entity.update(cx, |this, cx| {
+                        if this.scrollbar.drag.take().is_some() {
+                            this.show_scrollbar(cx);
+                            cx.notify();
+                        }
+                    });
+                });
             }
             if let Some((label, bg, border)) = &frame.link_label {
                 // Clamp to the pane so a long URL can't spill out.
