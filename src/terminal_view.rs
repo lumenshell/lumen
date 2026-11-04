@@ -1,6 +1,6 @@
 //! A single terminal pane: renders the alacritty grid with GPUI and feeds input to the PTY.
 
-use std::cell::Cell as StdCell;
+use std::cell::{Cell as StdCell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -14,7 +14,8 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use futures::StreamExt;
-use gpui::{
+use futures::channel::mpsc::UnboundedReceiver;
+use gpui::{AppContext, Entity, Reservation,
     App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, FontStyle,
     ElementInputHandler, EntityInputHandler, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers, UTF16Selection,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
@@ -131,19 +132,79 @@ fn default_title() -> String {
         .unwrap_or_else(|| "shell".into())
 }
 
+/// A shell started before its pane exists (see [`prespawn`]).
+struct Prespawned {
+    reservation: Reservation<TerminalView>,
+    cwd: Option<PathBuf>,
+    pty: Pty,
+    rx: UnboundedReceiver<Event>,
+}
+
+thread_local! {
+    static PRESPAWNED: RefCell<Vec<Prespawned>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Start shells for the panes about to open in `cwds`, ahead of their
+/// windows: a shell takes a while to start (100 ms or more with a busy
+/// `.bashrc`), and this way it does so while the GPU is still being set up,
+/// so the prompt is there when the window first draws. The panes pick them
+/// up as they open; [`discard_prespawned`] ends any left over.
+///
+/// `panes` gives each one's directory and expected size, so what the shell
+/// prints while starting fits; the pane corrects the size once laid out.
+pub fn prespawn(panes: Vec<(Option<PathBuf>, GridSize)>, cx: &mut App) {
+    let settings = Settings::get(cx);
+    let (shell, integrate, config) = (settings.shell.clone(), settings.shell_integration, term_config(settings));
+    for (cwd, size) in panes {
+        let reservation = cx.reserve_entity::<TerminalView>();
+        let pane = reservation.entity_id().as_u64();
+        // On failure the pane tries again itself when it opens.
+        if let Ok((pty, rx)) = Pty::spawn(cwd.clone(), shell.as_deref(), integrate, pane, config.clone(), size) {
+            PRESPAWNED.with_borrow_mut(|p| p.push(Prespawned { reservation, cwd, pty, rx }));
+        }
+    }
+}
+
+/// End the shells [`prespawn`] started that no pane took.
+pub fn discard_prespawned() {
+    PRESPAWNED.with_borrow_mut(Vec::clear);
+}
+
 impl TerminalView {
     /// A pane running your shell in `cwd`, or, with an `owner`, a plugin
-    /// pane that the plugin draws.
-    pub fn new(cwd: Option<PathBuf>, owner: Option<Owner>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// pane that the plugin draws. Uses a shell from [`prespawn`] if one is
+    /// waiting for `cwd`.
+    pub fn open<T>(cwd: Option<PathBuf>, owner: Option<Owner>, window: &mut Window, cx: &mut Context<T>) -> Entity<Self> {
+        let waiting = owner.is_none().then(|| {
+            PRESPAWNED.with_borrow_mut(|p| p.iter().position(|s| s.cwd == cwd).map(|i| p.remove(i)))
+        });
+        match waiting.flatten() {
+            Some(s) => cx.insert_entity(s.reservation, |cx| Self::with_pty(s.pty, s.rx, default_title(), window, cx)),
+            None => cx.new(|cx| Self::new(cwd, owner, window, cx)),
+        }
+    }
+
+    fn new(cwd: Option<PathBuf>, owner: Option<Owner>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = Settings::get(cx);
-        let mut applied = term_config(settings);
+        let config = term_config(settings);
         let pane = cx.entity_id().as_u64();
         let base_title = owner.as_ref().map_or_else(default_title, |o| o.name.clone());
-        let (pty, mut rx) = match owner {
-            Some(owner) => Pty::plugin(owner, pane, applied.clone()),
-            None => Pty::spawn(cwd, settings.shell.as_deref(), settings.shell_integration, pane, applied.clone())
+        let (pty, rx) = match owner {
+            Some(owner) => Pty::plugin(owner, pane, config),
+            None => Pty::spawn(cwd, settings.shell.as_deref(), settings.shell_integration, pane, config, GridSize::DEFAULT)
                 .expect("failed to spawn shell"),
         };
+        Self::with_pty(pty, rx, base_title, window, cx)
+    }
+
+    fn with_pty(
+        pty: Pty,
+        mut rx: UnboundedReceiver<Event>,
+        base_title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut applied = term_config(Settings::get(cx));
         let focus = cx.focus_handle();
 
         let events = cx.spawn(async move |this, cx| {

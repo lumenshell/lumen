@@ -138,14 +138,26 @@ fn main() {
 
         // One window per saved window, or a fresh one.
         let saved = session::load();
+        let places: Vec<Placement> = if saved.is_empty() {
+            vec![initial_placement(None, cx)]
+        } else {
+            saved.iter().map(|s| initial_placement(s.window, cx)).collect()
+        };
+        // Start the shells now, so they start up while the GPU is being set up.
+        let panes = if saved.is_empty() {
+            workspace::startup_panes(None, places[0].bounds.size, cx)
+        } else {
+            saved.iter().zip(&places).flat_map(|(s, p)| workspace::startup_panes(Some(s), p.bounds.size, cx)).collect()
+        };
+        terminal_view::prespawn(panes, cx);
         let mut windows = Vec::new();
         if saved.is_empty() {
-            windows.extend(open_window(None, initial_placement(None, cx), None, cx));
+            windows.extend(open_window(None, places[0], None, cx));
         }
-        for (i, s) in saved.into_iter().enumerate() {
-            let place = initial_placement(s.window, cx);
+        for (i, (s, place)) in saved.into_iter().zip(places).enumerate() {
             windows.extend(open_window(Some(s), place, Some(i), cx));
         }
+        terminal_view::discard_prespawned();
         let Some(&first) = windows.first() else {
             eprintln!("lumen: couldn't open a window");
             cx.quit();

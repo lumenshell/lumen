@@ -115,6 +115,15 @@
  }
  
  impl WindowRef {
+@@ -177,7 +181,7 @@
+     pub(crate) last_location: Point<Pixels>,
+     pub(crate) current_count: usize,
+ 
+-    gpu_context: BladeContext,
++    gpu_context: GpuSetup,
+ 
+     pub(crate) scale_factor: f32,
+ 
 @@ -232,12 +236,16 @@
          };
          let mut state = client.0.borrow_mut();
@@ -136,7 +145,43 @@
          }
          if state.mouse_focused_window == Some(x_window) {
              state.mouse_focused_window = None;
-@@ -1485,12 +1493,28 @@
+@@ -302,6 +310,10 @@
+ 
+ impl X11Client {
+     pub(crate) fn new() -> anyhow::Result<Self> {
++        // Lumen: setting up the GPU takes the driver a quarter of a second or
++        // more, so do it while the rest of the app starts; the first window
++        // waits for it.
++        let gpu_context = GpuSetup::start();
+         let event_loop = EventLoop::try_new()?;
+ 
+         let (common, main_receiver) = LinuxCommon::new(event_loop.get_signal());
+@@ -411,7 +423,6 @@
+             .to_string();
+         let keyboard_layout = LinuxKeyboardLayout::new(layout_name.into());
+ 
+-        let gpu_context = BladeContext::new().context("Unable to init GPU context")?;
+ 
+         let resource_database = x11rb::resource_manager::new_from_default(&xcb_connection)
+             .context("Failed to create resource database")?;
+@@ -1448,6 +1459,7 @@
+         params: WindowParams,
+     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
+         let mut state = self.0.borrow_mut();
++        let gpu_context = state.gpu_context.wait()?;
+         let parent_window = state
+             .keyboard_focused_window
+             .and_then(|focused_window| state.windows.get(&focused_window))
+@@ -1461,7 +1473,7 @@
+             handle,
+             X11ClientStatePtr(Rc::downgrade(&self.0)),
+             state.common.foreground_executor.clone(),
+-            &state.gpu_context,
++            &gpu_context,
+             params,
+             &state.xcb_connection,
+             state.client_side_decorations_supported,
+@@ -1485,12 +1497,28 @@
          .log_err();
          xcb_flush(&state.xcb_connection);
  
@@ -165,7 +210,7 @@
          };
  
          state.windows.insert(x_window, window_ref);
-@@ -2489,3 +2513,34 @@
+@@ -2489,3 +2517,76 @@
  fn valid_scale_factor(scale_factor: f32) -> bool {
      scale_factor.is_sign_positive() && scale_factor.is_normal()
  }
@@ -200,6 +245,59 @@
 +        });
 +    }
 +}
++
++/// Lumen: the GPU context, set up on its own thread at startup.
++enum GpuSetup {
++    Pending(std::thread::JoinHandle<anyhow::Result<BladeContext>>),
++    Ready(BladeContext),
++    Failed(String),
++}
++
++impl GpuSetup {
++    fn start() -> Self {
++        let thread = std::thread::Builder::new()
++            .name("gpu setup".into())
++            .spawn(|| BladeContext::new().context("Unable to init GPU context"));
++        match thread {
++            Ok(handle) => GpuSetup::Pending(handle),
++            // No thread: set it up here instead.
++            Err(_) => match BladeContext::new().context("Unable to init GPU context") {
++                Ok(gpu) => GpuSetup::Ready(gpu),
++                Err(e) => GpuSetup::Failed(format!("{e:#}")),
++            },
++        }
++    }
++
++    /// The context, waiting for its thread the first time.
++    fn wait(&mut self) -> anyhow::Result<BladeContext> {
++        if let GpuSetup::Pending(_) = self {
++            let GpuSetup::Pending(handle) = std::mem::replace(self, GpuSetup::Failed(String::new())) else {
++                unreachable!()
++            };
++            *self = match handle.join() {
++                Ok(Ok(gpu)) => GpuSetup::Ready(gpu),
++                Ok(Err(e)) => GpuSetup::Failed(format!("{e:#}")),
++                Err(_) => GpuSetup::Failed("Unable to init GPU context: the setup thread panicked".into()),
++            };
++        }
++        match self {
++            GpuSetup::Ready(gpu) => Ok(gpu.clone()),
++            GpuSetup::Failed(e) => Err(anyhow!("{e}")),
++            GpuSetup::Pending(_) => unreachable!(),
++        }
++    }
++}
+--- a/src/platform/blade/blade_context.rs
++++ b/src/platform/blade/blade_context.rs
+@@ -3,7 +3,7 @@
+ use std::sync::Arc;
+ use util::ResultExt;
+ 
+-#[cfg_attr(target_os = "macos", derive(Clone))]
++#[derive(Clone)]
+ pub struct BladeContext {
+     pub(super) gpu: Arc<gpu::Context>,
+ }
 --- a/src/taffy.rs
 +++ b/src/taffy.rs
 @@ -309,7 +309,7 @@

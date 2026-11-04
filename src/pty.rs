@@ -34,6 +34,9 @@ pub struct GridSize {
 }
 
 impl GridSize {
+    /// Until the pane is laid out.
+    pub const DEFAULT: GridSize = GridSize { cols: 80, rows: 24, cell_width: 8, cell_height: 16 };
+
     fn window_size(self) -> WindowSize {
         WindowSize {
             num_cols: self.cols,
@@ -102,9 +105,9 @@ impl Pty {
         integrate: bool,
         pane: u64,
         config: Config,
+        size: GridSize,
     ) -> anyhow::Result<(Self, UnboundedReceiver<Event>)> {
         let (tx, rx) = unbounded();
-        let size = GridSize { cols: 80, rows: 24, cell_width: 8, cell_height: 16 };
         let term = Arc::new(FairMutex::new(Term::new(config, &size, Listener(tx.clone()))));
 
         let mut env = HashMap::new();

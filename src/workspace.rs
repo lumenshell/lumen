@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Bounds, BoxShadow, Context, CursorStyle, Decorations, Hsla, Rgba,
+    AnyElement, AnyView, App, AppContext, Bounds, font, BoxShadow, Context, CursorStyle, Decorations, Hsla, Rgba,
     DragMoveEvent, ElementId, Entity, EntityId, Focusable, HitboxBehavior, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ResizeEdge,
     SharedString, Size, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task,
@@ -20,12 +20,15 @@ use crate::keymap;
 use crate::palette::{CommandPalette, PaletteEvent, PaletteFn, PaletteItem};
 use crate::session::{self, Axis, NodeState, Session, TabState, WindowState};
 use crate::settings::{MONO_FONT, Settings, UI_FONT};
-use crate::pty::Owner;
+use crate::pty::{GridSize, Owner};
+use std::path::PathBuf;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::theme::{Theme, alpha};
 use crate::*;
 
 const GAP: f32 = 8.0;
+/// Height of the title bar with the tabs.
+const TITLEBAR_HEIGHT: f32 = 44.0;
 /// Narrowest a tab gets before the tab strip scrolls instead.
 const TAB_MIN_WIDTH: f32 = 56.0;
 /// Below this share of the bar, inactive tabs drop their close button and
@@ -533,7 +536,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Entity<TerminalView> {
         let (cwd, owner) = what.into_parts();
-        let term = cx.new(|cx| TerminalView::new(cwd, owner, window, cx));
+        let term = TerminalView::open(cwd, owner, window, cx);
         api::emit("pane-opened", json!({ "pane": term.entity_id().as_u64() }));
         let sub = cx.subscribe_in(&term, window, |this, term, event, window, cx| match event {
             TerminalEvent::Attention => cx.notify(),
@@ -1475,7 +1478,7 @@ impl Workspace {
             .flex()
             .flex_none()
             .items_center()
-            .h(px(44.0))
+            .h(px(TITLEBAR_HEIGHT))
             .pl(px(if cfg!(target_os = "macos") { 84.0 } else { 10.0 }))
             .pr(px(10.0))
             .gap(px(4.0))
@@ -2405,9 +2408,108 @@ fn join_and(parts: &[String]) -> String {
     }
 }
 
+/// The panes a window will open with, in the order they open: each one's
+/// directory and roughly the grid it will get in a window whose content is
+/// `window` (logical pixels). `saved` is the window's session, or None for a
+/// fresh window with one pane.
+pub fn startup_panes(saved: Option<&Session>, window: Size<Pixels>, cx: &App) -> Vec<(Option<PathBuf>, GridSize)> {
+    let settings = Settings::get(cx);
+    let text_system = cx.text_system();
+    let font_size = settings.font_size();
+    let cell = text_system
+        .advance(text_system.resolve_font(&font(settings.font_family.clone())), font_size, 'm')
+        .map(|s| f32::from(s.width))
+        .unwrap_or(8.0)
+        .max(1.0);
+    let line = f32::from((font_size * settings.line_height).round()).max(1.0);
+    // Inside a pane's frame: its 1px border and the padding.
+    let inset = 2.0 + 2.0 * settings.padding;
+    let grid = |w: f32, h: f32| GridSize {
+        cols: ((w - inset) / cell).floor().clamp(2.0, u16::MAX as f32) as u16,
+        rows: ((h - inset) / line).floor().clamp(1.0, u16::MAX as f32) as u16,
+        cell_width: cell as u16,
+        cell_height: line as u16,
+    };
+    // Below the title bar, inside the gaps around the panes.
+    let content = (f32::from(window.width) - 2.0 * GAP, f32::from(window.height) - TITLEBAR_HEIGHT - GAP);
+    match saved {
+        Some(saved) => layout_panes(&saved.tabs, content, &grid),
+        None => vec![(None, grid(content.0, content.1))],
+    }
+}
+
+/// Each pane of `tabs` with the grid `grid` gives the room it gets when the
+/// tab's content is `content` (width, height) pixels.
+fn layout_panes(
+    tabs: &[TabState],
+    content: (f32, f32),
+    grid: &dyn Fn(f32, f32) -> GridSize,
+) -> Vec<(Option<PathBuf>, GridSize)> {
+    fn walk(
+        node: &NodeState,
+        (w, h): (f32, f32),
+        grid: &dyn Fn(f32, f32) -> GridSize,
+        out: &mut Vec<(Option<PathBuf>, GridSize)>,
+    ) {
+        match node {
+            NodeState::Pane { cwd } => out.push((cwd.clone(), grid(w, h))),
+            NodeState::Split { axis, children, ratios } => {
+                let along = if *axis == Axis::Row { w } else { h };
+                let room = (along - GAP * children.len().saturating_sub(1) as f32).max(0.0);
+                let total: f32 = ratios.iter().sum::<f32>().max(f32::EPSILON);
+                for (child, r) in children.iter().zip(ratios) {
+                    let share = room * r / total;
+                    walk(child, if *axis == Axis::Row { (share, h) } else { (w, share) }, grid, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for tab in tabs {
+        let first = out.len();
+        walk(&tab.root, content, grid, &mut out);
+        // A zoomed tab shows its focused pane alone.
+        if tab.zoomed
+            && let Some(pane) = out.get_mut(first + tab.active)
+        {
+            pane.1 = grid(content.0, content.1);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_panes_get_their_share_of_the_window() {
+        // One "cell" per pixel, so sizes read as pixels.
+        let grid = |w: f32, h: f32| GridSize { cols: w as u16, rows: h as u16, cell_width: 1, cell_height: 1 };
+        let pane = |cwd: &str| NodeState::Pane { cwd: Some(cwd.into()) };
+        let tab = |root, active, zoomed| TabState { root, active, zoomed, title: None };
+        let tabs = vec![
+            tab(
+                NodeState::Split {
+                    axis: Axis::Row,
+                    children: vec![
+                        pane("/a"),
+                        NodeState::Split { axis: Axis::Column, children: vec![pane("/b"), pane("/c")], ratios: vec![1.0, 3.0] },
+                    ],
+                    ratios: vec![1.0, 1.0],
+                },
+                0,
+                false,
+            ),
+            tab(NodeState::Split { axis: Axis::Row, children: vec![pane("/d"), pane("/e")], ratios: vec![1.0, 1.0] }, 1, true),
+        ];
+        let got: Vec<(String, u16, u16)> = layout_panes(&tabs, (408.0, 208.0), &grid)
+            .into_iter()
+            .map(|(cwd, g)| (cwd.unwrap().display().to_string(), g.cols, g.rows))
+            .collect();
+        let want = [("/a", 200, 208), ("/b", 200, 50), ("/c", 200, 150), ("/d", 200, 208), ("/e", 408, 208)];
+        assert_eq!(got, want.map(|(c, w, h)| (c.to_string(), w, h)));
+    }
 
     #[test]
     fn dropped_tabs_land_in_the_slot_they_were_dropped_on() {

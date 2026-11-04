@@ -29,6 +29,22 @@ CPU use under heavy output were unchanged.
 Wayland and macOS already draw on the compositor's frame callback or the
 display link, so they are unchanged.
 
+## Set up the GPU while the app starts (X11)
+
+Creating the Vulkan device takes the NVIDIA driver about a quarter of a
+second, and GPUI did it on the main thread before anything else could run.
+
+- `src/platform/linux/x11/client.rs`: `GpuSetup` creates the `BladeContext`
+  on its own thread as soon as the X11 client starts; the first
+  `open_window` waits for it. If the thread can't be started, it is created
+  in place as before, and a failure is reported by `open_window`.
+- `src/platform/blade/blade_context.rs`: `BladeContext` is `Clone` on Linux
+  too (it is an `Arc`), so the waiting window can take a copy.
+
+Meanwhile GPUI loads the system fonts and Lumen starts the panes' shells, so
+they're ready by the first frame. With bash at 120 Hz on an NVIDIA GPU, the
+first prompt went from 516–600 ms after launch to 345–407 ms.
+
 ## Build fix
 
 `src/taffy.rs`: two float literals given an explicit `f32` type. Newer Rust

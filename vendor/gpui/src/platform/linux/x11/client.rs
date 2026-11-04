@@ -181,7 +181,7 @@ pub struct X11ClientState {
     pub(crate) last_location: Point<Pixels>,
     pub(crate) current_count: usize,
 
-    gpu_context: BladeContext,
+    gpu_context: GpuSetup,
 
     pub(crate) scale_factor: f32,
 
@@ -310,6 +310,10 @@ pub(crate) struct X11Client(Rc<RefCell<X11ClientState>>);
 
 impl X11Client {
     pub(crate) fn new() -> anyhow::Result<Self> {
+        // Lumen: setting up the GPU takes the driver a quarter of a second or
+        // more, so do it while the rest of the app starts; the first window
+        // waits for it.
+        let gpu_context = GpuSetup::start();
         let event_loop = EventLoop::try_new()?;
 
         let (common, main_receiver) = LinuxCommon::new(event_loop.get_signal());
@@ -419,7 +423,6 @@ impl X11Client {
             .to_string();
         let keyboard_layout = LinuxKeyboardLayout::new(layout_name.into());
 
-        let gpu_context = BladeContext::new().context("Unable to init GPU context")?;
 
         let resource_database = x11rb::resource_manager::new_from_default(&xcb_connection)
             .context("Failed to create resource database")?;
@@ -1456,6 +1459,7 @@ impl LinuxClient for X11Client {
         params: WindowParams,
     ) -> anyhow::Result<Box<dyn PlatformWindow>> {
         let mut state = self.0.borrow_mut();
+        let gpu_context = state.gpu_context.wait()?;
         let parent_window = state
             .keyboard_focused_window
             .and_then(|focused_window| state.windows.get(&focused_window))
@@ -1469,7 +1473,7 @@ impl LinuxClient for X11Client {
             handle,
             X11ClientStatePtr(Rc::downgrade(&self.0)),
             state.common.foreground_executor.clone(),
-            &state.gpu_context,
+            &gpu_context,
             params,
             &state.xcb_connection,
             state.client_side_decorations_supported,
@@ -2542,5 +2546,47 @@ impl X11Client {
             require_presentation: false,
             force_render: false,
         });
+    }
+}
+
+/// Lumen: the GPU context, set up on its own thread at startup.
+enum GpuSetup {
+    Pending(std::thread::JoinHandle<anyhow::Result<BladeContext>>),
+    Ready(BladeContext),
+    Failed(String),
+}
+
+impl GpuSetup {
+    fn start() -> Self {
+        let thread = std::thread::Builder::new()
+            .name("gpu setup".into())
+            .spawn(|| BladeContext::new().context("Unable to init GPU context"));
+        match thread {
+            Ok(handle) => GpuSetup::Pending(handle),
+            // No thread: set it up here instead.
+            Err(_) => match BladeContext::new().context("Unable to init GPU context") {
+                Ok(gpu) => GpuSetup::Ready(gpu),
+                Err(e) => GpuSetup::Failed(format!("{e:#}")),
+            },
+        }
+    }
+
+    /// The context, waiting for its thread the first time.
+    fn wait(&mut self) -> anyhow::Result<BladeContext> {
+        if let GpuSetup::Pending(_) = self {
+            let GpuSetup::Pending(handle) = std::mem::replace(self, GpuSetup::Failed(String::new())) else {
+                unreachable!()
+            };
+            *self = match handle.join() {
+                Ok(Ok(gpu)) => GpuSetup::Ready(gpu),
+                Ok(Err(e)) => GpuSetup::Failed(format!("{e:#}")),
+                Err(_) => GpuSetup::Failed("Unable to init GPU context: the setup thread panicked".into()),
+            };
+        }
+        match self {
+            GpuSetup::Ready(gpu) => Ok(gpu.clone()),
+            GpuSetup::Failed(e) => Err(anyhow!("{e}")),
+            GpuSetup::Pending(_) => unreachable!(),
+        }
     }
 }
