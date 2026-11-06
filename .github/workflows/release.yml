@@ -64,7 +64,8 @@ jobs:
 
   macos:
     name: macOS (universal)
-    runs-on: macos-14
+    # macos-14 is retired: GitHub now refuses the job before it starts.
+    runs-on: macos-15
     env:
       # Matches LSMinimumSystemVersion in scripts/bundle-macos.sh.
       MACOSX_DEPLOYMENT_TARGET: "10.15"
