@@ -176,12 +176,6 @@ sessions. See [Commands](docs/commands.md).
 | [Files and session](docs/files.md) | Where Lumen keeps things, and its environment variables |
 | [Working on Lumen](docs/development.md) | Building, tests, source layout, releasing |
 
-## Next up
-
-- Keyboard link hints
-- In-process plugin hooks
-- Ghostty theme file import
-
 ## License
 
 Lumen is available under either the [MIT License](LICENSE-MIT) or the
