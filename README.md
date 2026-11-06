@@ -8,7 +8,7 @@ integration, and plugins you can write in any language.
 It's a native app, not a webview: no Electron, no browser engine underneath.
 Every glyph is drawn straight to the GPU.
 
-<img src="assets/screenshot.png" alt="Lumen with four tabs and three panes: lumen info beside a pixel flame, a git log, a shell with a failed command marked in red, and a pomodoro countdown. The tabs carry badges and tints: a tomato countdown on the first, a blue web-1.staging badge, and 3 to do">
+<img src="assets/screenshot.png" alt="Lumen with four tabs and three panes: a shell in a web shop project where npm test failed (its prompt marked in red) and then passed, a Vite dev server, and lumen campfire burning. The tabs carry badges: a green 128 on tests, a blue web-1.staging on deploy, and 3 to do on notes">
 
 ## Install
 
@@ -61,23 +61,27 @@ links, mouse reporting for vim and tmux, and colour emoji. See
 **Tabs with badges and colours**, set by plugins and scripts: a pomodoro
 countdown, a staging server, what's left to do.
 
-<img src="assets/screenshots/tabs.png" alt="The tab bar: a red-tinted tab with a tomato 18:43 countdown, a green tests tab, a deploy tab with a blue web-1.staging badge, and a notes tab badged 3 to do">
+<img src="assets/screenshots/tabs.png" alt="The tab bar: shop with three panes, tests with a green 128 badge, deploy with a blue web-1.staging badge, and notes badged 3 to do">
 
 <table>
 <tr>
-<td width="50%"><b>Pomodoro Timer</b>, a built-in plugin: a big countdown in a strip under your work, with the time on the tab.<br><br><img src="assets/screenshots/pomodoro.png" alt="A git log above a pomodoro pane showing FOCUS, 13 min, and a large 10:25 countdown with a progress bar"></td>
-<td width="50%"><b>Plugin panes</b>: a todo list drawn by a plugin, beside your shell, with what's left on the tab.<br><br><img src="assets/screenshots/todo.png" alt="A git log beside a todo list pane: one item ticked off and three left"></td>
+<td width="50%"><b>Command palette</b>: every action, theme and plugin command, fuzzy-searched, with its shortcut.<br><br><img src="assets/screenshots/palette.png" alt="The command palette over a git log, filtered to split: Split Right and Split Down with their shortcuts"></td>
+<td width="50%"><b>Find in scrollback</b>, with every match highlighted.<br><br><img src="assets/screenshots/find.png" alt="A git log with file stats and the find bar searching for checkout: 6 of 6 matches highlighted"></td>
 </tr>
 <tr>
-<td><b>Command palette</b>: every action, theme and plugin command, fuzzy-searched.<br><br><img src="assets/screenshots/palette.png" alt="The command palette filtered to pomodoro: Stop, Start, Pause or Resume Pomodoro and its plugin log"></td>
+<td><b>Keyboard select mode</b>: move with vi keys and select by character, line or block.<br><br><img src="assets/screenshots/select.png" alt="A failed test run with two lines selected in keyboard select mode, and a hint saying y copies and Esc cancels"></td>
+<td><b>Pomodoro Timer</b>, a built-in plugin: a big countdown in a strip under your work, with the time on the tab.<br><br><img src="assets/screenshots/pomodoro.png" alt="A git log above a pomodoro pane counting down from 25 minutes, with the countdown on the tab"></td>
+</tr>
+<tr>
+<td><b>Plugin panes</b>: a todo list drawn by a plugin, beside your shell, with what's left on the tab.<br><br><img src="assets/screenshots/todo.png" alt="A git log beside a todo list pane: one item ticked off and three left, with 3 to do on the tab"></td>
 <td><b>Plugin Gallery</b>: the built-in plugins, off until you turn them on.<br><br><img src="assets/screenshots/gallery.png" alt="The Plugin Gallery listing Recent Directories, Command History, Switch Git Branch, SSH to Host, Project Layouts, Build Status and Pomodoro Timer, which is on"></td>
 </tr>
 <tr>
-<td><b>Find in scrollback</b>, with every match highlighted.<br><br><img src="assets/screenshots/find.png" alt="A long git log with the find bar searching for plugin: 8 of 8 matches highlighted"></td>
-<td><b><code>watch_pane.py</code></b>, an example script: <code>watch</code> in a pane of its own, with changes highlighted.<br><br><img src="assets/screenshots/watch.png" alt="A shell above a watch pane rerunning date, free and uptime every second, with the changed lines highlighted"></td>
+<td><b><code>watch_pane.py</code></b>, an example script: <code>watch</code> in a pane of its own, with changes highlighted.<br><br><img src="assets/screenshots/watch.png" alt="A shell above a watch pane rerunning a status script every second, with the changed time highlighted"></td>
+<td><b><code>lumen campfire</code></b>: a pixel-art fire in a pane, for cold coding sessions.<br><br><img src="assets/screenshots/campfire.png" alt="A shell with a passing test run beside a pane with a pixel-art campfire, its sparks drifting up"></td>
 </tr>
 <tr>
-<td colspan="2"><b>Snake</b>, an example plugin: a game in a tab of its own, drawn in a plugin pane.<br><br><img src="assets/screenshots/snake.png" alt="A snake game in its own tab: score 9, paused, with the score on the tab" width="50%"></td>
+<td colspan="2"><b>Rosé Pine Dawn</b>, the light theme: every theme recolours the window around the terminal too.<br><br><img src="assets/screenshots/light.png" alt="The main layout in a light theme: a shell with test runs beside a Vite dev server, and tabs with badges"></td>
 </tr>
 </table>
 

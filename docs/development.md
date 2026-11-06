@@ -7,6 +7,7 @@ framework) and runs terminals with
 - [Building](#building)
 - [Tests](#tests)
 - [Source layout](#source-layout)
+- [Screenshots](#screenshots)
 - [Releasing](#releasing)
 
 ## Building
@@ -62,9 +63,9 @@ python3 -m unittest discover -s plugins/tests  # the built-in plugins
 | `assets/icons/`        | The app icon: Linux `hicolor` sizes, macOS `Lumen.icns`, SVG sources |
 | `assets/linux/`        | The `.desktop` menu entry                                 |
 | `assets/screenshot.png` | The screenshot at the top of the README                 |
-| `assets/screenshots/`  | The rest of the README's screenshots                    |
+| `assets/screenshots/`  | The rest of the README's screenshots ([how they're taken](#screenshots)) |
 | `install.sh`           | Build and install this checkout for testing (menu entry, icon, `Lumen.app`) |
-| `scripts/`             | `install-linux.sh` (menu entry and icons), `bundle-macos.sh` (`Lumen.app`), `package-linux.sh` (the Linux release tarball) |
+| `scripts/`             | `install-linux.sh` (menu entry and icons), `bundle-macos.sh` (`Lumen.app`), `package-linux.sh` (the Linux release tarball), `screenshots.py` (the product screenshots) |
 | `dist/install.sh`      | The installer `lumenshell.dev/install` serves: downloads a release, checks it and installs it |
 | `dist/homebrew/lumen.rb` | The Homebrew cask; each release fills it in and pushes it to `lumenshell/homebrew-tap` |
 | `.github/workflows/release.yml` | Builds Linux and macOS releases when a `v*` tag is pushed ([how to release](#releasing)) |
@@ -74,6 +75,42 @@ python3 -m unittest discover -s plugins/tests  # the built-in plugins
 | `docs/`                | User guides and reference, linked from the README         |
 | `vendor/xim-ctext/`    | A patched copy of the decoder GPUI's X11 input-method client uses, so input methods can't crash Lumen ([why](../vendor/xim-ctext/README-lumen.md)) |
 | `vendor/gpui/`         | A patched copy of GPUI that draws on X11 as soon as output arrives instead of waiting for the next frame, sets up the GPU in the background, and gives out a window's X11 id ([why](../vendor/gpui/README-lumen.md)) |
+
+## Screenshots
+
+`scripts/screenshots.py` takes the README's screenshots the same way every
+time, at twice the usual pixel density:
+
+```sh
+cargo build --release
+scripts/screenshots.py              # every scene
+scripts/screenshots.py palette find # just these
+scripts/screenshots.py --list       # what there is
+```
+
+It runs Lumen on a virtual X display (Xvfb), with Mesa's software Vulkan
+driver, so nothing appears on your screen and your own config, session and
+Lumen windows are left alone. Each scene starts a fresh Lumen in a demo home
+folder:
+
+- a clean prompt, and `USER=you`;
+- a small web shop project with a fixed git history;
+- stand-ins for `npm` that print the same test run and dev server every time;
+- the Pomodoro and todo plugins approved, with a seeded todo list.
+
+The scene lays out tabs and panes with `lumen msg`, presses keys through
+XTEST where it needs the palette or a plugin, and saves the window framed:
+rounded corners, a hairline edge and a soft shadow on a sunset gradient
+(lavender through rose and coral to sand). The main shot shows a whole 1280×800 workspace;
+the feature shots are close-ups, a 760×475 window so the feature fills it.
+The main shot goes to `assets/screenshot.png` and the rest to
+`assets/screenshots/`, including the tab strip twice: `tabs.png` tight, and
+`tabs-tile.png` on a backdrop the size of the close-ups.
+To add a scene, write a `scene_<name>` function and list it in `SCENES`.
+
+It needs Linux with `xvfb`, `imagemagick`, `python3-xlib`, `python3-pil`
+and `mesa-vulkan-drivers`. Copy the results into the website's `static/img/`
+when they change.
 
 ## Releasing
 
