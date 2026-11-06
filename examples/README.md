@@ -1,6 +1,6 @@
 # Scripting examples
 
-Small, working scripts built on [`lumen msg`](../README.md#scripting-lumen-msg)
+Small, working scripts built on [`lumen msg`](../docs/scripting.md)
 and the socket API. Copy them somewhere on your PATH and adapt them. They need
 `lumen` on your PATH (the installer puts it there), or set `LUMEN` to the binary,
 and most use [`jq`](https://jqlang.org) to read JSON.
@@ -23,5 +23,5 @@ commands and pickers, and draw panes of their own), see [`plugins/`](plugins/).
 `PYTHONPATH="$(lumen python-path)"`.
 
 `run-below.sh`, `git-titles.sh` and `pane_log.py` rely on
-[shell integration](../README.md#shell-integration) for command and directory
+[shell integration](../docs/shell-integration.md) for command and directory
 events.

@@ -231,7 +231,7 @@ pub fn check_action(name: &str) -> Result<Option<String>, String> {
         .min()
         .filter(|(d, _)| *d <= 3)
         .map(|(_, a)| format!("; did you mean \"{a}\"?"))
-        .unwrap_or_else(|| "; the actions are listed in the README".into());
+        .unwrap_or_else(|| "; the actions are listed in docs/config.md".into());
     Err(format!("unknown action \"{name}\"{hint}"))
 }
 
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(check_action("New-Tab").unwrap(), Some("new-tab".into()));
         assert_eq!(check_action("none").unwrap(), None);
         assert!(check_action("new-tb").unwrap_err().contains("did you mean \"new-tab\""));
-        assert!(check_action("frobnicate").unwrap_err().contains("README"));
+        assert!(check_action("frobnicate").unwrap_err().contains("docs/config.md"));
         assert!(check_action("tab-10").is_err());
     }
 

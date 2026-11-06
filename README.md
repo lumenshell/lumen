@@ -2,86 +2,59 @@
 
 # Lumen
 
-A GPU-rendered terminal for Linux and macOS, with tabs, split panes, shell
-integration and plugins you can write in any language. Built with Rust,
-[GPUI](https://gpui.rs) (Zed's GPU UI framework) and
-[`alacritty_terminal`](https://crates.io/crates/alacritty_terminal).
+A GPU-rendered terminal for Linux and macOS. It has tabs, split panes, shell
+integration, and plugins you can write in any language.
+
+It's a native app, not a webview: no Electron, no browser engine underneath.
+Every glyph is drawn straight to the GPU.
 
 <img src="assets/screenshot.png" alt="Lumen with four tabs and three panes: lumen info beside a pixel flame, a git log, a shell with a failed command marked in red, and a pomodoro countdown. The tabs carry badges and tints: a tomato countdown on the first, a blue web-1.staging badge, and 3 to do">
 
-## Features
+## Install
 
-- GPU-rendered terminal grid: truecolor, bold/italic, underline/undercurl,
-  strikethrough, wide (CJK) glyphs, colour emoji, configurable scrollback
-- Box-drawing, block and powerline characters drawn as shapes, so lines and
-  prompt segments join without gaps
-- Tabs in a custom title bar, with pane counts and inherited working directory.
-  A tab shows the title its program sets until you rename it (double-click the
-  tab, or Ctrl+, / ⌘,); **+** opens a tab and a tab's **×**
-  closes it with all its panes. Drag a tab along the bar to reorder it. Drag the
-  title bar to move the window and double-click it to maximize
-- A quick terminal that drops down from the top of the screen on a key you
-  press from any app, and hides again with the same key, its shells still
-  running (see [Quick terminal](#quick-terminal))
-- As many windows as you like (New Window, Ctrl+Shift+N / ⌘N, opens in the
-  current pane's folder). Closing a window's last pane closes the window;
-  Lumen quits when its last window closes
-- Split panes on a padded canvas: rounded frames, an accent focus halo, and
-  dimmed unfocused panes; Focus Mode zooms the active pane
-- Drag the gap between panes to resize a split; double-click it to even the split out
-- Your layout comes back next launch: every window, with its tabs, splits and
-  their sizes, each pane's working directory, which pane had focus, tab names
-  you gave, and the window's size, position and maximized state
-- Input methods for Chinese, Japanese and Korean, compose keys and dead keys,
-  with the text you're composing shown at the cursor
-- The kitty keyboard protocol, so programs such as Neovim and Helix can tell
-  Ctrl+I from Tab and Esc from Ctrl+[, and see key releases
-- A blinking cursor (or not: `cursor-blink`), and a see-through, blurred
-  background where the desktop supports it (`background-opacity`)
-- Command palette (fuzzy search over every action and theme)
-- Find in scrollback, with optional case-sensitive and regex matching
-- Keyboard select mode: move through the screen and scrollback with vi keys,
-  select and copy without the mouse (see [Keyboard select mode](#keyboard-select-mode))
-- `lumen info`: a neofetch-style summary of your system and this Lumen, beside
-  a flickering flame drawn in your theme's colours
-- Scriptable: `lumen msg` opens tabs and splits, types into panes, reads their
-  screens and streams events such as "command finished with exit 1" (see
-  [Scripting](#scripting-lumen-msg))
-- Built-in plugins to turn on from the Plugin Gallery: jump to recent folders,
-  search every command you've run (and rerun the last failure), switch git
-  branches, SSH to a host, open project layouts, build status in the tab title,
-  and a pomodoro timer
-- Plugins in any language: Lumen runs them, restarts them if they crash, and
-  lets them add palette commands, key bindings and pickers, draw panes of
-  their own, and put badges and colours on tabs, limited to the permissions
-  you approve. Python plugins get `lumen_plugin`, built in, with
-  nothing to install (see [Plugins](#plugins) and the [plugin guide](docs/plugins.md))
-- Shell integration for bash, zsh and fish: jump between commands, copy the last
-  command's output, a red mark beside commands that failed, and new panes that
-  open in the shell's directory (see [Shell integration](#shell-integration))
-- A desktop notification when a long command finishes while you're looking
-  elsewhere, and a green or red dot on its tab until you go back to it
-- Themes that recolour both the terminal and the chrome: Rosé Pine, Rosé Pine
-  Moon, Catppuccin Mocha, Tokyo Night, Rosé Pine Dawn (light)
-- Mouse selection (drag, double-click word, triple-click line, Shift+click to
-  extend), primary-selection copy and middle-click paste on Linux, bracketed paste
-- A scrollbar while you scroll, with a mark for every command (red for the
-  ones that failed): click a mark to jump to that command, or drag the bar.
-  It fades out when you stop; point at a pane's right edge to bring it back.
-  `scrollbar = false` turns it off
-- The wheel scrolls history, or in full-screen programs such as `less` and
-  `man` (which don't use the mouse) it moves through the text with arrow keys
-- Clickable links: hold Ctrl (⌘ on macOS) to underline URLs and OSC 8 hyperlinks
-  under the pointer, with the target shown at the bottom of the pane; click to
-  open. Plain-text URLs with common schemes open; OSC 8 links, whose target is
-  hidden behind other text, only open http, https and mailto
-- Mouse reporting for vim, tmux, htop and friends: clicks, drags, motion and the
-  wheel in X10, UTF-8 and SGR formats, plus focus in/out events. Hold Shift to
-  select text locally instead
-- Programs may set the clipboard (OSC 52, used by tmux and vim over SSH) but
-  can't read it
-- Bundled JetBrains Mono and Inter, so it looks the same everywhere
-- A commented `config.toml` that applies changes as soon as you save it
+```sh
+curl -fsSL https://lumenshell.dev/install | sh
+```
+
+It installs for your user, without sudo, on Linux (x86_64 and arm64) and
+macOS. Run it again to update.
+
+On macOS you can use Homebrew instead:
+
+```sh
+brew install --cask lumenshell/tap/lumen
+```
+
+To uninstall, pick a version, or build from source, see
+[Installing Lumen](docs/install.md).
+
+## What you get
+
+- **Tabs and split panes.** Drag tabs to reorder them and drag the gaps to
+  resize splits. Focus Mode zooms one pane. Every window, tab and split comes
+  back next launch.
+- **A quick terminal.** It drops down from the top of the screen on one key,
+  from any app, and hides again with its shells still running.
+  [More](docs/quick-terminal.md)
+- **Your shell, understood.** Jump between commands, copy the last command's
+  output, and spot failed commands by their red mark. Get a notification when
+  a long command finishes while you're elsewhere.
+  [More](docs/shell-integration.md)
+- **One palette for everything.** Ctrl+Shift+P (⌘⇧P) fuzzy-searches every
+  action, theme and plugin command.
+- **Select and copy without the mouse.** Move over the screen and scrollback
+  with vi keys. [More](docs/keyboard.md#keyboard-select-mode)
+- **Scripts that drive it.** `lumen msg` opens tabs and splits, types into
+  panes, reads their screens and streams events. [More](docs/scripting.md)
+- **Plugins in any language.** Seven come built in, from command history to a
+  pomodoro timer. [More](docs/builtin-plugins.md)
+- **Themes for the whole window.** Rosé Pine, Rosé Pine Moon, Catppuccin
+  Mocha, Tokyo Night and Rosé Pine Dawn recolour the terminal and the chrome
+  around it.
+
+It also handles CJK input methods, the kitty keyboard protocol, clickable
+links, mouse reporting for vim and tmux, and colour emoji. See
+[everything Lumen does](docs/features.md).
 
 ## Screenshots
 
@@ -108,503 +81,58 @@ countdown, a staging server, what's left to do.
 </tr>
 </table>
 
-## Install
+## The keys to know
 
-```sh
-curl -fsSL https://lumenshell.dev/install | sh
-```
+| Action              | Linux                | macOS            |
+|---------------------|----------------------|------------------|
+| Command palette     | Ctrl+Shift+P         | ⌘⇧P              |
+| New tab             | Ctrl+T               | ⌘T               |
+| Split right / down  | Ctrl+Shift+D / E     | ⌘D / ⌘⇧D         |
+| Close pane          | Ctrl+Shift+W         | ⌘W               |
+| Move between panes  | Ctrl+Arrows          | ⌘Arrows          |
+| Find in scrollback  | Ctrl+Shift+F         | ⌘F               |
+| Prev / next command | Ctrl+Shift+↑ / ↓     | ⌘⇧↑ / ⌘⇧↓        |
 
-This installs the latest release for your user, without sudo. On Linux
-(x86_64 and arm64) the `lumen` command goes in `~/.local/bin`, with a menu
-entry and icon. On macOS, `Lumen.app` goes in Applications and `lumen` is
-linked into `~/.local/bin`. Run it again to update.
-
-Set `LUMEN_VERSION=0.2.0` to install a particular version, or `LUMEN_BIN_DIR`
-to put the command somewhere else. To remove Lumen (your settings stay):
-
-```sh
-curl -fsSL https://lumenshell.dev/install | sh -s -- --uninstall
-```
-
-On macOS you can use Homebrew instead:
-
-```sh
-brew install --cask lumenshell/tap/lumen
-```
-
-The macOS app isn't notarized by Apple yet, so the first time you open it,
-macOS may say it can't check it for malware: right-click Lumen.app, choose
-**Open**, then **Open** again (or allow it in System Settings > Privacy & Security).
-
-Every release on the [releases page](https://github.com/lumenshell/lumen/releases)
-also has the files to install by hand: `lumen-linux-<arch>.tar.gz` (laid out
-like a prefix: `bin/`, `share/`), `lumen-macos.zip` (a universal Lumen.app),
-and `SHA256SUMS`. Or build it yourself, below.
-
-## Build
-
-```sh
-# Debian/Ubuntu build dependencies (libnotify-bin is for notifications)
-sudo apt install libxkbcommon-x11-dev libxcb1-dev libfreetype-dev libfontconfig-dev \
-                 libwayland-dev libvulkan1 libnotify-bin
-
-cargo run --release
-
-# or install it, which also puts `lumen msg` on your PATH (~/.cargo/bin)
-cargo install --locked --path .
-```
-
-To try the latest changes for real, `./install.sh` does it all: it builds this
-checkout, installs it, adds the app menu entry and icon on Linux (or
-`~/Applications/Lumen.app` on macOS), and says which commit you're on.
-`./install.sh --restart` also closes the running Lumen and starts the new one
-(closing the shells open in it).
-
-`lumen` opens a window; `lumen msg ...` controls a running one (see
-[Scripting](#scripting-lumen-msg)); `lumen --help` lists both.
-
-**Linux app menu and icon:** after `cargo install`, run
-`scripts/install-linux.sh` to add Lumen to your app menu with its icon, for
-your user only. The taskbar and Alt+Tab switcher then show the icon too (they
-match Lumen's windows to the menu entry); restart Lumen if it was open.
-`scripts/install-linux.sh --uninstall` takes it out again. Packagers: the
-entry is `assets/linux/lumen.desktop` and the icons are a `hicolor` theme
-tree in `assets/icons/linux/`.
-
-**macOS:** you only need Xcode command-line tools. `scripts/bundle-macos.sh`
-builds `target/release/Lumen.app` with Lumen's icon for the Dock and app
-switcher; drag it into Applications. Its binary is
-`Lumen.app/Contents/MacOS/lumen`, which you can link onto your PATH for
-`lumen msg`.
-
-## Shortcuts
-
-| Action             | Linux                | macOS            |
-|--------------------|----------------------|------------------|
-| Command palette    | Ctrl+Shift+P         | ⌘⇧P              |
-| New tab            | Ctrl+T / Ctrl+Shift+T | ⌘T              |
-| New window         | Ctrl+Shift+N         | ⌘N               |
-| Split right / down | Ctrl+Shift+D / E     | ⌘D / ⌘⇧D         |
-| Close pane         | Ctrl+Shift+W         | ⌘W               |
-| Focus pane         | Ctrl+Arrows or Alt+Shift+Arrows | ⌘Arrows or ⌘⌥Arrows |
-| Next pane          | Ctrl+Shift+]         | ⌘]               |
-| Focus Mode (zoom)  | Ctrl+Shift+Enter     | ⌘⇧Enter          |
-| Next tab           | Ctrl+Tab / Ctrl+PgDn | ⌘⇧]              |
-| Previous tab       | Ctrl+Shift+Tab / Ctrl+PgUp | ⌘⇧[        |
-| Go to tab N        | Ctrl+1…9 or Alt+1…9  | ⌘1…9             |
-| Rename tab         | Ctrl+, or double-click the tab | ⌘, or double-click |
-| Cycle theme        | Ctrl+Shift+Y         | ⌘⇧Y              |
-| Font size          | Ctrl+= / Ctrl+- / 0  | ⌘= / ⌘- / ⌘0     |
-| Copy / paste       | Ctrl+Shift+C / V, Shift+Insert | ⌘C / ⌘V |
-| Scroll a page      | Shift+PgUp / PgDn    | Shift+PgUp / PgDn|
-| Open link          | Ctrl+click           | ⌘+click          |
-| Find in scrollback | Ctrl+Shift+F         | ⌘F               |
-| Prev / next command | Ctrl+Shift+↑ / ↓    | ⌘⇧↑ / ⌘⇧↓        |
-| Copy last output   | Ctrl+Shift+O         | ⌘⇧O              |
-| Keyboard select mode | Ctrl+Shift+Space   | ⌘⇧Space          |
-| Quit               | Ctrl+Shift+Q         | ⌘Q               |
-
-In the find bar, Enter or ↑ goes to the older match and Shift+Enter or ↓ to
-the newer one. Alt+C toggles case-sensitive matching (otherwise case is ignored
-unless the query has a capital letter), Alt+R toggles regular expressions, and
-Esc closes it.
-
-The command jumps and Copy last output need [shell integration](#shell-integration).
-
-The command palette searches every action above plus **Open Config File**, one
-**Theme:** entry per theme, the commands plugins add, **Plugin Log:** (or
-**Allow Plugin:**) for each plugin, **Plugin Gallery** and **Reload Plugins**, showing each
-action's current shortcut. Type
-to filter (Ctrl+U clears it), ↑/↓ or Tab to choose (the list scrolls), Enter to
-run, Esc or a click outside to close.
-Focus left/right/up/down and Go to tab N are keyboard-only.
-
-Rename Tab (Ctrl+, / ⌘, or double-click a tab) asks for a name in the palette,
-filled in with the name you gave it, if any. Enter renames it, Ctrl+U clears the
-line, Esc keeps the old name, and an empty name goes back to the title the program sets. Names are saved with
-the session; `lumen msg set-title` sets the same name from a script.
-
-Every shortcut can be changed in the config (see [Key bindings](#key-bindings))
-except Shift+PgUp/PgDn, Ctrl+click and the keys inside the find bar, palette
-and keyboard select mode.
-
-## Quick terminal
-
-A Lumen window that drops down from the top of the screen when you press a
-key, from any app, and goes away when you press it again. Hiding it only
-hides it: what's running in it keeps going, so it's back exactly as you left
-it. It has tabs, splits and everything else a Lumen window has.
-
-There are two ways to give it a key:
-
-- **In your desktop's keyboard settings** (works everywhere, including
-  Wayland): add a custom shortcut that runs `lumen msg quick-terminal`. In
-  Cinnamon that's System Settings > Keyboard > Shortcuts > Custom Shortcuts.
-  Lumen has to be running (add it to your startup applications).
-- **In `config.toml`** (X11): `quick-terminal-key = "f12"`, or any key such as
-  `"ctrl-grave"` or `"super-space"`. Lumen catches it from every app while
-  it's running. If another app already uses the key, the banner says so.
-
-On X11 it opens full width at the top of the monitor the pointer is on,
-`quick-terminal-height` of its height (0.45 by default), above other
-windows, on every workspace, and not in the taskbar or the Alt+Tab
-switcher. Pressing the key while it's shown but behind another window brings
-it to the front; while it's in front, hides it. With
-`quick-terminal-autohide = true` it also hides when you click into another
-window. Closing its last pane closes it; the next press opens a new one. It
-isn't saved in the session, and while it's open Lumen keeps running even
-with no other windows (Quit stops it). **Toggle Quick Terminal** in the
-palette does the same, as does the `quick-terminal` action in `[keys]`.
-
-On Wayland and macOS, apps can't place themselves at the top of the screen,
-so there it's an ordinary window that the key brings forward and minimizes.
-
-## Keyboard select mode
-
-Ctrl+Shift+Space (⌘⇧Space) puts a pane into select mode: a second, accent
-coloured cursor you move with vi keys over the screen and scrollback, while a
-hint at the bottom of the pane shows what the next keys do. Nothing you type
-reaches the shell until you leave.
-
-| Keys | Move |
-|---|---|
-| `h` `j` `k` `l` or arrows | Left, down, up, right |
-| `w` `b` `e` | Next word, previous word, end of word (`W` `B` `E`: words split only at spaces) |
-| `0` `^` `$` (or Home, End) | Start of line, first non-blank, end of line |
-| `H` `M` `L` | Top, middle, bottom of the screen |
-| `gg` `G` | Oldest line of history, last line of output |
-| `Ctrl+U` `Ctrl+D`, `Ctrl+B` `Ctrl+F` (or PgUp, PgDn) | Half a page, a page, up or down |
-| `{` `}`, `%` | Previous or next blank line, matching bracket |
-| `[` `]` | Previous or next command's prompt (needs [shell integration](#shell-integration)) |
-| `/` `?`, then `n` `N` | Find (down or up) with the find bar, then the next or previous match |
-
-A number before a move repeats it: `5j`, `3w`, `2[`.
-
-| Keys | Select and copy |
-|---|---|
-| `v`, `V`, `Ctrl+V` | Start a selection of characters, whole lines or a block; the same key again ends it |
-| `y` or Enter | Copy the selection and leave |
-| `Y` | Copy the line under the cursor and leave |
-| Esc | Drop the selection; with none, leave (`q`, `i` and Ctrl+C also leave) |
-
-Clicking moves the cursor there, and a mouse selection can be copied with `y`
-too. Copying also fills the primary selection on Linux, so middle-click pastes
-it. Leaving scrolls back to the bottom.
+The rest are in [Keyboard](docs/keyboard.md). You can change any of them in
+the config.
 
 ## Config
 
-Settings live in `~/.config/lumen/config.toml`, created with comments on first
-run (open it from the command palette with **Open Config File**). Changes apply
-as soon as you save; no restart needed.
+Settings live in `~/.config/lumen/config.toml`. Lumen writes it, with
+comments, the first time it runs, and applies your changes the moment you
+save.
 
 ```toml
-theme = "Rosé Pine"            # or "Rosé Pine Moon", "Catppuccin Mocha", "Tokyo Night", "Rosé Pine Dawn"
-font-family = "JetBrains Mono" # any installed monospace font; JetBrains Mono is built in
+theme = "Tokyo Night"
 font-size = 14
-line-height = 1.35             # multiple of the font size
-padding = 12                   # pixels between a pane's edge and its text
-scrollback = 10000             # lines of history per pane
-scrollbar = true               # a scrollbar with command marks while you scroll; false: none
-cursor-style = "block"         # "block", "beam" or "underline", until a program picks one
-cursor-blink = true            # false: the cursor never blinks, even if a program asks
-background-opacity = 1         # 0.3 to 1; below 1 the desktop shows through (needs a compositor on Linux)
-shell = "/usr/bin/fish --login" # program for new panes; defaults to $SHELL
-shell-integration = true       # mark prompts and commands in bash, zsh and fish
-quick-terminal-key = "f12"     # (X11) a key Lumen catches from any app for the quick terminal; "" for none
-quick-terminal-height = 0.45   # its height, as a share of the screen
-quick-terminal-autohide = false # hide it when you click into another window
-notify-after = 10              # seconds a command must run to notify when it ends; 0 = off
-socket-api = true              # let scripts control Lumen with `lumen msg`
-plugins = ["recent-dirs"]      # built-in plugins to run (see Plugins); the Plugin Gallery edits this
-```
+background-opacity = 0.9
 
-Delete a line to go back to its default. Mistakes (a typo'd key, a bad value, a
-font that isn't installed) are listed in a banner at the bottom of the window
-while the rest of the file still applies; a file that can't be parsed at all
-keeps the previous settings. Switching theme or zooming the font from inside
-Lumen edits just those keys and keeps your comments.
-
-`shell` is split on spaces, so an argument can't contain a space (wrap it in a
-script instead). `shell` and `shell-integration` apply to new panes, and
-turning `socket-api` on takes a restart (turning it off applies at once);
-everything else applies to open ones too. Older
-versions used `~/.config/lumen/config`; its values are carried over the first
-time `config.toml` is created.
-
-## Key bindings
-
-Change shortcuts in a `[keys]` table at the end of `config.toml`. Each line
-binds a key to an action by name, and applies as soon as you save:
-
-```toml
 [keys]
-ctrl-alt-t = "new-tab"      # an extra key for New Tab; Ctrl+Shift+T still works
-ctrl-tab = "none"           # free Ctrl+Tab for the desktop or the shell
-ctrl-t = "none"             # give Ctrl+T back to the shell (bash swaps letters, fzf finds files)
-ctrl-left = "none"          # give Ctrl+←/→ back to the shell for jumping by word
-ctrl-right = "none"         # (Alt+Shift+arrows still move between panes)
-"ctrl-=" = "increase-font"  # keys with symbols need quotes
+ctrl-t = "none"   # give Ctrl+T back to the shell
 ```
 
-A key you list replaces whatever it did by default; `"none"` frees it, so it
-goes to the program in the terminal instead. An action's other default keys
-keep working, so to move one, bind the new key and set the old one to
-`"none"`. Keys are case-insensitive and written like `ctrl-shift-t`, `alt-1`,
-`cmd-k` (macOS), `f5`, `shift-insert` or `ctrl-pageup`. On Linux a Shift
-plus a symbol is matched as the symbol it types on a US layout, so
-`ctrl-shift-]` and `ctrl-}` are the same key. Multi-key sequences
-such as `ctrl-a n` aren't supported yet. Typos are listed in the banner, with a
-suggestion when an action name is close.
+Every setting and key binding is in [Config](docs/config.md).
 
-Plugin commands can be bound too, as `plugin:<plugin>:<command id>`, e.g.
-`alt-g = "plugin:git-branch:switch"`; that also overrides a key the plugin
-asked for.
+## Scripting
 
-Actions: `new-tab`, `new-window`, `quick-terminal`, `close-pane`, `split-right`, `split-down`, `next-tab`,
-`prev-tab`, `tab-1` … `tab-9`, `rename-tab`, `next-pane`, `focus-left`, `focus-right`,
-`focus-up`, `focus-down`, `toggle-zoom`, `command-palette`, `next-theme`,
-`increase-font`, `decrease-font`, `reset-font`, `copy`, `paste`, `find`,
-`prev-command`, `next-command`, `copy-last-output`, `select-mode`, `quit`.
-
-## Shell integration
-
-When a pane runs bash, zsh or fish, Lumen loads a small script into it that
-marks where each prompt, command and its output begins, and reports the
-shell's directory. That gives you:
-
-- **Jump between commands** with Ctrl+Shift+↑ / ↓ (⌘⇧↑ / ⌘⇧↓). The prompt you
-  jumped to stays highlighted until you type; jumping past the newest one
-  returns to the bottom.
-- **Copy the last command's output** with Ctrl+Shift+O (⌘⇧O). It's selected
-  too, so you can see what was copied.
-- **Failure marks**: a bar in the left margin beside each prompt, red if the
-  command run there failed (with its prompt's line tinted red too) and grey
-  if it succeeded. The scrollbar marks every command the same way, so you can
-  find failures far back in the history and click to jump to them.
-- **Notifications for long commands**: when a command that ran for at least
-  `notify-after` seconds (10 by default) finishes and you're not looking at
-  its pane (another pane or tab is focused, or Lumen isn't the active window),
-  you get a desktop notification such as "✗ make test — Failed with exit 2
-  after 3m 12s · ~/proj". If its pane isn't focused, its tab also gets a dot,
-  green for success and red for failure, until you visit it. On Linux this
-  uses `notify-send` (`sudo apt install libnotify-bin`); on macOS,
-  Notification Center. Set `notify-after = 0` to turn it off.
-- **New panes open where you are**, using the directory the shell reports. This
-  works on macOS too; without it, Lumen reads it from `/proc` on Linux only.
-
-Your own startup files (`~/.bashrc`, `~/.zshrc`, `~/.config/fish`) still load
-as usual. The scripts are copied to `~/.local/share/lumen/shell-integration`
-(`$XDG_DATA_HOME`, or `~/Library/Application Support/lumen/shell-integration`
-on macOS) and loaded with `--rcfile`
-for bash, `ZDOTDIR` for zsh and `XDG_DATA_DIRS` for fish.
-
-It doesn't load for other shells, or for bash started as a login shell
-(`bash -l`), because `--rcfile` doesn't apply there. To use it in those cases,
-or on a remote machine over SSH, source the script yourself: add
-`source /path/to/lumen.bash` to the end of `~/.bashrc`, source `lumen.zsh` from
-`~/.zshrc`, or copy `lumen.fish` into `~/.config/fish/conf.d/`. The scripts are
-in [`shell-integration/`](shell-integration). Directories reported by a remote
-host are ignored, so new panes still open locally.
-
-The marks can't be faked by what a command prints. Each pane gets a random
-key in `LUMEN_MARK_KEY`, the scripts add it to every mark, and once a pane's
-shell has used it, marks without it are dropped. So `cat`ing a file or
-visiting a hostile host can't make up a prompt, a command and its exit status
-(which plugins, Command History and notifications would otherwise believe).
-The shell's directory is only taken right after its own prompt mark, not from
-a background job printing at the prompt.
-
-That also means a shell started inside another, such as one on a remote host
-over SSH, isn't marked unless it has the key. For a host you trust, send it:
-add `SendEnv LUMEN_MARK_KEY` for the host in `~/.ssh/config` and
-`AcceptEnv LUMEN_MARK_KEY` to the server's `sshd_config`. A shell Lumen didn't
-set up (another shell, or `bash -l`) can still use plain marks without a key.
-
-Set `shell-integration = false` in the config to turn it off.
-
-## System info (`lumen info`)
-
-`lumen info` prints a flame in your theme's colours beside your OS, kernel,
-uptime, shell, CPU, GPU, memory and public IP, and Lumen's own details: version and
-window size, theme, font, whether shell integration is on, and which plugins
-are set up. Below them are the terminal's 16 colours. It takes a few
-milliseconds and needs no other programs (GPU names come from `lspci` or
-NVIDIA's driver when they're there).
-
-The public IP comes from asking [api.ipify.org](https://www.ipify.org) (over
-plain HTTP, and shown only if the answer is an IP address). The rest prints
-at once and the IP fills in when it arrives, or reads "unavailable" when
-offline. `--no-ip` skips it, so nothing leaves your machine.
-
-In a terminal the flame burns until you press any key (the key still reaches
-your shell; Ctrl+C works too). `--brief` burns for two seconds and then
-settles, which suits your shell's startup: add `lumen info --brief` to your
-`~/.bashrc`, `~/.zshrc` or `config.fish` to see it in every new pane.
-`--still` doesn't animate at all, and it doesn't animate when the output
-wouldn't fit on screen. Piped or redirected,
-or with `NO_COLOR=1`, it prints plain text.
-
-## Scripting (`lumen msg`)
-
-Lumen can be driven from scripts, shell aliases and plugins. `lumen msg`
-is the same `lumen` binary, so it needs to be on your PATH; the installer,
-Homebrew and `cargo install` all put it there. Inside a Lumen pane, `lumen msg` talks to that Lumen and acts on that pane by default;
-from anywhere else it finds the most recently started Lumen. From Python,
-`lumen_plugin` does the same with less ceremony; see
-[Scripts outside Lumen](docs/plugins.md#scripts-outside-lumen).
+Inside a Lumen pane, `lumen msg` acts on that pane:
 
 ```sh
-lumen msg list                          # tabs and panes with their ids
 p=$(lumen msg split right --run 'npm run dev')   # prints the new pane's id
-lumen msg split down --pane "$p" --cwd ~/api --run 'cargo watch -x test' --no-focus
-lumen msg send-text --pane "$p" 'q\n'   # type into a pane (\n is Enter)
-lumen msg read-screen --pane "$p" --lines 20
-lumen msg set-title "Servers"           # this pane's tab; no title resets it
-lumen msg tab-style --badge prod --color red   # mark the tab; --clear removes it
-lumen msg action toggle-zoom            # any action from Key bindings
-lumen msg notify "Deploy done" "web-3 is live"
-lumen msg watch command-finished        # events as JSON lines, until Ctrl+C
+lumen msg tab-style --badge prod --color red
+lumen msg watch command-finished                 # events as JSON lines
 ```
 
-| Command | Does |
-|---|---|
-| `list [--json]` | Every window's tabs and panes: ids, titles, directories, sizes, last exit status |
-| `new-tab [--cwd DIR] [--run CMD]` | Open a tab; prints its pane id |
-| `split [right\|down] [--pane ID] [--cwd DIR] [--run CMD] [--size N] [--no-focus]` | Split a pane; prints the new pane id. `--size` is the new pane's share: a fraction (`0.3`) or rows/columns (`12`) |
-| `focus [ID]`, `close [ID]` | Show and focus, or close, a pane |
-| `send-text [--pane ID] TEXT` | Type text; `\n`, `\r`, `\t`, `\e` and `\\` are understood |
-| `read-screen [--pane ID] [--lines N]` | Print the screen, or the last N lines including history |
-| `set-title [--pane ID] [TITLE]` | Name a tab; without TITLE the program's title is shown again |
-| `move-tab [--pane ID] N` | Move the pane's tab to position N in its window (1 is first) |
-| `tab-style [--pane ID] [--badge TEXT] [--short TEXT] [--color COLOR] [--clear]` | Put a short badge beside the tab's title, tint the tab (`red`, `green`, `yellow`, `blue`, `magenta`, `cyan` from your theme, or `#rrggbb`), or `--clear` both. `--short` (up to 8 characters) is shown instead of the badge when the tab is too narrow for it |
-| `notify TITLE [BODY]` | Desktop notification (`notify-send` on Linux) |
-| `quick-terminal` | Show the [quick terminal](#quick-terminal), or hide it if it's in front |
-| `action NAME [--pane ID]` | Run an action such as `split-right` or `find` |
-| `watch [EVENT...]` | Stream events (all of them, or the ones named) |
-| `call METHOD [JSON]` | Send any request and print the raw result |
-
-`--run` types the command into the new pane's shell, so the shell stays open
-after it finishes. A new pane starts in the directory of the pane it was split
-from (or the current one, for tabs) unless `--cwd` says otherwise. Tab titles
-and badges set this way aren't kept between sessions.
-
-More complete scripts (a project layout, run-and-wait, git branch tab titles,
-broadcasting, grabbing another pane's output, and a Python client using the
-socket directly) are in [`examples/`](examples/).
-
-For example, a notification whenever a command fails in any pane (needs
-[`jq`](https://jqlang.org)):
-
-```sh
-lumen msg watch command-finished |
-  jq --unbuffered -r 'select(.exit != 0) | "\(.command): exit \(.exit)"' |
-  while read -r msg; do lumen msg notify "Command failed" "$msg"; done
-```
-
-### Events
-
-| Event | Fields | When |
-|---|---|---|
-| `pane-opened` / `pane-closed` | `pane` | A pane starts or closes |
-| `focus-changed` | `pane` | Another pane gets keyboard focus |
-| `title-changed` | `pane`, `title` | A program changes its title |
-| `cwd-changed` | `pane`, `cwd` | The shell changes directory\* |
-| `bell` | `pane` | A program rings the bell |
-| `command-started` | `pane` | A command starts running\* |
-| `command-finished` | `pane`, `command`, `exit`, `duration_ms` | A command finishes: what was typed, its exit status and how long it ran\* |
-
-\* Needs [shell integration](#shell-integration).
-
-`focus-changed` is sent when the window next redraws, so it can trail the
-change slightly, and not at all while the window is minimized.
-
-### Protocol
-
-`lumen msg` is a thin client; anything that can open a Unix socket can do the
-same. Each Lumen listens on `lumen-<pid>.sock` in `$XDG_RUNTIME_DIR/lumen`
-(else `$TMPDIR/lumen-<uid>`), and every pane gets its path in `LUMEN_SOCKET`
-and its own id in `LUMEN_PANE`. Messages are [JSON-RPC 2.0](https://www.jsonrpc.org/specification),
-one per line:
-
-```sh
-echo '{"jsonrpc":"2.0","id":1,"method":"split","params":{"direction":"down","run":"htop"}}' |
-  socat - UNIX-CONNECT:"$LUMEN_SOCKET"
-# {"jsonrpc":"2.0","id":1,"result":{"pane":4294967299}}
-```
-
-Methods: `hello` (protocol version, Lumen version, actions and events),
-`show-picker` (`items`: a list of `{id, label, detail}`, `placeholder`, and
-`message`, text shown under the input; answers
-`{"id": ...}` with the choice, or `null` if closed),
-`list`, `new-tab` (`cwd`, `run`, `plugin_pane`), `split` (`pane`, `direction`,
-`cwd`, `run`, `focus`, `size`, `plugin_pane`), `focus`, `close`, `send-text`
-(`pane`, `text`), `read-screen` (`pane`, `lines`), `set-title` (`pane`,
-`title`), `set-tab-style` (`pane`, `badge`, `short_badge`, `color`; a field
-left out stays, `null` clears it, and a new `badge` drops the old
-`short_badge`; a plugin's go when it stops, a socket client's stay), `move-tab` (`pane`, `index`, counting from 0), `write`
-(`pane`, `text`; plugin panes only), `notify` (`title`, `body`),
-`run-action` (`action`, `pane`), `quick-terminal` (no params; answers
-`{"shown": true}` or `false`) and `subscribe` (`events`, a list; omit for
-all). `pane` is optional everywhere and means the focused pane, in the active
-window. `list` covers every window: each tab has a `window` (0 for the first
-window opened), `window_active` and `quick` (it's in the quick terminal),
-and its `index` counts within its window.
-After
-`subscribe`, the connection also receives events as notifications:
-`{"jsonrpc":"2.0","method":"event","params":{"event":"bell","pane":4294967298}}`.
-
-**Plugin panes:** `"plugin_pane": true` on `new-tab` or `split` opens a pane
-that runs no program: the connection that opened it draws it with `write`
-(text with escape sequences, as a program would print; nobody else may write
-to it), and is sent what happens to it as `pane` notifications:
-`{"method":"pane","params":{"event":"input","pane":…,"text":"q"}}` for what's
-typed (keys arrive as a terminal sends them, so ↑ is `\u001b[A`),
-`"resize"` with `cols` and `rows` (also once it first has a size), and
-`"closed"`. It closes when the connection does, isn't kept in the session,
-and its tab is named after the plugin (`script` for a socket client) until
-it sets a title. In `list`, such panes have `"plugin_pane": true`, and tabs
-show their `badge` and `color`.
-Errors use the standard JSON-RPC codes, with `-32000` for requests that can't
-be carried out (such as an unknown pane). The protocol version (`hello`) goes
-up only when a change could break existing clients.
-
-The socket and its directory are readable only by you. Anything running as
-you can use it to type into panes and read their screens, so turn it off with
-`socket-api = false` if that's a concern.
+[Scripting](docs/scripting.md) covers every command, the events and the
+JSON-RPC protocol. [`examples/`](examples/) has ready-made scripts.
 
 ## Plugins
 
-### Built-in plugins
+Turn on the built-in plugins from **Plugin Gallery** in the palette. Each one
+shows what it does and what it's allowed to do before you approve it.
 
-Lumen comes with plugins that are off until you turn them on: choose **Plugin
-Gallery** in the palette, pick one to see what it does and what it's allowed
-to do, and choose **Turn on**. Choosing it there is your approval; it starts at
-once and whenever Lumen opens. They're listed under `plugins` in config.toml,
-so they travel with your dotfiles (a name added there by hand still asks for
-approval the first time).
-
-| Plugin | What it does | Permissions |
-|---|---|---|
-| **Recent Directories** (`recent-dirs`) | Remembers the folders your shells visit. **Go to Recent Directory** (Ctrl+Shift+J, ⌘⇧J) lists them, most used and most recent first, and `cd`s the pane to the one you pick (or opens it in a new tab if the pane is busy). | `input`, `panes` |
-| **Command History** (`command-history`) | Keeps every command from every pane and session with its exit status, duration and folder. **Search Command History** (Ctrl+Shift+H, ⌘⇧H) types the one you pick without pressing Enter; **Rerun Last Failed Command** (Ctrl+Shift+R, ⌘⇧R) shows the last failure and its folder and, once you confirm, runs it again there; **Clear Command History** forgets it all. Commands starting with a space aren't kept. | `screen`, `input` |
-| **Switch Git Branch** (`git-branch`) | Alt+B lists the branches of the pane's repository, newest first, and switches to the one you pick. | `input` |
-| **SSH to Host** (`ssh-hosts`) | Ctrl+Shift+S (⌘⇧S) lists the hosts in `~/.ssh/config` (and files it `Include`s) and opens the one you pick in a new tab named after it. | `panes` |
-| **Project Layouts** (`project-layout`) | Ctrl+Shift+L (⌘⇧L) finds `.lumen-layout.toml` in the pane's folder or above, shows you every command it would run, and opens its tab and splits ([format](plugins/project-layout/main.py)). | `panes` |
-| **Build Status** (`build-status`) | When a build or test (`cargo test`, `make`, `npm test`, `pytest`, …) finishes, the tab title shows how it went, like `✓ cargo test · 12s`, until the next command. Leaves tabs you've named alone. | `screen`, `panes` |
-| **Pomodoro Timer** (`pomodoro`) | **Start Pomodoro** asks how long (25, 50 or 15 minutes of focus), then opens a strip under the pane with a big countdown. The tab shows it too, tinted red while you focus and green on a break. Breaks start by themselves, with every fourth a long one; the next session waits for you. In the timer: Space pauses, S skips, R restarts, +/- change a minute, Q closes. Counts today's sessions. | `panes` |
-
-Most of them need [shell integration](#shell-integration) to know folders and
-commands (the Pomodoro Timer doesn't). Their data (history, folders) is kept in
-`~/.local/state/lumen/plugin-data/`, readable only by you. A folder of your own
-in the plugins folder with the same name runs instead of the built-in one, so
-you can copy one from [`plugins/`](plugins/) and change it.
-
-### Writing plugins
-
-A plugin is a program in its own folder under `~/.config/lumen/plugins/`
-(`$XDG_CONFIG_HOME/lumen/plugins`), written in any language. For Python,
-Lumen comes with `lumen_plugin`, which needs no installing; see the
-[plugin guide](docs/plugins.md) to write one in a few lines:
+To write your own in Python, use `lumen_plugin`. It comes with Lumen, so
+there's nothing to install:
 
 ```python
 from lumen_plugin import Plugin
@@ -620,195 +148,38 @@ async def switch(pane):
 app.run()
 ```
 
-The rest of this section is the protocol underneath, for other languages.
+- [Built-in plugins](docs/builtin-plugins.md): what each one does
+- [Plugin guide](docs/plugins.md): writing plugins in Python
+- [Plugin protocol](docs/plugin-protocol.md): writing them in any other language
 
-Lumen starts every plugin when it opens, restarts one that exits (waiting 1, 2, 5, 10, 30 and then
-60 seconds after quick crashes), and stops them all when it quits. Each runs
-as its own process, so a slow or crashing plugin can't freeze Lumen.
+## Two extras
 
-```
-~/.config/lumen/plugins/git-branch/
-├── plugin.toml
-└── main.py
-```
+`lumen info` shows your system beside a flickering flame in your theme's
+colours. `lumen campfire` fills a pane with a crackling fire, for cold coding
+sessions. See [Commands](docs/commands.md).
 
-```toml
-# plugin.toml
-description = "Switch git branches from the palette"
-version = "1.0.0"
-command = "python3 main.py"      # run in the plugin's folder; or a list: ["node", "my plugin.js"]
-permissions = ["input"]           # any of "panes", "input", "screen"; leave out if none
-```
+## Documentation
 
-A plugin talks to Lumen over its stdin and stdout, using the same
-JSON-RPC 2.0 messages as the [socket API](#protocol), one per line. Anything it
-writes to stderr goes to its log, which **Plugin Log: <name>** in the
-palette opens in a new tab. It should exit when stdin closes. It gets
-`LUMEN_PLUGIN` (its name), `LUMEN_PLUGIN_DIR` (its folder), `LUMEN_PLUGIN_DATA`
-(a folder for its own data, kept across updates and readable only by you) in
-its environment, and `PYTHONPATH` starting with the folder holding
-`lumen_plugin`.
-
-Besides the socket API's methods, plugins can:
-
-- **Add palette commands**: `register-command` with `id`, `title` and
-  optionally `keys` (e.g. `"alt-b"`). When you choose one, Lumen sends the
-  plugin `{"jsonrpc":"2.0","method":"command","params":{"id":"switch","pane":4294967298}}`,
-  where `pane` is the focused pane. Commands go away when the plugin stops.
-- **Ask you to choose**: `show-picker` opens the palette with the plugin's
-  items and answers with the one you pick (or `null` for Esc).
-- **Draw panes of their own**: a [plugin pane](#protocol) runs no program;
-  the plugin writes to it and gets its keys, for timers, dashboards, games or
-  anything else a terminal can show.
-- **Mark tabs**: `set-tab-style` puts a badge beside a tab's title and tints
-  it, for a countdown, a build that broke or a production server.
-
-**Permissions:** without any, a plugin can list panes, subscribe to events,
-show notifications, add commands and show pickers. Anything more is declared
-in `plugin.toml` and needs your approval, asked once in the palette the first
-time Lumen sees the plugin (and again if its permissions or command change):
-
-| Permission | Allows |
+| Guide | Covers |
 |---|---|
-| `panes` | `new-tab`, `split`, `focus`, `close`, `set-title`, `set-tab-style`, `move-tab`, `quick-terminal`, and drawing its own plugin panes (`write`) |
-| `input` | `send-text`, `run-action`: typing into panes, which can run any command |
-| `screen` | `read-screen`, and the command text in `command-finished` events |
-
-Your answers are kept in `~/.local/state/lumen/plugin-approvals.json`, outside
-the plugins folder so a plugin can't approve itself. Choose **Allow Plugin:
-<name>** in the palette to change your mind about one you refused; delete its
-entry from that file to be asked again. A plugin missing a permission gets a
-JSON-RPC error saying which one to add.
-
-Permissions limit what a plugin can do *through Lumen*; they aren't a sandbox.
-A plugin is a program running as you, so only install ones you trust, as you
-would any other program.
-
-When a plugin types into a shell with `send-text`, anything it didn't write
-itself (a branch or file name, text from the screen) must be quoted for the
-shell first, and must not contain control characters (a carriage return
-presses Enter) or invisible ones such as right-to-left overrides, which make
-a command look different from what it does. Git branch names, for one, can contain `$`, `;` and backticks.
-Quote in a way fish also understands: POSIX single quotes aren't enough there,
-since fish reads `\'` inside them as an escaped quote (`lumen_plugin.quote`
-handles this; so does avoiding the shell, e.g. `new-tab`'s `cwd`).
-
-Problems in a `plugin.toml` are listed in the banner at the bottom of the
-window; fix them and choose **Reload Plugins** (which also picks up new and
-changed plugins). To learn from: the built-in plugins in [`plugins/`](plugins/)
-(all Python), and [`examples/plugins/`](examples/plugins/): `hello` (bash
-speaking the raw protocol), `snippets` (a snippet library), `exit-colors`
-(tabs tinted by exit status), `todo` (a todo list in a plugin pane) and
-`snake` (a game).
-
-## Session
-
-Every window's pane layout is saved to `~/.local/state/lumen/session.json`
-(`$XDG_STATE_HOME`, or `~/Library/Application Support/lumen` on macOS) when you
-quit, and every few seconds while Lumen runs. Tab names you gave are kept.
-Shells start fresh in their saved directories; scrollback isn't kept. Closing a
-window drops it from the session, except the last one, which comes back next
-launch. If you `exit` every shell, the session is cleared and the next launch
-starts with one tab. Delete the file to reset.
-
-Each window reopens at its saved size and position, maximized or fullscreen if it
-was. If the saved spot would leave the title bar off every connected monitor
-(say a monitor was unplugged), the window manager places it instead. On Wayland,
-apps can't position their own windows, so only the size and maximized state
-come back.
-
-## Files and environment
-
-| What           | Where (Linux)                                   | macOS                                               |
-|----------------|-------------------------------------------------|-----------------------------------------------------|
-| Settings       | `~/.config/lumen/config.toml` (`$XDG_CONFIG_HOME`) | same                                             |
-| Session        | `~/.local/state/lumen/session.json` (`$XDG_STATE_HOME`) | `~/Library/Application Support/lumen/session.json` |
-| Shell scripts  | `~/.local/share/lumen/shell-integration/` (`$XDG_DATA_HOME`) | `~/Library/Application Support/lumen/shell-integration/` |
-| Menu entry and icons (`scripts/install-linux.sh`) | `~/.local/share/applications/lumen.desktop`, `~/.local/share/icons/hicolor/*/apps/lumen.*` | in `Lumen.app` |
-| Socket         | `$XDG_RUNTIME_DIR/lumen/lumen-<pid>.sock`       | `$TMPDIR/lumen-<uid>/lumen-<pid>.sock`              |
-| Plugins        | `~/.config/lumen/plugins/<name>/` (`$XDG_CONFIG_HOME`) | same                                         |
-| Plugin logs and approvals | `~/.local/state/lumen/plugins/<name>.log`, `plugin-approvals.json` | `~/Library/Application Support/lumen/…` |
-| Python package (`lumen python-path`) | `~/.local/state/lumen/python/lumen_plugin/` | `~/Library/Application Support/lumen/python/…` |
-| Built-in plugins (written out by Lumen) and plugin data | `~/.local/state/lumen/builtin-plugins/`, `plugin-data/<name>/` | `~/Library/Application Support/lumen/…` |
-
-Shells started by Lumen get `TERM=xterm-256color`, `COLORTERM=truecolor` and
-`TERM_PROGRAM=lumen`, so scripts can tell they're running in Lumen, plus
-`LUMEN_SOCKET` and `LUMEN_PANE` for [`lumen msg`](#scripting-lumen-msg) when the
-socket API is on, and `LUMEN_MARK_KEY` for the [shell
-integration](#shell-integration) marks.
-
-## Layout
-
-| File                   | What it does                                              |
-|------------------------|-----------------------------------------------------------|
-| `src/main.rs`          | Actions, fonts, window creation                           |
-| `src/keymap.rs`        | Default shortcuts and the `[keys]` table                  |
-| `src/api.rs`           | Socket API server: JSON-RPC requests and the event stream |
-| `src/cli.rs`           | The `lumen msg` command                                   |
-| `src/info.rs`          | The `lumen info` command                                  |
-| `src/plugins.rs`       | Plugin manifests, approvals, running and restarting them  |
-| `src/workspace.rs`     | Title bar, tabs, pane tree, focus halo, palette overlay   |
-| `src/terminal_view.rs` | Grid rendering, cursor, selection, mouse and key input    |
-| `src/pty.rs`           | Shell process + `alacritty_terminal` state and event loop; plugin panes, which a plugin draws instead |
-| `src/input.rs`         | Keystroke → escape-sequence encoding, legacy and kitty keyboard protocol |
-| `src/links.rs`         | URL and OSC 8 hyperlink detection                         |
-| `src/search.rs`        | Find in scrollback: matching, navigation, highlights      |
-| `src/scrollbar.rs`     | Scrollbar geometry: the thumb, command marks, and where a click or drag scrolls to |
-| `src/vi.rs`            | Keyboard select mode: keys, motions, selections           |
-| `src/glyphs.rs`        | Per-character glyph cache used to draw the grid           |
-| `src/boxdraw.rs`       | Box-drawing, block and powerline characters as shapes     |
-| `src/mouse.rs`         | Mouse event encoding for programs in mouse mode           |
-| `src/palette.rs`       | Command palette                                           |
-| `src/quick.rs`         | The quick terminal: opening, showing and hiding it, and its window hints (X11) |
-| `src/hotkey.rs`        | `quick-terminal-key`: parsing it and grabbing it from every app (X11) |
-| `src/theme.rs`         | Theme palettes and 256-colour table                       |
-| `src/settings.rs`      | Settings global and config file                           |
-| `src/session.rs`       | Saved windows and pane layouts (JSON) and loading/sanitising them |
-| `src/shell_integration.rs` | Loading the shell scripts; turning their OSC 133/7 marks into hidden links |
-| `src/marks.rs`         | Finding prompts, exit statuses and command output in the grid |
-| `shell-integration/`   | The bash, zsh and fish scripts                            |
-| `assets/icons/`        | The app icon: Linux `hicolor` sizes, macOS `Lumen.icns`, SVG sources |
-| `assets/linux/`        | The `.desktop` menu entry                                 |
-| `assets/screenshot.png` | The screenshot at the top of this README                |
-| `assets/screenshots/`  | The rest of the README's screenshots                    |
-| `install.sh`           | Build and install this checkout for testing (menu entry, icon, `Lumen.app`) |
-| `scripts/`             | `install-linux.sh` (menu entry and icons), `bundle-macos.sh` (`Lumen.app`), `package-linux.sh` (the Linux release tarball) |
-| `dist/install.sh`      | The installer `lumenshell.dev/install` serves: downloads a release, checks it and installs it |
-| `dist/homebrew/lumen.rb` | The Homebrew cask; each release fills it in and pushes it to `lumenshell/homebrew-tap` |
-| `.github/workflows/release.yml` | Builds Linux and macOS releases when a `v*` tag is pushed ([how to release](#releasing)) |
-| `examples/`            | Scripts using `lumen msg` and the socket API, and example plugins |
-| `python/`              | `lumen_plugin`, the Python package for plugins (built into Lumen), and its tests |
-| `plugins/`             | The built-in plugins (built into Lumen; turned on in the Plugin Gallery), and tests |
-| `docs/plugins.md`      | Guide and reference for writing plugins in Python         |
-| `vendor/xim-ctext/`    | A patched copy of the decoder GPUI's X11 input-method client uses, so input methods can't crash Lumen ([why](vendor/xim-ctext/README-lumen.md)) |
-| `vendor/gpui/`         | A patched copy of GPUI that draws on X11 as soon as output arrives instead of waiting for the next frame, sets up the GPU in the background, and gives out a window's X11 id ([why](vendor/gpui/README-lumen.md)) |
-
-## Tests
-
-```sh
-cargo test
-python3 -m unittest discover -s python/tests   # the Python package
-python3 -m unittest discover -s plugins/tests  # the built-in plugins
-```
-
-## Releasing
-
-1. Set `version` in `Cargo.toml` (and run `cargo build` so `Cargo.lock` follows), and commit.
-2. Tag it and push the tag: `git tag v0.2.0 && git push origin v0.2.0`.
-
-The [release workflow](.github/workflows/release.yml) builds Linux x86_64 and
-arm64 and a universal macOS app, publishes the release with `SHA256SUMS`, and
-updates the cask in `lumenshell/homebrew-tap` (it needs a `HOMEBREW_TAP_TOKEN`
-secret: a fine-grained token with Contents read and write on that repo). A tag
-with a hyphen, like `v0.2.0-rc.1`, makes a pre-release and leaves Homebrew
-alone. To try a build without releasing, run the workflow by hand from the
-Actions tab; the files are attached to the run.
+| [Installing Lumen](docs/install.md) | Installer options, Homebrew, release files, building from source |
+| [Features](docs/features.md) | Everything Lumen does |
+| [Keyboard](docs/keyboard.md) | All shortcuts, the find bar, the palette, keyboard select mode |
+| [Config](docs/config.md) | Every setting and key binding |
+| [Quick terminal](docs/quick-terminal.md) | Setting it up on X11, Wayland and macOS |
+| [Shell integration](docs/shell-integration.md) | What it adds, how it loads, using it over SSH |
+| [Commands](docs/commands.md) | `lumen info` and `lumen campfire` |
+| [Scripting](docs/scripting.md) | `lumen msg`, events and the socket protocol |
+| [Built-in plugins](docs/builtin-plugins.md) | The seven plugins in the Plugin Gallery |
+| [Plugin guide](docs/plugins.md) | Writing plugins in Python |
+| [Plugin protocol](docs/plugin-protocol.md) | Writing plugins in any language, and permissions |
+| [Files and session](docs/files.md) | Where Lumen keeps things, and its environment variables |
+| [Working on Lumen](docs/development.md) | Building, tests, source layout, releasing |
 
 ## Next up
 
 - Keyboard link hints
 - In-process plugin hooks
-- A quick-terminal dropdown
 - Ghostty theme file import
 
 ## License

@@ -1889,7 +1889,7 @@ impl Workspace {
     }
 
     /// Run one socket API request. Methods and their parameters are described
-    /// in the README.
+    /// in docs/scripting.md.
     pub fn handle_api(
         &mut self,
         caller: &api::Caller,

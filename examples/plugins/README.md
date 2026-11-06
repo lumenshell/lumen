@@ -2,7 +2,7 @@
 
 Copy (or symlink) a folder into `~/.config/lumen/plugins/` and choose
 **Reload Plugins** in the palette. See the [plugin guide](../../docs/plugins.md)
-for writing your own in Python, and [Plugins](../../README.md#plugins) for the
+for writing your own in Python, and [the plugin protocol](../../docs/plugin-protocol.md) for the
 protocol underneath.
 
 | Plugin | Language | Permissions | What it does |

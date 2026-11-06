@@ -3,7 +3,7 @@
 A plugin is a program Lumen starts and talks to. It can add commands to the
 palette (with their own keys), react to what happens in your panes, show
 pickers and notifications, open tabs and splits, type into panes and read
-them. Plugins can be written in any language (see [the protocol](../README.md#plugins));
+them. Plugins can be written in any language (see [the protocol](plugin-protocol.md));
 this guide covers `lumen_plugin`, the Python package that comes with Lumen.
 The [built-in plugins](../plugins/) are written with it and make good
 examples, from 40 lines (`git-branch`) to 200 (`command-history`).
@@ -88,7 +88,7 @@ async def finished(event):
 | `command-started` | `pane` | A command starts running\* |
 | `command-finished` | `pane`, `command`†, `exit`, `duration_ms` | A command finishes\* |
 
-\* Needs [shell integration](../README.md#shell-integration). † Only with the
+\* Needs [shell integration](shell-integration.md). † Only with the
 `screen` permission.
 
 `@app.on_start` runs a function (no arguments) once the plugin is connected,
@@ -227,7 +227,7 @@ A plugin is a program running as you.
 ## Scripts outside Lumen
 
 The same package drives Lumen from a script in a pane, a cron job or another
-program, through Lumen's [socket](../README.md#protocol). Scripts don't get
+program, through Lumen's [socket](scripting.md#protocol). Scripts don't get
 commands (those are for plugins), and they aren't held to permissions (the
 socket is yours alone; the package only connects through a folder that's
 private to you, as Lumen makes it). Pass `run` an async function for a one-off script; it
