@@ -84,11 +84,74 @@ jobs:
             target/aarch64-apple-darwin/release/lumen \
             target/x86_64-apple-darwin/release/lumen
           scripts/bundle-macos.sh --no-build
-          # Ad-hoc signature: not a Developer ID, so Gatekeeper still asks on
-          # first launch, but Apple Silicon needs the bundle signed to run it.
-          codesign --force --deep --sign - target/release/Lumen.app
+      # With the MACOS_* secrets, the app is signed with the Developer ID and
+      # notarized by Apple, so it opens without a Gatekeeper warning. Without
+      # them it gets an ad-hoc signature: Apple Silicon needs some signature to
+      # run it, but Gatekeeper blocks a downloaded copy on first launch.
+      #
+      #   MACOS_CERT_P12       the Developer ID Application certificate and key, as a base64 .p12
+      #   MACOS_CERT_PASSWORD  the .p12's password
+      #   MACOS_NOTARY_KEY     an App Store Connect API key (.p8), base64
+      #   MACOS_NOTARY_KEY_ID  that key's ID
+      #   MACOS_NOTARY_ISSUER  the Issuer ID shown above the keys list
+      - name: Sign and notarize Lumen.app
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
+        run: |
+          app=target/release/Lumen.app
           mkdir -p out
-          ditto -c -k --keepParent target/release/Lumen.app out/lumen-macos.zip
+          if [ -z "$CERT_P12" ]; then
+            echo "::warning::No MACOS_CERT_P12 secret, so Lumen.app has only an ad-hoc signature and isn't notarized"
+            codesign --force --sign - "$app"
+            ditto -c -k --keepParent "$app" out/lumen-macos.zip
+            exit 0
+          fi
+
+          # A keychain of its own, deleted in the next step.
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          pass=$(openssl rand -hex 16)
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$pass" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -n 1)
+          [ -n "$identity" ] || { echo "::error::No Developer ID Application identity in MACOS_CERT_P12"; exit 1; }
+
+          # Hardened runtime and a secure timestamp are what notarization asks for.
+          codesign --force --options runtime --timestamp --sign "$identity" "$app"
+          codesign --verify --strict --verbose=2 "$app"
+
+          echo "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
+          result=$(xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait --output-format json \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER") || true
+          echo "$result"
+          id=$(echo "$result" | jq -r '.id // empty')
+          status=$(echo "$result" | jq -r '.status // "no result"')
+          if [ "$status" != "Accepted" ]; then
+            [ -n "$id" ] && xcrun notarytool log "$id" --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER"
+            echo "::error::Notarization ended with status $status"
+            exit 1
+          fi
+          rm "$RUNNER_TEMP/notary.p8"
+
+          # Staple the ticket, so the app opens even offline, then zip that.
+          xcrun stapler staple "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          ditto -c -k --keepParent "$app" out/lumen-macos.zip
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary.p8"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos

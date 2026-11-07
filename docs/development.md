@@ -127,6 +127,12 @@ The [release workflow](../.github/workflows/release.yml) then:
 The Homebrew step needs a `HOMEBREW_TAP_TOKEN` secret: a fine-grained token
 with Contents read and write on that repo.
 
+To sign and notarize the macOS app, so it opens without a Gatekeeper warning,
+the macOS job needs five secrets: `MACOS_CERT_P12` and `MACOS_CERT_PASSWORD`
+(the Developer ID Application certificate, as a base64 `.p12`), and
+`MACOS_NOTARY_KEY`, `MACOS_NOTARY_KEY_ID` and `MACOS_NOTARY_ISSUER` (an App
+Store Connect API key). Without them the app gets an ad-hoc signature only.
+
 A tag with a hyphen, like `v0.2.0-rc.1`, makes a pre-release and leaves
 Homebrew alone.
 
