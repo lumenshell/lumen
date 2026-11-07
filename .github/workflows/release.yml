@@ -131,14 +131,33 @@ jobs:
 
           echo "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
-          result=$(xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait --output-format json \
-            --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER") || true
-          echo "$result"
-          id=$(echo "$result" | jq -r '.id // empty')
-          status=$(echo "$result" | jq -r '.status // "no result"')
+          auth=(--key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER")
+
+          # Upload once, then wait for Apple's verdict. Apple's API drops the odd
+          # request, and `submit --wait` gives up on the first one, so the
+          # waiting is done here with retries.
+          id=""
+          for try in 1 2 3; do
+            id=$(xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --output-format json "${auth[@]}" | jq -r '.id // empty') || true
+            [ -n "$id" ] && break
+            echo "Upload failed (try $try), retrying in 30 seconds"
+            sleep 30
+          done
+          [ -n "$id" ] || { echo "::error::Couldn't upload Lumen.app for notarization"; exit 1; }
+          echo "Submission $id"
+
+          status=""
+          for try in $(seq 1 60); do
+            status=$(xcrun notarytool info "$id" --output-format json "${auth[@]}" | jq -r '.status // empty') || true
+            echo "Status: ${status:-no answer} (check $try)"
+            case "$status" in
+              Accepted|Invalid|Rejected) break ;;
+            esac
+            sleep 30
+          done
           if [ "$status" != "Accepted" ]; then
-            [ -n "$id" ] && xcrun notarytool log "$id" --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER"
-            echo "::error::Notarization ended with status $status"
+            xcrun notarytool log "$id" "${auth[@]}" || true
+            echo "::error::Notarization of $id ended with status ${status:-unknown}"
             exit 1
           fi
           rm "$RUNNER_TEMP/notary.p8"
