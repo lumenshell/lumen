@@ -14,10 +14,10 @@ libc = "0.2"
 polling = "3.11.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-toml_edit = { version = "0.22", features = ["parse", "display"] }
+toml_edit = { version = "0.25", features = ["parse", "display"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-x11rb = { version = "0.13", features = ["randr"] }
+x11rb = { version = "0.14", features = ["randr"] }
 # The X11 window id of the quick terminal, which GPUI exposes this way.
 raw-window-handle = "0.6"
 

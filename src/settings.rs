@@ -19,6 +19,10 @@ use crate::theme::{Theme, themes};
 
 pub const MONO_FONT: &str = "JetBrains Mono";
 pub const UI_FONT: &str = "Inter";
+/// Mac terminals default smaller (Terminal 11, Ghostty 13), and 14 looks big beside them.
+#[cfg(target_os = "macos")]
+pub const DEFAULT_FONT_SIZE: f32 = 13.0;
+#[cfg(not(target_os = "macos"))]
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
 /// Prefix for a file that couldn't be read at all.

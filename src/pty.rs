@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener, Notify, OnResize, WindowSize};
@@ -137,7 +137,7 @@ impl Pty {
             shell: shell
                 .split_first()
                 .map(|(program, args)| tty::Shell::new(program.clone(), args.to_vec())),
-            working_directory: cwd.filter(|p| p.is_dir()),
+            working_directory: cwd.filter(|p| p.is_dir()).or_else(fallback_cwd),
             drain_on_exit: false,
             env,
             #[cfg(target_os = "windows")]
@@ -221,12 +221,50 @@ impl Pty {
         {
             std::fs::read_link(format!("/proc/{child_pid}/cwd")).ok()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            macos_cwd(*child_pid)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = child_pid;
             None
         }
     }
+}
+
+/// A process's working directory, from the kernel (macOS has no /proc).
+#[cfg(target_os = "macos")]
+fn macos_cwd(pid: u32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    // SAFETY: the buffer is a zeroed proc_vnodepathinfo of exactly `size` bytes.
+    let written = unsafe {
+        libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDVNODEPATHINFO, 0, info.as_mut_ptr().cast(), size)
+    };
+    if written != size {
+        return None;
+    }
+    // SAFETY: proc_pidinfo filled the whole struct.
+    let info = unsafe { info.assume_init() };
+    // vip_path is a NUL-terminated C string stored as [[c_char; 32]; 32].
+    let raw: Vec<u8> = info.pvi_cdir.vip_path.iter().flatten().map(|&c| c as u8).take_while(|&b| b != 0).collect();
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(&raw));
+    path.is_dir().then_some(path)
+}
+
+/// Where a pane starts when it isn't given a directory. Normally the shell
+/// inherits Lumen's own directory, so `lumen` run from a project opens there.
+/// But apps launched from Finder, the Dock or a desktop menu start in `/`,
+/// and a terminal there is useless, so those open in your home folder.
+fn fallback_cwd() -> Option<PathBuf> {
+    let own = std::env::current_dir().ok();
+    if own.as_deref().is_some_and(|p| p != Path::new("/")) {
+        return None;
+    }
+    std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_dir())
 }
 
 impl Drop for Pty {
