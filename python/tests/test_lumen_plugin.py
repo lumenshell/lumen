@@ -123,6 +123,23 @@ class PluginModeTests(unittest.TestCase):
         self.assertEqual(lumen.expect("set-title"), {"pane": 9})
         lumen.close()
 
+    def test_pane_style_sends_only_what_was_given(self):
+        lumen = FakeLumen("""
+            from lumen_plugin import Plugin
+            app = Plugin()
+
+            @app.on_start
+            async def go():
+                pane = app.pane(5)
+                await pane.set_pane_style(label="db")
+                await pane.set_pane_style(label=None, color="red")
+
+            app.run()
+        """)
+        self.assertEqual(lumen.expect("set-pane-style"), {"pane": 5, "label": "db"})
+        self.assertEqual(lumen.expect("set-pane-style"), {"pane": 5, "label": None, "color": "red"})
+        lumen.close()
+
     def test_plugin_panes_get_their_keys_size_and_closing(self):
         lumen = FakeLumen("""
             from lumen_plugin import Plugin
@@ -199,6 +216,29 @@ class PluginModeTests(unittest.TestCase):
         self.assertEqual([i["id"] for i in confirm["items"]], ["yes", "no"])
         lumen.close()
         self.assertIn("chose c False", lumen.stderr())
+
+    def test_prompt_returns_text_or_none(self):
+        lumen = FakeLumen("""
+            from lumen_plugin import Plugin
+            app = Plugin()
+
+            @app.on_start
+            async def go():
+                a = await app.prompt("Command", initial="npm ")
+                b = await app.prompt("Name", message="Pick one")
+                c = await app.prompt()
+                app.log("got", repr(a), repr(b), repr(c))
+
+            app.run()
+        """)
+        params = lumen.expect("show-prompt", {"text": "npm run dev"})
+        self.assertEqual(params["placeholder"], "Command")
+        self.assertEqual(params["initial"], "npm ")
+        params = lumen.expect("show-prompt", {"text": None})  # Esc
+        self.assertEqual(params["message"], "Pick one")
+        lumen.expect("show-prompt", {"text": ""})
+        lumen.close()
+        self.assertIn("got 'npm run dev' None None", lumen.stderr())
 
     def test_errors_raise_and_a_failing_handler_does_not_stop_the_plugin(self):
         lumen = FakeLumen("""

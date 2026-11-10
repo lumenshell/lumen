@@ -62,16 +62,21 @@ Everything in the socket API, plus:
   where `pane` is the focused pane. Commands go away when the plugin stops.
 - **Ask you to choose.** `show-picker` opens the palette with the plugin's
   items, and answers with the one you pick (or `null` for Esc).
+- **Ask you to type.** `show-prompt` opens the palette as a text input, and
+  answers with what you typed (or `null` for Esc).
 - **Draw panes of their own.** A [plugin pane](scripting.md#plugin-panes) runs
   no program. The plugin writes to it and gets its keys, for timers,
   dashboards, games or anything else a terminal can show.
 - **Mark tabs.** `set-tab-style` puts a badge beside a tab's title and tints
   it, for a countdown, a build that broke or a production server.
+- **Label splits.** `set-pane-style` names a pane with a short label and a
+  colour, drawn above it while its tab is split, for a dev environment's
+  servers or the task that failed.
 
 ## Permissions
 
 Without any permissions, a plugin can list panes, subscribe to events, show
-notifications, add commands and show pickers.
+notifications, add commands and show pickers and prompts.
 
 Anything more is declared in `plugin.toml` and needs your approval. Lumen asks
 once in the palette, the first time it sees the plugin, and again if the
@@ -79,7 +84,7 @@ plugin's permissions or command change.
 
 | Permission | Allows |
 |---|---|
-| `panes` | `new-tab`, `split`, `focus`, `close`, `set-title`, `set-tab-style`, `move-tab`, `quick-terminal`, and drawing its own plugin panes (`write`) |
+| `panes` | `new-tab`, `split`, `focus`, `close`, `set-title`, `set-tab-style`, `set-pane-style`, `move-tab`, `quick-terminal`, and drawing its own plugin panes (`write`) |
 | `input` | `send-text`, `run-action`: typing into panes, which can run any command |
 | `screen` | `read-screen`, and the command text in `command-finished` events |
 

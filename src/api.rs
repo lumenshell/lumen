@@ -154,8 +154,8 @@ impl Caller {
 /// The permission a method needs, if any.
 fn required(method: &str) -> Option<Permission> {
     match method {
-        "new-tab" | "split" | "focus" | "close" | "set-title" | "move-tab" | "set-tab-style" | "write"
-        | "quick-terminal" => {
+        "new-tab" | "split" | "focus" | "close" | "set-title" | "move-tab" | "set-tab-style" | "set-pane-style"
+        | "write" | "quick-terminal" => {
             Some(Permission::Panes)
         }
         "send-text" | "run-action" => Some(Permission::Input),
@@ -274,9 +274,13 @@ fn route(
     let Some(target) = target else { return Some(Err(ApiError::failed("there are no windows"))) };
     target
         .update(cx, |ws, window, cx| {
-            if method == "show-picker" {
-                // Answered when you pick something.
-                ws.show_picker(params, reply.take().unwrap(), window, cx);
+            if method == "show-picker" || method == "show-prompt" {
+                // Answered when you pick or type something.
+                if method == "show-picker" {
+                    ws.show_picker(params, reply.take().unwrap(), window, cx);
+                } else {
+                    ws.show_prompt(params, reply.take().unwrap(), window, cx);
+                }
                 None
             } else {
                 Some(ws.handle_api(caller, method, params, origin, window, cx))
@@ -442,7 +446,7 @@ fn handle_line(text: &str, jobs: &Jobs, origin: &Origin, caller: &Caller) -> Opt
 
     let result = if method == "subscribe" {
         subscribe(&params, out, caller.may(Permission::Screen))
-    } else if method == "show-picker" {
+    } else if method == "show-picker" || method == "show-prompt" {
         // Waits for you to choose, so don't hold up this connection's other
         // requests: answer from another thread.
         let (jobs, out, caller, origin) = (jobs.clone(), out.clone(), caller.clone(), origin.clone());

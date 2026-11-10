@@ -189,6 +189,12 @@ impl CommandPalette {
         p
     }
 
+    /// What to run if the palette closes without a choice.
+    pub fn with_cancel(mut self, cancel: PaletteFn) -> Self {
+        self.on_cancel = Some(cancel);
+        self
+    }
+
     /// Explain what's being asked, under the input.
     pub fn with_message(mut self, message: impl Into<SharedString>) -> Self {
         self.message = Some(message.into());

@@ -123,17 +123,19 @@ window.
 | `read-screen` | `pane`, `lines` | |
 | `set-title` | `pane`, `title` | |
 | `set-tab-style` | `pane`, `badge`, `short_badge`, `color` | A field left out stays, `null` clears it, and a new `badge` drops the old `short_badge`. A plugin's styles go when it stops. A socket client's stay |
+| `set-pane-style` | `pane`, `label`, `color` | `label` (up to 32 characters) is drawn above the pane when its tab is split; `color` tints it. A field left out stays, `null` clears it. A plugin's styles go when it stops. A socket client's stay |
 | `move-tab` | `pane`, `index` | `index` counts from 0 |
 | `write` | `pane`, `text` | [Plugin panes](#plugin-panes) only |
 | `notify` | `title`, `body` | |
 | `run-action` | `action`, `pane` | |
 | `quick-terminal` | | Answers `{"shown": true}` or `false` |
 | `show-picker` | `items`, `placeholder`, `message` | `items` is a list of `{id, label, detail}`. `message` is text shown under the input. Answers `{"id": ...}` with the choice, or `null` if closed |
+| `show-prompt` | `placeholder`, `message`, `initial` | Asks for a line of text in the palette. All three are optional strings; `initial` is what the input starts with and `message` is shown under it. Answers `{"text": "..."}` with the text, trimmed (`""` for Enter on an empty line), or `{"text": null}` if closed with Esc. A blank `message` is ignored |
 | `subscribe` | `events` | A list. Leave it out for all events |
 
 `list` covers every window. Each tab has a `window` (0 for the first window
 opened), `window_active` and `quick` (it's in the quick terminal). Its `index`
-counts within its window. Panes a plugin draws have `"plugin_pane": true`,
+counts within its window. Each pane also has its `label` and `color` (or `null`). Panes a plugin draws have `"plugin_pane": true`,
 and tabs show their `badge` and `color`.
 
 After `subscribe`, the connection also receives events as notifications:
