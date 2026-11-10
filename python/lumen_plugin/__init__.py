@@ -251,6 +251,18 @@ class Pane:
             params["color"] = color
         await self.app.request("set-tab-style", params)
 
+    async def set_pane_style(self, *, label=_KEEP, color=_KEEP) -> None:
+        """Name this pane: `label` (up to 32 characters) is drawn in a strip
+        above it when its tab is split, and `color` (one of TAB_COLORS, or
+        "#rrggbb") tints the strip. None removes either; what you leave out
+        stays. They go when your plugin stops. Needs `panes`."""
+        params = {"pane": self.id}
+        if label is not _KEEP:
+            params["label"] = label
+        if color is not _KEEP:
+            params["color"] = color
+        await self.app.request("set-pane-style", params)
+
     async def run_action(self, action: str) -> None:
         """Run a Lumen action (as named in [keys]) in this pane. Needs `input`."""
         await self.app.call("run-action", action=action, pane=self.id)
@@ -548,6 +560,13 @@ class Plugin:
         if not out:
             return None
         return (await self.call("show-picker", items=out, placeholder=placeholder, message=message))["id"]
+
+    async def prompt(self, placeholder: str | None = None, *, message: str | None = None, initial: str = "") -> str | None:
+        """Ask for a line of text in the palette and return it trimmed, or
+        None if closed with Esc or left empty. `initial` is what the input
+        starts with; `message` is shown under it, wrapped."""
+        text = (await self.call("show-prompt", placeholder=placeholder, message=message, initial=initial))["text"]
+        return text or None
 
     async def confirm(self, question: str, *, message: str | None = None, yes: str = "Yes", no: str = "No") -> bool:
         """Ask a yes/no question in the palette, with `message` (wrapped)

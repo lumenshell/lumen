@@ -323,6 +323,14 @@ impl TabColor {
         }
     }
 
+    /// The name or `#rrggbb` this colour is told as over the socket API.
+    pub fn name(self) -> String {
+        match self {
+            TabColor::Ansi(i) => Self::NAMES.iter().find(|(_, n)| *n == i).map_or("", |(name, _)| name).to_string(),
+            TabColor::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        }
+    }
+
     pub fn resolve(self, theme: &Theme) -> Hsla {
         match self {
             TabColor::Ansi(i) => theme.ansi[i as usize],
@@ -1056,6 +1064,39 @@ impl Workspace {
         self.open_palette(palette, window, cx);
     }
 
+    /// `show-prompt`: let a plugin or script ask for a line of text. The
+    /// answer is `{"text": ...}` with what you typed (trimmed), or
+    /// `{"text": null}` if you close it.
+    pub fn show_prompt(
+        &mut self,
+        params: &Value,
+        reply: futures::channel::oneshot::Sender<ApiResult>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (placeholder, initial, message) = match parse_prompt(params) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = reply.send(Err(e));
+                return;
+            }
+        };
+        // Sent once: on Enter, or null on any way of closing (the drop covers
+        // a palette that goes away without running its cancel hook).
+        let answer = Rc::new(Answer::new("text", reply));
+        let submit_answer = answer.clone();
+        let submit: crate::palette::SubmitFn = Rc::new(move |text, _, _| submit_answer.send(json!(text)));
+        let cancel: PaletteFn = Rc::new(move |_, _| answer.send(Value::Null));
+        let palette = cx.new(|cx| {
+            let prompt = CommandPalette::prompt(placeholder.into(), initial, submit, cx).with_cancel(cancel);
+            match message {
+                Some(m) => prompt.with_message(m),
+                None => prompt,
+            }
+        });
+        self.open_palette(palette, window, cx);
+    }
+
     /// `show-picker`: let a plugin or script offer a choice in the palette.
     /// The answer is `{"id": ...}`, or `{"id": null}` if you close it.
     pub fn show_picker(
@@ -1065,21 +1106,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        /// Answers once: with the choice, or with null when dropped unanswered.
-        struct Answer(std::cell::RefCell<Option<futures::channel::oneshot::Sender<ApiResult>>>);
-        impl Answer {
-            fn send(&self, id: Value) {
-                if let Some(tx) = self.0.borrow_mut().take() {
-                    let _ = tx.send(Ok(json!({ "id": id })));
-                }
-            }
-        }
-        impl Drop for Answer {
-            fn drop(&mut self) {
-                self.send(Value::Null);
-            }
-        }
-
         let Some(list) = params.get("items").and_then(Value::as_array).filter(|l| !l.is_empty()) else {
             let _ = reply.send(Err(ApiError::invalid_params("`items` should be a non-empty list of {id, label}")));
             return;
@@ -1102,7 +1128,7 @@ impl Workspace {
         }
         let placeholder: SharedString =
             params.get("placeholder").and_then(Value::as_str).unwrap_or("Choose…").to_string().into();
-        let answer = Rc::new(Answer(std::cell::RefCell::new(Some(reply))));
+        let answer = Rc::new(Answer::new("id", reply));
         let items = parsed
             .into_iter()
             .map(|(id, label, detail)| {
@@ -1211,7 +1237,7 @@ impl Workspace {
         match node {
             PaneNode::Leaf(term) => {
                 let focused = *term == tab.active;
-                pane_frame(term, focused, multi, theme, Settings::get(cx).padding)
+                pane_frame(term, focused, multi, theme, Settings::get(cx).padding, cx)
             }
             PaneNode::Split { axis, children, ratios } => {
                 let row = *axis == Axis::Row;
@@ -1671,12 +1697,96 @@ pub fn window_background(opacity: f32) -> WindowBackgroundAppearance {
     }
 }
 
+/// Answers a request that waits on the palette once: with the choice, or
+/// with null when dropped unanswered.
+struct Answer {
+    key: &'static str,
+    tx: std::cell::RefCell<Option<futures::channel::oneshot::Sender<ApiResult>>>,
+}
+
+impl Answer {
+    fn new(key: &'static str, tx: futures::channel::oneshot::Sender<ApiResult>) -> Self {
+        Self { key, tx: std::cell::RefCell::new(Some(tx)) }
+    }
+
+    fn send(&self, value: Value) {
+        if let Some(tx) = self.tx.borrow_mut().take() {
+            let _ = tx.send(Ok(json!({ self.key: value })));
+        }
+    }
+}
+
+impl Drop for Answer {
+    fn drop(&mut self) {
+        self.send(Value::Null);
+    }
+}
+
+/// The `placeholder`, `initial` text and `message` of a `show-prompt`: each
+/// a string, or left out (null too).
+fn parse_prompt(params: &Value) -> Result<(String, String, Option<String>), ApiError> {
+    let get = |key: &str| match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.as_str())),
+        Some(_) => Err(ApiError::invalid_params(format!("`{key}` should be a string"))),
+    };
+    let placeholder = get("placeholder")?.unwrap_or("Type here…").to_string();
+    let initial = get("initial")?.unwrap_or_default().to_string();
+    let message = get("message")?.map(str::trim).filter(|m| !m.is_empty()).map(str::to_string);
+    Ok((placeholder, initial, message))
+}
+
+/// A pane's label and colour after a `set-pane-style` request: fields left
+/// out stay as they are; null (or a blank label) clears them.
+fn parse_pane_style(
+    params: &Value,
+    label: Option<String>,
+    color: Option<TabColor>,
+) -> Result<(Option<String>, Option<TabColor>), ApiError> {
+    let label = match params.get("label") {
+        None => label,
+        Some(Value::Null) => None,
+        Some(Value::String(l)) => {
+            let l = l.trim();
+            if l.chars().count() > 32 {
+                return Err(ApiError::invalid_params("`label` should be at most 32 characters"));
+            }
+            (!l.is_empty()).then(|| l.to_string())
+        }
+        Some(_) => return Err(ApiError::invalid_params("`label` should be a string or null")),
+    };
+    let color = match params.get("color") {
+        None => color,
+        Some(Value::Null) => None,
+        Some(Value::String(c)) => Some(TabColor::parse(c).map_err(ApiError::invalid_params)?),
+        Some(_) => return Err(ApiError::invalid_params("`color` should be a string or null")),
+    };
+    Ok((label, color))
+}
+
+/// Who owns a pane's style after a `set-pane-style`: the caller's plugin
+/// connection (`None` for a socket client), or nobody once both fields are
+/// cleared. The last writer wins.
+fn pane_style_owner(label: &Option<String>, color: &Option<TabColor>, caller: Option<u64>) -> Option<u64> {
+    if label.is_none() && color.is_none() { None } else { caller }
+}
+
+/// Whether a closed connection's disconnect clears this pane's style: only
+/// styles that connection set.
+fn clears_on_disconnect(style_owner: Option<u64>, conn: Option<u64>) -> bool {
+    conn.is_some() && style_owner == conn
+}
+
+/// Height of the strip that names a split pane.
+const PANE_LABEL_HEIGHT: f32 = 22.0;
+
 fn pane_frame(
     term: &Entity<TerminalView>,
     focused: bool,
     multi: bool,
     theme: &Theme,
     padding: f32,
+    cx: &App,
 ) -> AnyElement {
     let mut shadows = vec![BoxShadow {
         color: alpha(gpui::black(), if theme.is_light { 0.08 } else { 0.30 }),
@@ -1692,6 +1802,9 @@ fn pane_frame(
             spread_radius: px(1.0),
         });
     }
+    // A split pane with a label gets a strip above its terminal.
+    let label = term.read(cx).label.clone().filter(|_| multi);
+    let tint = term.read(cx).label_color.map(|c| c.resolve(theme));
     div()
         .relative()
         .size_full()
@@ -1701,8 +1814,30 @@ fn pane_frame(
         .border_color(if focused && multi { alpha(theme.accent, 0.6) } else { theme.border })
         .shadow(shadows)
         .overflow_hidden()
+        .flex()
+        .flex_col()
+        .when_some(label, |d, label| {
+            d.child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .h(px(PANE_LABEL_HEIGHT))
+                    .px(px(padding.max(8.0)))
+                    .bg(tint.map_or(alpha(theme.shell, 0.4), |t| mix(theme.pane, t, 0.16)))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .font_family(UI_FONT)
+                    .text_size(px(11.5))
+                    .text_color(if focused { theme.text } else { theme.subtext })
+                    .overflow_hidden()
+                    .child(div().flex_none().size(px(7.0)).rounded_full().bg(tint.unwrap_or(theme.muted)))
+                    .child(div().min_w_0().truncate().child(label)),
+            )
+        })
         .child(
-            div().size_full().p(px(padding)).child(
+            div().flex_1().min_h_0().w_full().p(px(padding)).child(
                 // Reuse the pane's last frame unless it changed, so output in one
                 // pane (or hovering a tab) doesn't redraw every other pane.
                 AnyView::from(term.clone()).cached(StyleRefinement::default().size_full()),
@@ -1866,6 +2001,8 @@ impl Workspace {
                             "rows": rows,
                             "last_exit": view.last_exit(),
                             "plugin_pane": view.is_plugin_pane(),
+                            "label": view.label,
+                            "color": view.label_color.map(TabColor::name),
                         })
                     })
                     .collect();
@@ -1877,10 +2014,7 @@ impl Workspace {
                     "zoomed": tab.zoomed,
                     "badge": tab.badge,
                     "short_badge": tab.short_badge,
-                    "color": tab.color.map(|c| match c {
-                        TabColor::Ansi(i) => TabColor::NAMES.iter().find(|(_, n)| *n == i).map_or("", |(name, _)| name).to_string(),
-                        TabColor::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
-                    }),
+                    "color": tab.color.map(TabColor::name),
                     "panes": panes,
                 })
             })
@@ -2111,6 +2245,24 @@ impl Workspace {
                 cx.notify();
                 Ok(json!({}))
             }
+            "set-pane-style" => {
+                let (_, pane) = self.target_pane(params)?;
+                let (label, color) = {
+                    let view = pane.read(cx);
+                    parse_pane_style(params, view.label.clone(), view.label_color)?
+                };
+                let owner = match caller {
+                    api::Caller::Plugin { .. } => origin.map(|o| o.conn),
+                    api::Caller::Socket => None,
+                };
+                pane.update(cx, |view, _| {
+                    view.style_owner = pane_style_owner(&label, &color, owner);
+                    view.label = label;
+                    view.label_color = color;
+                });
+                cx.notify();
+                Ok(json!({}))
+            }
             "write" => {
                 let text = required("text")?;
                 let (_, pane) = self.target_pane(params)?;
@@ -2142,6 +2294,17 @@ impl Workspace {
                     if conn.is_some() && tab.style_owner == conn {
                         (tab.badge, tab.short_badge, tab.color, tab.style_owner) = (None, None, None, None);
                     }
+                }
+                let styled: Vec<_> = self
+                    .tabs
+                    .iter()
+                    .flat_map(|t| t.leaves())
+                    .filter(|l| clears_on_disconnect(l.read(cx).style_owner, conn))
+                    .collect();
+                for pane in styled {
+                    pane.update(cx, |view, _| {
+                        (view.label, view.label_color, view.style_owner) = (None, None, None);
+                    });
                 }
                 cx.notify();
                 Ok(json!({}))
@@ -2360,7 +2523,7 @@ impl Render for Workspace {
         let content = self.tabs.get(self.active_tab).map(|tab| {
             let multi = tab.leaves().len() > 1;
             if tab.zoomed {
-                pane_frame(&tab.active, true, false, &theme, Settings::get(cx).padding)
+                pane_frame(&tab.active, true, false, &theme, Settings::get(cx).padding, cx)
             } else {
                 self.render_node(&tab.root, Vec::new(), tab, multi, &theme, cx)
             }
@@ -2660,6 +2823,54 @@ mod tests {
         assert_eq!(fit("🍅 18:42", Some("18m"), 2.0), None);
         // The title keeps its room: with less, the badge gives way.
         assert_eq!(fit_badge("19:42", None, room(5.0), MIN_TITLE_WIDTH + 1.0, measure).as_deref(), Some("19:…"));
+    }
+
+    #[test]
+    fn pane_styles_keep_clear_and_check() {
+        let cur = (Some("db".to_string()), Some(TabColor::Ansi(2)));
+        let p = |v: Value| parse_pane_style(&v, cur.0.clone(), cur.1);
+        assert_eq!(p(json!({})).unwrap(), cur); // left out stays
+        assert_eq!(p(json!({"label": null})).unwrap(), (None, cur.1)); // null clears
+        assert_eq!(p(json!({"label": "  "})).unwrap(), (None, cur.1)); // blank clears
+        assert_eq!(
+            p(json!({"label": " web ", "color": "red"})).unwrap(),
+            (Some("web".into()), Some(TabColor::Ansi(1)))
+        );
+        assert!(p(json!({"label": "x".repeat(33)})).is_err());
+        assert!(p(json!({"color": "orange"})).is_err());
+        assert!(p(json!({"label": 3})).is_err());
+    }
+
+    #[test]
+    fn prompt_params_are_strings() {
+        let ok = parse_prompt(&json!({})).unwrap();
+        assert_eq!(ok, ("Type here…".to_string(), String::new(), None));
+        let ok = parse_prompt(&json!({"placeholder": "Command", "initial": "npm ", "message": "  Runs it.  "})).unwrap();
+        assert_eq!(ok, ("Command".to_string(), "npm ".to_string(), Some("Runs it.".to_string())));
+        // A blank message is none; null counts as left out.
+        assert_eq!(parse_prompt(&json!({"message": " ", "initial": null})).unwrap().2, None);
+        assert!(parse_prompt(&json!({"placeholder": 3})).is_err());
+        assert!(parse_prompt(&json!({"initial": ["a"]})).is_err());
+        assert!(parse_prompt(&json!({"message": true})).is_err());
+    }
+
+    #[test]
+    fn pane_style_ownership_and_disconnect() {
+        let (label, color) = (Some("db".to_string()), Some(TabColor::Ansi(2)));
+        // A plugin's connection owns what it styled; a socket client owns nothing.
+        assert_eq!(pane_style_owner(&label, &None, Some(7)), Some(7));
+        assert_eq!(pane_style_owner(&None, &color, Some(7)), Some(7));
+        assert_eq!(pane_style_owner(&label, &color, None), None);
+        // Clearing both fields resets the owner.
+        assert_eq!(pane_style_owner(&None, &None, Some(7)), None);
+        // Last writer wins.
+        assert_eq!(pane_style_owner(&label, &color, Some(8)), Some(8));
+        // Disconnect clears only that connection's panes.
+        assert!(clears_on_disconnect(Some(7), Some(7)));
+        assert!(!clears_on_disconnect(Some(8), Some(7)));
+        assert!(!clears_on_disconnect(None, Some(7))); // socket client's styles stay
+        assert!(!clears_on_disconnect(None, None));
+        assert!(!clears_on_disconnect(Some(7), None));
     }
 
     #[test]

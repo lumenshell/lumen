@@ -134,6 +134,12 @@ pub struct TerminalView {
     /// A long command finished while you weren't here: whether it succeeded.
     /// Shown as a dot on the tab until the pane is focused.
     pub attention: Option<bool>,
+    /// A short label drawn above the pane when its tab is split, and a colour
+    /// for it, set over the socket API. Not saved. `style_owner` is the
+    /// plugin connection that set them (they go when it disconnects).
+    pub label: Option<String>,
+    pub label_color: Option<crate::workspace::TabColor>,
+    pub style_owner: Option<u64>,
     /// The blinking cursor is in its visible half. Stays true while the
     /// cursor isn't blinking.
     blink_on: bool,
@@ -319,6 +325,9 @@ impl TerminalView {
             window_active: window.is_window_active(),
             running_command: None,
             attention: None,
+            label: None,
+            label_color: None,
+            style_owner: None,
             blink_on: true,
             marked: None,
             last_typed: Instant::now(),

@@ -218,7 +218,7 @@ pub const BUILTINS: &[Builtin] = &[
     builtin!("command-history", "Command History", ["plugin.toml", "main.py"]),
     builtin!("git-branch", "Switch Git Branch", ["plugin.toml", "main.py"]),
     builtin!("ssh-hosts", "SSH to Host", ["plugin.toml", "main.py"]),
-    builtin!("project-layout", "Project Layouts", ["plugin.toml", "main.py"]),
+    builtin!("project-layout", "Projects & Tasks", ["plugin.toml", "main.py", "layoutfile.py", "discover.py", "checklist.py", "grid.py", "runner.py"]),
     builtin!("build-status", "Build Status", ["plugin.toml", "main.py"]),
     builtin!("pomodoro", "Pomodoro Timer", ["plugin.toml", "main.py"]),
 ];
