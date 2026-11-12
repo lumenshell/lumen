@@ -45,6 +45,18 @@ Meanwhile GPUI loads the system fonts and Lumen starts the panes' shells, so
 they're ready by the first frame. With bash at 120 Hz on an NVIDIA GPU, the
 first prompt went from 516–600 ms after launch to 345–407 ms.
 
+## Don't miss events read while waiting for a reply (X11)
+
+When GPUI waits for the reply to an X request, x11rb reads any events that
+arrived first into its own queue. The event loop wakes only when the socket
+has unread data, so those queued events sat there until something else
+arrived. Under Metacity this caught the new window's MapNotify at startup:
+GPUI never learnt the window was shown, so it never drew it, and the window
+stayed blank until it was resized.
+
+- `src/platform/linux/x11/client.rs`: `run` drains x11rb's queue after every
+  pass of the event loop, before it sleeps again.
+
 ## The window's X11 id (X11)
 
 `src/platform/linux/x11/window.rs`: `X11Window` implements
