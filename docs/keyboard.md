@@ -65,7 +65,7 @@ has:
 - **Open Config File**
 - one **Theme:** entry per theme
 - the commands plugins add
-- **Plugin Log:** (or **Allow Plugin:**) for each plugin
+- **Plugin Logs…**, and **Allow Plugin:** for each plugin waiting for approval
 - **Plugin Gallery** and **Reload Plugins**
 
 | Key | Does |

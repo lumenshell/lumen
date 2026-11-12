@@ -39,8 +39,8 @@ A plugin talks to Lumen over its stdin and stdout. It uses the same JSON-RPC
 2.0 messages as the [socket API](scripting.md#protocol), one per line. It
 should exit when stdin closes.
 
-Anything it writes to stderr goes to its log. **Plugin Log: <name>** in the
-palette opens the log in a new tab.
+Anything it writes to stderr goes to its log. **Plugin Logs…** in the
+palette opens it in a new tab.
 
 Its environment has:
 

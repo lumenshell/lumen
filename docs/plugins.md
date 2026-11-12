@@ -254,8 +254,8 @@ else uses the most recently started Lumen.
 
 ## Debugging
 
-- **Plugin Log: <name>** in the palette opens the log in a new tab, following
-  it as it grows. Errors in handlers show up there with tracebacks.
+- **Plugin Logs…** in the palette lists your plugins with how each is doing;
+  pick one to open its log in a new tab, following it as it grows. Errors in handlers show up there with tracebacks.
 - A plugin that won't start (bad `plugin.toml`, missing program) is listed in
   the banner at the bottom of the window.
 - A plugin that crashes is restarted after 1, 2, 5, 10, 30 and then 60

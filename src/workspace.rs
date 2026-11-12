@@ -1159,6 +1159,30 @@ impl Workspace {
     }
 
     /// Show a plugin's log in a new tab, following it.
+    /// Pick a plugin, by how it's doing, to open its log.
+    fn open_plugin_logs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ws = cx.entity().downgrade();
+        let items = crate::plugins::list()
+            .into_iter()
+            .map(|info| {
+                let ws = ws.clone();
+                let name = info.manifest.name.clone();
+                // How it's doing as a dot; the words only when something's up.
+                let dot = plugin_dot(&info.status);
+                let item = PaletteItem::new(
+                    name.clone(),
+                    Rc::new(move |window, cx| {
+                        let _ = ws.update(cx, |ws, cx| ws.open_plugin_log(&name, window, cx));
+                    }),
+                )
+                .dot(dot);
+                if dot == Dot::Good { item } else { item.note(info.status.clone()) }
+            })
+            .collect();
+        let palette = cx.new(|cx| CommandPalette::picker(items, "Plugin Logs: choose a plugin".into(), None, cx));
+        self.open_palette(palette, window, cx);
+    }
+
     fn open_plugin_log(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = crate::plugins::log_path(name) else { return };
         if let Some(dir) = path.parent() {
@@ -2384,7 +2408,7 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
                 .note(shown),
         );
     }
-    // Plugin commands, then a way to see each plugin's log, or to allow one.
+    // Plugin commands, then a way to allow each plugin waiting for it.
     for info in crate::plugins::list() {
         for c in &info.commands {
             let act = RunPluginCommand { plugin: info.manifest.name.clone(), id: c.id.clone() };
@@ -2418,20 +2442,23 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
                 .dot(Dot::Busy)
                 .note(info.status.clone()),
             );
-        } else {
-            // How it's doing as a dot; the words only when something's up.
-            let dot = plugin_dot(&info.status);
-            let item = PaletteItem::new(
-                format!("Plugin Log: {name}"),
-                Rc::new(move |window, cx| {
-                    if let Some(ws) = &ws {
-                        let _ = ws.update(cx, |ws, cx| ws.open_plugin_log(&name, window, cx));
-                    }
-                }),
-            )
-            .dot(dot);
-            items.push(if dot == Dot::Good { item } else { item.note(info.status.clone()) });
         }
+    }
+    // One entry for every plugin's log, flagged when one of them is in trouble.
+    let plugins = crate::plugins::list();
+    if let Some(ws) = ws.clone().filter(|_| !plugins.is_empty()) {
+        let troubled = plugins.iter().filter(|p| plugin_dot(&p.status) == Dot::Bad).count();
+        let item = PaletteItem::new(
+            "Plugin Logs…",
+            Rc::new(move |window, cx| {
+                let _ = ws.update(cx, |ws, cx| ws.open_plugin_logs(window, cx));
+            }),
+        );
+        items.push(match troubled {
+            0 => item.note("see what a plugin printed"),
+            1 => item.dot(Dot::Bad).note("1 plugin has a problem"),
+            n => item.dot(Dot::Bad).note(format!("{n} plugins have a problem")),
+        });
     }
     if let Some(ws) = ws.clone() {
         items.push(
