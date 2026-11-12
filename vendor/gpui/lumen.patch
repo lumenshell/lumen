@@ -222,7 +222,26 @@
          };
  
          state.windows.insert(x_window, window_ref);
-@@ -2489,3 +2517,76 @@
+@@ -1604,7 +1632,17 @@
+             return;
+         };
+ 
+-        event_loop.run(None, &mut self.clone(), |_| {}).log_err();
++        // Waiting for a reply reads any events that came first into x11rb's
++        // queue, where the socket's readiness no longer shows them. Drain it
++        // after every pass, or a window whose MapNotify got queued that way
++        // (under Metacity, at startup) never draws until something else
++        // arrives on the socket.
++        let xcb_connection = self.0.borrow().xcb_connection.clone();
++        event_loop
++            .run(None, &mut self.clone(), |client| {
++                client.process_x11_events(&xcb_connection).log_err();
++            })
++            .log_err();
+     }
+ 
+     fn active_window(&self) -> Option<AnyWindowHandle> {
+@@ -2489,3 +2527,76 @@
  fn valid_scale_factor(scale_factor: f32) -> bool {
      scale_factor.is_sign_positive() && scale_factor.is_normal()
  }

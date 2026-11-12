@@ -1632,7 +1632,17 @@ impl LinuxClient for X11Client {
             return;
         };
 
-        event_loop.run(None, &mut self.clone(), |_| {}).log_err();
+        // Waiting for a reply reads any events that came first into x11rb's
+        // queue, where the socket's readiness no longer shows them. Drain it
+        // after every pass, or a window whose MapNotify got queued that way
+        // (under Metacity, at startup) never draws until something else
+        // arrives on the socket.
+        let xcb_connection = self.0.borrow().xcb_connection.clone();
+        event_loop
+            .run(None, &mut self.clone(), |client| {
+                client.process_x11_events(&xcb_connection).log_err();
+            })
+            .log_err();
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
