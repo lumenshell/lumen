@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use crate::settings::{MONO_FONT, Settings, ui_font};
+use gpui::{ScrollStrategy, uniform_list};
 use crate::theme::alpha;
 
 /// Something the palette runs: a choice, or what happens on cancel.
@@ -102,10 +103,10 @@ pub struct CommandPalette {
     /// choosing an item.
     submit: Option<SubmitFn>,
     /// Keeps the selected row in view when the list scrolls.
-    scroll: gpui::ScrollHandle,
-    /// Each item's hint, cut to the room its label leaves: measured once,
-    /// on the first draw, since the items don't change.
-    hints: Option<Vec<Option<SharedString>>>,
+    scroll: gpui::UniformListScrollHandle,
+    /// Each item's hint, cut to the room its label leaves: measured the first
+    /// time its row is drawn, since the items don't change.
+    hints: Vec<Option<Option<SharedString>>>,
 }
 
 impl EventEmitter<PaletteEvent> for CommandPalette {}
@@ -167,8 +168,8 @@ impl CommandPalette {
         let filtered = (0..items.len()).map(|i| (i, Vec::new())).collect();
         Self {
             focus: cx.focus_handle(),
-            scroll: gpui::ScrollHandle::new(),
-            hints: None,
+            scroll: gpui::UniformListScrollHandle::new(),
+            hints: Vec::new(),
             query: String::new(),
             selected: 0,
             items,
@@ -216,7 +217,7 @@ impl CommandPalette {
         scored.sort_by_key(|&(s, i, _)| (s, i));
         self.filtered = scored.into_iter().map(|(_, i, m)| (i, m)).collect();
         self.selected = 0;
-        self.scroll.scroll_to_item(0);
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
     }
 
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -244,12 +245,15 @@ impl CommandPalette {
             "enter" => self.confirm(window, cx),
             "up" => {
                 self.selected = self.selected.checked_sub(1).unwrap_or(self.filtered.len().saturating_sub(1));
-                self.scroll.scroll_to_item(self.selected);
+                // Up shows the row at the top, unless it wrapped to the end.
+                let wrapped = self.selected + 1 == self.filtered.len();
+                self.scroll.scroll_to_item(self.selected, if wrapped { ScrollStrategy::Bottom } else { ScrollStrategy::Top });
             }
             "down" | "tab" => {
                 if !self.filtered.is_empty() {
                     self.selected = (self.selected + 1) % self.filtered.len();
-                    self.scroll.scroll_to_item(self.selected);
+                    let wrapped = self.selected == 0;
+                    self.scroll.scroll_to_item(self.selected, if wrapped { ScrollStrategy::Top } else { ScrollStrategy::Bottom });
                 }
             }
             "backspace" => {
@@ -317,11 +321,96 @@ fn fit_hint(item: &PaletteItem, dots: bool, window: &Window, cx: &App) -> Option
     Some(cx.text_system().line_wrapper(gpui::font(family), px(size)).truncate_line(text.clone(), px(room), "…", &mut runs))
 }
 
+/// One row of the palette.
+#[allow(clippy::too_many_arguments)]
+fn row_element(
+    row: usize,
+    item: &PaletteItem,
+    matched: &[Range<usize>],
+    fitted: Option<SharedString>,
+    dots: bool,
+    selected: bool,
+    theme: &crate::theme::Theme,
+    cx: &mut Context<CommandPalette>,
+) -> gpui::AnyElement {
+    // The letters you typed, in the accent colour.
+    let highlight = HighlightStyle { color: Some(theme.accent), ..Default::default() };
+    let label = StyledText::new(item.label.clone()).with_highlights(matched.iter().map(|r| (r.clone(), highlight)));
+    let dot = item.dot.map(|dot| {
+        let d = div().size(px(7.0)).rounded(px(4.0));
+        match dot {
+            Dot::Off => d.border_1().border_color(theme.muted),
+            Dot::On => d.bg(theme.accent),
+            Dot::Good => d.bg(theme.ansi[2]),
+            Dot::Busy => d.bg(theme.ansi[3]),
+            Dot::Bad => d.bg(theme.ansi[1]),
+        }
+    });
+    let hint = fitted.map(|text| match &item.hint {
+        Hint::Keys(_) => div().font_family(MONO_FONT).text_size(px(11.5)).text_color(theme.subtext).child(text),
+        _ => div().text_size(px(12.0)).text_color(theme.muted).child(text),
+    });
+    let row_div = div()
+        .id(("palette-item", row))
+        .flex()
+        .flex_1()
+        .items_center()
+        .justify_between()
+        .h(px(ROW_HEIGHT))
+        .px(px(12.0))
+        .rounded(px(7.0))
+        .text_color(if selected { theme.text } else { theme.subtext })
+        .when(selected, |d| d.bg(alpha(theme.accent, 0.16)))
+        .hover(|d| d.bg(alpha(theme.accent, 0.10)))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.selected = row;
+            this.confirm(window, cx);
+        }))
+        .gap(px(12.0))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(9.0))
+                .max_w(px(380.0))
+                .when(dots, |d| d.child(div().flex().flex_none().w(px(7.0)).justify_center().children(dot)))
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label)),
+        )
+        .children(hint.map(|h| h.flex_none().whitespace_nowrap()));
+    // The list sizes rows to their content; this one spans its width.
+    div().flex().w_full().px(px(6.0)).child(row_div).into_any_element()
+}
+
 /// How far below the top of the window the palette sits.
 pub const PALETTE_TOP: f32 = 72.0;
 
 fn caret(color: gpui::Hsla) -> gpui::Div {
     div().w(px(2.0)).h(px(18.0)).mx(px(1.0)).rounded(px(1.0)).bg(color)
+}
+
+impl CommandPalette {
+    /// The rows `range` of the filtered list.
+    fn rows(&mut self, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let theme = Settings::get(cx).theme().clone();
+        // A column for dots when any item has one, so labels line up.
+        let dots = self.items.iter().any(|i| i.dot.is_some());
+        if self.hints.len() != self.items.len() {
+            self.hints = vec![None; self.items.len()];
+        }
+        let mut out = Vec::with_capacity(range.len());
+        for row in range {
+            let Some((idx, matched)) = self.filtered.get(row) else { break };
+            let idx = *idx;
+            if self.hints[idx].is_none() {
+                self.hints[idx] = Some(fit_hint(&self.items[idx], dots, window, cx));
+            }
+            let item = &self.items[idx];
+            let fitted = self.hints[idx].clone().flatten();
+            out.push(row_element(row, item, matched, fitted, dots, row == self.selected, &theme, cx));
+        }
+        out
+    }
 }
 
 impl Render for CommandPalette {
@@ -333,66 +422,6 @@ impl Render for CommandPalette {
         } else {
             self.placeholder.clone()
         };
-
-        // A column for dots when any item has one, so labels line up.
-        let dots = self.items.iter().any(|i| i.dot.is_some());
-        if self.hints.is_none() {
-            self.hints = Some(self.items.iter().map(|item| fit_hint(item, dots, window, cx)).collect());
-        }
-        let hints = self.hints.as_ref().expect("measured above");
-        let rows = self.filtered.iter().enumerate().map(|(row, (idx, matched))| {
-            let item = &self.items[*idx];
-            let selected = row == self.selected;
-            // The letters you typed, in the accent colour.
-            let highlight = HighlightStyle { color: Some(theme.accent), ..Default::default() };
-            let label = StyledText::new(item.label.clone())
-                .with_highlights(matched.iter().map(|r| (r.clone(), highlight)));
-            let dot = item.dot.map(|dot| {
-                let d = div().size(px(7.0)).rounded(px(4.0));
-                match dot {
-                    Dot::Off => d.border_1().border_color(theme.muted),
-                    Dot::On => d.bg(theme.accent),
-                    Dot::Good => d.bg(theme.ansi[2]),
-                    Dot::Busy => d.bg(theme.ansi[3]),
-                    Dot::Bad => d.bg(theme.ansi[1]),
-                }
-            });
-            let hint = hints[*idx].clone().map(|text| match &item.hint {
-                Hint::Keys(_) => div().font_family(MONO_FONT).text_size(px(11.5)).text_color(theme.subtext).child(text),
-                _ => div().text_size(px(12.0)).text_color(theme.muted).child(text),
-            });
-            div()
-                .id(("palette-item", row))
-                .flex()
-                .items_center()
-                .justify_between()
-                .h(px(ROW_HEIGHT))
-                .flex_none()
-                .px(px(12.0))
-                .mx(px(6.0))
-                .rounded(px(7.0))
-                .text_color(if selected { theme.text } else { theme.subtext })
-                .when(selected, |d| d.bg(alpha(theme.accent, 0.16)))
-                .hover(|d| d.bg(alpha(theme.accent, 0.10)))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.selected = row;
-                    this.confirm(window, cx);
-                }))
-                .gap(px(12.0))
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(px(9.0))
-                        .max_w(px(380.0))
-                        .when(dots, |d| {
-                            d.child(div().flex().flex_none().w(px(7.0)).justify_center().children(dot))
-                        })
-                        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label)),
-                )
-                .children(hint.map(|h| h.flex_none().whitespace_nowrap()))
-        });
 
         div()
             .id("palette")
@@ -464,10 +493,14 @@ impl Render for CommandPalette {
                     .flex_col()
                     .flex_shrink()
                     .min_h_0()
-                    .max_h(px(ROW_HEIGHT * VISIBLE_ROWS))
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .children(rows),
+                    .child(
+                        // Only the rows in view are built and drawn.
+                        uniform_list("palette-rows", self.filtered.len(), cx.processor(Self::rows))
+                            .track_scroll(self.scroll.clone())
+                            .h(px(ROW_HEIGHT * (self.filtered.len() as f32).min(VISIBLE_ROWS)))
+                            .flex_shrink()
+                            .min_h_0(),
+                    ),
             )
             .when(self.filtered.is_empty() && self.submit.is_none(), |d| {
                 d.child(div().px(px(18.0)).py(px(10.0)).text_color(theme.muted).child("No matches"))
