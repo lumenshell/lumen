@@ -132,6 +132,7 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         load_fonts(cx);
         cx.set_global(Settings::load());
+        settings::publish_ui_font(Settings::get(cx));
         Settings::watch(cx);
         keymap::apply(cx);
         let listener = api::listen(cx);
@@ -153,7 +154,14 @@ fn main() {
         quick::watch_hotkey(cx);
 
         // One window per saved window, or a fresh one.
-        let saved = session::load();
+        let restore = Settings::get(cx).restore_session;
+        session::set_saving(restore);
+        let mut saved = if restore { session::load() } else { Vec::new() };
+        if saved.is_empty() {
+            // A fresh start opens in `working-directory`, like new windows.
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            saved.extend(workspace::fresh_session(&Settings::get(cx).working_directory, home));
+        }
         let places: Vec<Placement> = if saved.is_empty() {
             vec![initial_placement(None, cx)]
         } else {
@@ -282,6 +290,11 @@ pub fn new_window(cwd: Option<std::path::PathBuf>, from: Option<gpui::Size<Pixel
                 title: None,
             }],
         )
+    })
+    .or_else(|| {
+        // No folder to inherit (no window open): use `working-directory`.
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        workspace::fresh_session(&Settings::get(cx).working_directory, home)
     });
     let mut place = initial_placement(None, cx);
     if let Some(size) = from {
@@ -308,7 +321,11 @@ struct Placement {
 fn initial_placement(saved: Option<session::WindowState>, cx: &App) -> Placement {
     let Some(w) = saved else {
         return Placement {
-            bounds: Bounds::centered(None, size(px(1100.0), px(720.0)), cx),
+            bounds: Bounds::centered(
+                None,
+                size(px(Settings::get(cx).window_width), px(Settings::get(cx).window_height)),
+                cx,
+            ),
             restore_position: false,
             maximized: false,
             fullscreen: false,

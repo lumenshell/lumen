@@ -25,6 +25,21 @@ pub const DEFAULT_FONT_SIZE: f32 = 13.0;
 #[cfg(not(target_os = "macos"))]
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
+/// The UI font from the settings, for code that draws chrome without an `App`
+/// at hand. Set by [`publish_ui_font`] whenever the settings change.
+static UI_FAMILY: std::sync::RwLock<Option<SharedString>> = std::sync::RwLock::new(None);
+
+/// The font for tabs, palette and banners (`ui-font-family`).
+pub fn ui_font() -> SharedString {
+    UI_FAMILY.read().ok().and_then(|f| f.clone()).unwrap_or_else(|| UI_FONT.into())
+}
+
+pub fn publish_ui_font(settings: &Settings) {
+    if let Ok(mut f) = UI_FAMILY.write() {
+        *f = Some(settings.ui_font_family.clone());
+    }
+}
+
 /// Prefix for a file that couldn't be read at all.
 const PARSE_ERROR: &str = "Couldn't read the file at";
 
@@ -69,8 +84,82 @@ pub struct Settings {
     pub keys: Vec<(String, Option<String>)>,
     /// Built-in plugins to run, by name (the Plugin Gallery edits this).
     pub plugins: Vec<String>,
+    /// Bold text in colours 0-7 uses the bright 8-15.
+    pub bold_is_bright: bool,
+    /// Shape operator runs together so ligatures form.
+    pub ligatures: bool,
+    /// How long the cursor stays on, then off, while blinking.
+    pub cursor_blink_interval: Duration,
+    /// Selecting also copies to the clipboard.
+    pub copy_on_select: bool,
+    /// Characters that end a word for double-click; `None` keeps alacritty's.
+    pub word_separators: Option<String>,
+    /// Lines the mouse wheel scrolls per notch.
+    pub scroll_speed: f32,
+    pub right_click: RightClick,
+    /// The key held to click links.
+    pub link_modifier: LinkModifier,
+    /// (macOS) Option sends Alt instead of typing special characters.
+    pub option_as_alt: bool,
+    /// Let programs turn on the kitty keyboard protocol.
+    pub kitty_keyboard: bool,
+    /// Size of a new window when there's no saved one.
+    pub window_width: f32,
+    pub window_height: f32,
+    /// Restore windows on launch, and save them.
+    pub restore_session: bool,
+    /// Where new tabs, splits and windows start.
+    pub working_directory: WorkingDirectory,
+    /// How much to dim panes other than the focused one (0 = not at all);
+    /// `None` keeps the theme's own amount.
+    pub unfocused_dim: Option<f32>,
+    /// Space between split panes, in pixels.
+    pub pane_gap: f32,
+    /// Font for tabs, palette and banners.
+    pub ui_font_family: SharedString,
+    pub bell: Bell,
     /// Problems found in the config file, shown until it's fixed.
     pub problems: Vec<String>,
+}
+
+/// What a right click does when no program has asked for the mouse.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum RightClick {
+    None,
+    Paste,
+    /// Copy a selection if there is one, otherwise paste.
+    CopyOrPaste,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum LinkModifier {
+    Ctrl,
+    Cmd,
+    Alt,
+    /// A plain click opens links.
+    None,
+}
+
+impl Default for LinkModifier {
+    fn default() -> Self {
+        if cfg!(target_os = "macos") { LinkModifier::Cmd } else { LinkModifier::Ctrl }
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub enum WorkingDirectory {
+    /// The focused pane's folder.
+    Inherit,
+    Home,
+    Path(PathBuf),
+}
+
+/// What a bell does in a pane.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Bell {
+    Off,
+    /// Flash the pane, and mark its tab if you're not looking.
+    Flash,
 }
 
 impl Global for Settings {}
@@ -98,6 +187,24 @@ impl Default for Settings {
             notify_after: 10,
             keys: Vec::new(),
             plugins: Vec::new(),
+            bold_is_bright: true,
+            ligatures: true,
+            cursor_blink_interval: Duration::from_millis(530),
+            copy_on_select: false,
+            word_separators: None,
+            scroll_speed: 3.0,
+            right_click: RightClick::None,
+            link_modifier: LinkModifier::default(),
+            option_as_alt: false,
+            kitty_keyboard: true,
+            window_width: 1100.0,
+            window_height: 720.0,
+            restore_session: true,
+            working_directory: WorkingDirectory::Inherit,
+            unfocused_dim: None,
+            pane_gap: 8.0,
+            ui_font_family: UI_FONT.into(),
+            bell: Bell::Off,
             problems: Vec::new(),
         }
     }
@@ -117,6 +224,29 @@ pub fn config_path() -> Option<PathBuf> {
 /// The `key = value` file used before config.toml.
 fn legacy_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("config"))
+}
+
+/// Store a value; no problem.
+fn set<T>(slot: &mut T, v: T) -> Option<String> {
+    *slot = v;
+    None
+}
+
+/// A true/false setting, or the problem with it.
+fn flag(item: &Item, slot: &mut bool, bad: impl Fn(&str) -> String) -> Option<String> {
+    match item.as_bool() {
+        Some(v) => set(slot, v),
+        None => Some(bad("true or false")),
+    }
+}
+
+/// `~/x` → `$HOME/x`.
+fn expand_home(p: &str) -> PathBuf {
+    match (p.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ if p == "~" => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(p)),
+        _ => PathBuf::from(p),
+    }
 }
 
 fn number(item: &Item) -> Option<f64> {
@@ -319,6 +449,77 @@ impl Settings {
                     }
                     None => Some(bad("true or false")),
                 },
+                "bold-is-bright" => flag(item, &mut s.bold_is_bright, bad),
+                "ligatures" => flag(item, &mut s.ligatures, bad),
+                "copy-on-select" => flag(item, &mut s.copy_on_select, bad),
+                "option-as-alt" => flag(item, &mut s.option_as_alt, bad),
+                "kitty-keyboard" => flag(item, &mut s.kitty_keyboard, bad),
+                "restore-session" => flag(item, &mut s.restore_session, bad),
+                "cursor-blink-interval" => match item.as_integer() {
+                    Some(v) if (200..=2000).contains(&v) => {
+                        s.cursor_blink_interval = Duration::from_millis(v as u64);
+                        None
+                    }
+                    _ => Some(bad("a number of milliseconds from 200 to 2000")),
+                },
+                "word-separators" => match item.as_str() {
+                    Some(v) => {
+                        s.word_separators = Some(v.to_string());
+                        None
+                    }
+                    None => Some(bad("the characters that end a word, in quotes")),
+                },
+                "scroll-speed" => match number(item) {
+                    Some(v) if (1.0..=20.0).contains(&v) => {
+                        s.scroll_speed = v as f32;
+                        None
+                    }
+                    _ => Some(bad("a number of lines from 1 to 20")),
+                },
+                "right-click" => match item.as_str() {
+                    Some("none") => set(&mut s.right_click, RightClick::None),
+                    Some("paste") => set(&mut s.right_click, RightClick::Paste),
+                    Some("copy-or-paste") => set(&mut s.right_click, RightClick::CopyOrPaste),
+                    _ => Some(bad("\"none\", \"paste\" or \"copy-or-paste\"")),
+                },
+                "link-modifier" => match item.as_str() {
+                    Some("ctrl") => set(&mut s.link_modifier, LinkModifier::Ctrl),
+                    Some("cmd") => set(&mut s.link_modifier, LinkModifier::Cmd),
+                    Some("alt") => set(&mut s.link_modifier, LinkModifier::Alt),
+                    Some("none") => set(&mut s.link_modifier, LinkModifier::None),
+                    _ => Some(bad("\"ctrl\", \"cmd\", \"alt\" or \"none\"")),
+                },
+                "window-width" => match number(item) {
+                    Some(v) if (420.0..=8000.0).contains(&v) => set(&mut s.window_width, v as f32),
+                    _ => Some(bad("a number of pixels from 420 to 8000")),
+                },
+                "window-height" => match number(item) {
+                    Some(v) if (260.0..=8000.0).contains(&v) => set(&mut s.window_height, v as f32),
+                    _ => Some(bad("a number of pixels from 260 to 8000")),
+                },
+                "working-directory" => match item.as_str().map(str::trim) {
+                    Some("inherit") => set(&mut s.working_directory, WorkingDirectory::Inherit),
+                    Some("home") => set(&mut s.working_directory, WorkingDirectory::Home),
+                    Some(p) if !p.is_empty() => set(&mut s.working_directory, WorkingDirectory::Path(expand_home(p))),
+                    _ => Some(bad("\"inherit\", \"home\" or a folder in quotes")),
+                },
+                "unfocused-dim" => match number(item) {
+                    Some(v) if (0.0..=0.5).contains(&v) => set(&mut s.unfocused_dim, Some(v as f32)),
+                    _ => Some(bad("a number from 0 (off) to 0.5")),
+                },
+                "pane-gap" => match number(item) {
+                    Some(v) if (0.0..=24.0).contains(&v) => set(&mut s.pane_gap, v as f32),
+                    _ => Some(bad("a number of pixels from 0 to 24")),
+                },
+                "ui-font-family" => match item.as_str() {
+                    Some(f) if !f.trim().is_empty() => set(&mut s.ui_font_family, f.trim().to_string().into()),
+                    _ => Some(bad("a font name in quotes")),
+                },
+                "bell" => match item.as_str() {
+                    Some("off") => set(&mut s.bell, Bell::Off),
+                    Some("flash") => set(&mut s.bell, Bell::Flash),
+                    _ => Some(bad("\"off\" or \"flash\"")),
+                },
                 other => Some(format!("unknown setting `{other}`")),
             };
             s.problems.extend(problem);
@@ -426,6 +627,46 @@ impl Settings {
              # Program (and arguments) to run in new panes. Uses $SHELL when unset.\n\
              {shell}\n\
              \n\
+             # Bold text in the first eight colours uses their bright versions.\n\
+             bold-is-bright = {bold_is_bright}\n\
+             # Join operators like -> and != into ligatures when the font has them.\n\
+             ligatures = {ligatures}\n\
+             # How long the cursor stays on, then off, when it blinks (milliseconds).\n\
+             cursor-blink-interval = {blink_ms}\n\
+             \n\
+             # Selecting text also copies it to the clipboard.\n\
+             copy-on-select = {copy_on_select}\n\
+             # Characters that end a word when you double-click to select it.\n\
+             {word_separators}\n\
+             # Lines the mouse wheel scrolls per notch (1 to 20).\n\
+             scroll-speed = {scroll_speed}\n\
+             # Right click: \"none\", \"paste\", or \"copy-or-paste\" (copy a selection, else paste).\n\
+             right-click = \"{right_click}\"\n\
+             # Key to hold when clicking a link: \"ctrl\", \"cmd\", \"alt\" or \"none\" (a plain click).\n\
+             link-modifier = \"{link_modifier}\"\n\
+             # (macOS) Option sends Alt to programs instead of typing special characters.\n\
+             option-as-alt = {option_as_alt}\n\
+             # Let programs turn on the kitty keyboard protocol (used by Neovim, Helix).\n\
+             kitty-keyboard = {kitty_keyboard}\n\
+             # What a bell does: \"off\", or \"flash\" the pane and mark its tab.\n\
+             bell = \"{bell}\"\n\
+             \n\
+             # Size of a new window when there's no saved one, in pixels. Next launch.\n\
+             window-width = {window_width}\n\
+             window-height = {window_height}\n\
+             # Bring back your windows, tabs and splits next launch. Next launch.\n\
+             restore-session = {restore_session}\n\
+             # Where new tabs, splits and windows start: \"inherit\" (the focused pane's\n\
+             # folder), \"home\", or a folder such as \"~/src\".\n\
+             working-directory = {working_directory}\n\
+             # Dim panes other than the focused one, from 0 (off) to 0.5. Unset, it\n\
+             # follows the theme (0.35 on dark themes, 0.25 on light ones).\n\
+             {unfocused_dim}\n\
+             # Space between split panes, in pixels (0 to 24).\n\
+             pane-gap = {pane_gap}\n\
+             # Font for tabs, the palette and banners.\n\
+             ui-font-family = \"{ui_font_family}\"\n\
+             \n\
              # Let bash, zsh and fish mark prompts and commands, for jumping between\n\
              # commands, copying output and marking failures. Applies to new panes.\n\
              shell-integration = {integration}\n\
@@ -466,6 +707,49 @@ impl Settings {
             socket_api = self.socket_api,
             notify_after = self.notify_after,
             plugins = plugins_list,
+            bold_is_bright = self.bold_is_bright,
+            ligatures = self.ligatures,
+            blink_ms = self.cursor_blink_interval.as_millis(),
+            copy_on_select = self.copy_on_select,
+            word_separators = match &self.word_separators {
+                Some(w) => format!("word-separators = {}", toml_edit::Value::from(w.as_str())),
+                None => format!(
+                    "# word-separators = {}",
+                    toml_edit::Value::from(alacritty_terminal::term::SEMANTIC_ESCAPE_CHARS)
+                ),
+            },
+            scroll_speed = self.scroll_speed,
+            right_click = match self.right_click {
+                RightClick::None => "none",
+                RightClick::Paste => "paste",
+                RightClick::CopyOrPaste => "copy-or-paste",
+            },
+            link_modifier = match self.link_modifier {
+                LinkModifier::Ctrl => "ctrl",
+                LinkModifier::Cmd => "cmd",
+                LinkModifier::Alt => "alt",
+                LinkModifier::None => "none",
+            },
+            option_as_alt = self.option_as_alt,
+            kitty_keyboard = self.kitty_keyboard,
+            bell = match self.bell {
+                Bell::Off => "off",
+                Bell::Flash => "flash",
+            },
+            window_width = self.window_width,
+            window_height = self.window_height,
+            restore_session = self.restore_session,
+            working_directory = match &self.working_directory {
+                WorkingDirectory::Inherit => toml_edit::Value::from("inherit"),
+                WorkingDirectory::Home => toml_edit::Value::from("home"),
+                WorkingDirectory::Path(p) => toml_edit::Value::from(p.display().to_string()),
+            },
+            unfocused_dim = match self.unfocused_dim {
+                Some(v) => format!("unfocused-dim = {v}"),
+                None => "# unfocused-dim = 0.35".to_string(),
+            },
+            pane_gap = self.pane_gap,
+            ui_font_family = self.ui_font_family,
             actions = wrap_comment(&keymap::ACTIONS.join(", "), 80),
             keys = self.keys_template(),
         )
@@ -543,12 +827,17 @@ impl Settings {
             new.problems.push(format!("font \"{}\" isn't installed; using {MONO_FONT}", new.font_family));
             new.font_family = MONO_FONT.into();
         }
+        if !cx.text_system().all_font_names().iter().any(|f| f.eq_ignore_ascii_case(&new.ui_font_family)) {
+            new.problems.push(format!("font \"{}\" isn't installed; using {UI_FONT}", new.ui_font_family));
+            new.ui_font_family = UI_FONT.into();
+        }
         // A file that doesn't parse at all keeps the current settings.
         if new.problems.iter().any(|p| p.starts_with(PARSE_ERROR)) {
             let problems = new.problems;
             cx.global_mut::<Settings>().problems = problems;
         } else if *Self::get(cx) != new {
             let keys_changed = Self::get(cx).keys != new.keys;
+            publish_ui_font(&new);
             cx.set_global(new);
             if keys_changed {
                 keymap::apply(cx);
@@ -617,6 +906,86 @@ fn legacy_to_toml(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn non_default() -> &'static str {
+        "bold-is-bright = false\nligatures = false\ncursor-blink-interval = 800\ncopy-on-select = true\n\
+         word-separators = \" ,│\"\nscroll-speed = 5\nright-click = \"copy-or-paste\"\nlink-modifier = \"none\"\n\
+         option-as-alt = true\nkitty-keyboard = false\nwindow-width = 1400\nwindow-height = 900\n\
+         restore-session = false\nworking-directory = \"~/src\"\nunfocused-dim = 0.25\npane-gap = 0\n\
+         ui-font-family = \"IBM Plex Sans\"\nbell = \"flash\"\n"
+    }
+
+    #[test]
+    fn new_settings_default_to_todays_behaviour() {
+        let s = Settings::parse("");
+        assert!(s.problems.is_empty(), "{:?}", s.problems);
+        assert!(s.bold_is_bright && s.ligatures && s.kitty_keyboard && s.restore_session);
+        assert!(!s.copy_on_select && !s.option_as_alt);
+        assert_eq!(s.cursor_blink_interval, Duration::from_millis(530));
+        assert_eq!(s.word_separators, None);
+        assert_eq!(s.scroll_speed, 3.0);
+        assert_eq!(s.right_click, RightClick::None);
+        let expected = if cfg!(target_os = "macos") { LinkModifier::Cmd } else { LinkModifier::Ctrl };
+        assert_eq!(s.link_modifier, expected);
+        assert_eq!((s.window_width, s.window_height), (1100.0, 720.0));
+        assert_eq!(s.working_directory, WorkingDirectory::Inherit);
+        assert_eq!(s.unfocused_dim, None);
+        assert_eq!(s.pane_gap, 8.0);
+        assert_eq!(s.ui_font_family.as_ref(), UI_FONT);
+        assert_eq!(s.bell, Bell::Off);
+    }
+
+    #[test]
+    fn new_settings_parse() {
+        let s = Settings::parse(non_default());
+        assert!(s.problems.is_empty(), "{:?}", s.problems);
+        assert!(!s.bold_is_bright && !s.ligatures && !s.kitty_keyboard && !s.restore_session);
+        assert!(s.copy_on_select && s.option_as_alt);
+        assert_eq!(s.cursor_blink_interval, Duration::from_millis(800));
+        assert_eq!(s.word_separators.as_deref(), Some(" ,│"));
+        assert_eq!(s.scroll_speed, 5.0);
+        assert_eq!(s.right_click, RightClick::CopyOrPaste);
+        assert_eq!(s.link_modifier, LinkModifier::None);
+        assert_eq!((s.window_width, s.window_height), (1400.0, 900.0));
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert_eq!(s.working_directory, WorkingDirectory::Path(home.join("src")));
+        assert_eq!(s.unfocused_dim, Some(0.25));
+        assert_eq!(s.pane_gap, 0.0);
+        assert_eq!(s.ui_font_family.as_ref(), "IBM Plex Sans");
+        assert_eq!(s.bell, Bell::Flash);
+        let s = Settings::parse("working-directory = \"home\"\nright-click = \"paste\"\nlink-modifier = \"alt\"");
+        assert_eq!(s.working_directory, WorkingDirectory::Home);
+        assert_eq!(s.right_click, RightClick::Paste);
+        assert_eq!(s.link_modifier, LinkModifier::Alt);
+    }
+
+    #[test]
+    fn new_settings_reject_bad_values() {
+        let s = Settings::parse(
+            "scroll-speed = 0\ncursor-blink-interval = 50\nright-click = \"menu\"\nlink-modifier = \"shift\"\n\
+             unfocused-dim = 0.9\npane-gap = 30\nbell = \"loud\"\nworking-directory = \"\"\n",
+        );
+        assert_eq!(s.problems.len(), 8, "{:?}", s.problems);
+        for key in ["scroll-speed", "cursor-blink-interval", "right-click", "link-modifier", "unfocused-dim", "pane-gap", "bell", "working-directory"] {
+            assert!(s.problems.iter().any(|p| p.contains(&format!("`{key}`"))), "{key}: {:?}", s.problems);
+        }
+        let d = Settings::default();
+        assert_eq!(s.scroll_speed, d.scroll_speed);
+        assert_eq!(s.cursor_blink_interval, d.cursor_blink_interval);
+        assert_eq!(s.right_click, d.right_click);
+        assert_eq!(s.unfocused_dim, d.unfocused_dim);
+        assert_eq!(s.pane_gap, d.pane_gap);
+        assert_eq!(s.bell, d.bell);
+        assert_eq!(s.working_directory, d.working_directory);
+    }
+
+    #[test]
+    fn template_round_trips_new_settings() {
+        let s = Settings::parse(non_default());
+        let parsed = Settings::parse(&s.template());
+        assert!(parsed.problems.is_empty(), "{:?}", parsed.problems);
+        assert!(parsed == s);
+    }
 
     #[test]
     fn builtin_plugins_are_listed_by_name() {

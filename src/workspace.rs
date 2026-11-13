@@ -19,14 +19,15 @@ use crate::api::{self, ApiError, ApiResult};
 use crate::keymap;
 use crate::palette::{CommandPalette, Dot, PaletteEvent, PaletteFn, PaletteItem};
 use crate::session::{self, Axis, NodeState, Session, TabState, WindowState};
-use crate::settings::{MONO_FONT, Settings, UI_FONT};
+use crate::settings::{MONO_FONT, Settings, WorkingDirectory, ui_font};
 use crate::pty::{GridSize, Owner};
 use std::path::PathBuf;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::theme::{Theme, alpha};
 use crate::*;
 
-const GAP: f32 = 8.0;
+/// Space between the panes and the window's edges.
+const EDGE: f32 = 8.0;
 /// Height of the title bar with the tabs.
 const TITLEBAR_HEIGHT: f32 = 44.0;
 /// Narrowest a tab gets before the tab strip scrolls instead.
@@ -87,7 +88,7 @@ impl Render for TabGhost {
             .border_color(border)
             .text_color(fg)
             .text_size(px(12.5))
-            .font_family(UI_FONT)
+            .font_family(ui_font())
             .whitespace_nowrap()
             .overflow_hidden()
             .child(self.0.title.clone())
@@ -629,8 +630,11 @@ impl Workspace {
         }
     }
 
+    /// Where a new tab, split or window starts (`working-directory`).
     fn current_cwd(&self, cx: &App) -> Option<std::path::PathBuf> {
-        self.active_terminal().and_then(|t| t.read(cx).cwd())
+        let inherited = self.active_terminal().and_then(|t| t.read(cx).cwd());
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        start_dir(&Settings::get(cx).working_directory, inherited, home)
     }
 
     // ---- actions --------------------------------------------------------
@@ -1209,6 +1213,7 @@ impl Workspace {
         if drag.tab != self.active_tab {
             return;
         }
+        let gap = Settings::get(cx).pane_gap;
         let Some(tab) = self.tabs.get_mut(self.active_tab) else { return };
         let Some(PaneNode::Split { axis, ratios, .. }) = tab.root.at_path_mut(&drag.path) else {
             return;
@@ -1221,22 +1226,11 @@ impl Workspace {
             Axis::Row => (mouse.x - bounds.origin.x, bounds.size.width),
             Axis::Column => (mouse.y - bounds.origin.y, bounds.size.height),
         };
-        // Children are flex-basis 0 with flex-grow = ratio, so the space left over
-        // after the gaps is shared in proportion to the ratios.
-        let free = f32::from(size) - GAP * (ratios.len() - 1) as f32;
-        if free <= 0.0 {
-            return;
+        let axis = *axis;
+        if drag_ratios(ratios, i, f32::from(pos), f32::from(size), gap) {
+            self.dragging = Some(axis);
+            cx.notify();
         }
-        let total: f32 = ratios.iter().sum();
-        let before: f32 = ratios[..i].iter().sum();
-        let pair = ratios[i] + ratios[i + 1];
-        let target = (f32::from(pos) - i as f32 * GAP - GAP / 2.0) / free * total - before;
-        let min = (MIN_PANE / free * total).min(pair / 2.0);
-        let left = target.clamp(min, pair - min);
-        ratios[i] = left;
-        ratios[i + 1] = pair - left;
-        self.dragging = Some(*axis);
-        cx.notify();
     }
 
     fn equalize_split(&mut self, path: &[usize], cx: &mut Context<Self>) {
@@ -1268,7 +1262,7 @@ impl Workspace {
                 let mut items = Vec::with_capacity(children.len() * 2);
                 for (i, (child, ratio)) in children.iter().zip(ratios).enumerate() {
                     if i > 0 {
-                        items.push(self.render_divider(row, path.clone(), i - 1, theme, cx));
+                        items.push(self.render_divider(row, path.clone(), i - 1, theme, Settings::get(cx).pane_gap, cx));
                     }
                     let mut child_path = path.clone();
                     child_path.push(i);
@@ -1310,21 +1304,28 @@ impl Workspace {
         path: Vec<usize>,
         index: usize,
         theme: &Theme,
+        gap: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tab = self.active_tab;
+        // The handle stays grabbable even when the gap is narrow or zero: it
+        // overhangs the panes on both sides.
+        let grab = gap.max(8.0);
+        let overhang = (grab - gap) / 2.0;
         let name: SharedString = format!("divider-{tab}-{path:?}-{index}").into();
         let pill = alpha(theme.accent, 0.75);
         let equalize_path = path.clone();
-        div()
+        // Negative margins: it takes up only `gap` in the layout, but its
+        // hitbox is `grab` wide, over the edges of the panes on either side.
+        let handle = div()
             .id(ElementId::Name(name.clone()))
             .group(name.clone())
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .when(row, |d| d.w(px(GAP)).h_full().cursor(CursorStyle::ResizeLeftRight))
-            .when(!row, |d| d.h(px(GAP)).w_full().cursor(CursorStyle::ResizeUpDown))
+            .when(row, |d| d.w(px(grab)).mx(px(-overhang)).h_full().cursor(CursorStyle::ResizeLeftRight))
+            .when(!row, |d| d.h(px(grab)).my(px(-overhang)).w_full().cursor(CursorStyle::ResizeUpDown))
             .child(
                 div()
                     .rounded_full()
@@ -1341,7 +1342,10 @@ impl Workspace {
                 }),
             )
             .on_drag(SplitDrag { tab, path, index }, |_, _, _, cx| cx.new(|_| DragGhost))
-            .into_any_element()
+            // Takes the mouse from the panes it overhangs.
+            .occlude();
+        // Drawn after the panes, so the overhang sits on top of them.
+        gpui::deferred(handle).into_any_element()
     }
 
     fn render_titlebar(
@@ -1381,7 +1385,7 @@ impl Workspace {
         // Real widths, from the fonts as drawn: an estimate per character
         // clipped titles, and emoji in badges are wider than letters.
         let text_system = window.text_system().clone();
-        let measure = move |text: &str, family: &'static str, size: f32| -> f32 {
+        let measure = move |text: &str, family: SharedString, size: f32| -> f32 {
             if text.is_empty() {
                 return 0.0;
             }
@@ -1404,30 +1408,34 @@ impl Workspace {
             let width = share + if active { active_extra } else { 0.0 };
             // Room left for the title after the tab's padding, number, close
             // button, and dot or pane count if shown.
-            let number = measure(&(i + 1).to_string(), MONO_FONT, 11.0);
+            let number = measure(&(i + 1).to_string(), MONO_FONT.into(), 11.0);
             let pane_count = panes.to_string();
             let fixed = 16.0 + number + 8.0 + if show_close { CLOSE_WIDTH } else { 0.0 };
             // A long command finished in a pane you haven't looked at since.
-            let attention = tab
-                .leaves()
-                .iter()
-                .filter_map(|l| l.read(cx).attention)
-                .reduce(|a, b| a && b)
-                .map(|ok| if ok { theme.ansi[2] } else { theme.ansi[1] });
+            // Red (a failed command) beats yellow (a bell) beats green.
+            let leaves = tab.leaves();
+            let finished = leaves.iter().filter_map(|l| l.read(cx).attention).reduce(|a, b| a && b);
+            let rang = leaves.iter().any(|l| l.read(cx).rang);
+            let attention = match (finished, rang) {
+                (Some(false), _) => Some(theme.ansi[1]),
+                (_, true) => Some(theme.ansi[3]),
+                (Some(true), false) => Some(theme.ansi[2]),
+                (None, false) => None,
+            };
             let fixed = fixed + if attention.is_some() { 15.0 } else { 0.0 };
             let tint = tab.color.map(|c| c.resolve(theme));
             // Monospace, so a ticking countdown doesn't jiggle the title. In a
             // narrow tab the title gives way first, down to a few letters;
             // then the badge does: its short form, shortened with an
             // ellipsis, or left out.
-            let title_room = measure(&title, UI_FONT, 12.5).min(MIN_TITLE_WIDTH);
+            let title_room = measure(&title, ui_font(), 12.5).min(MIN_TITLE_WIDTH);
             let badge = tab.badge.as_deref().and_then(|b| {
-                fit_badge(b, tab.short_badge.as_deref(), width - fixed, title_room, |t| measure(t, MONO_FONT, 10.5))
+                fit_badge(b, tab.short_badge.as_deref(), width - fixed, title_room, |t| measure(t, MONO_FONT.into(), 10.5))
             });
-            let fixed = fixed + badge.as_ref().map_or(0.0, |b| BADGE_CHROME + measure(b, MONO_FONT, 10.5));
+            let fixed = fixed + badge.as_ref().map_or(0.0, |b| BADGE_CHROME + measure(b, MONO_FONT.into(), 10.5));
             // The pane count goes before the badge does: a badge was put
             // there on purpose.
-            let panes_width = 8.0 + PANES_ICON_WIDTH + 3.0 + measure(&pane_count, MONO_FONT, 10.5);
+            let panes_width = 8.0 + PANES_ICON_WIDTH + 3.0 + measure(&pane_count, MONO_FONT.into(), 10.5);
             let show_panes = panes > 1 && !compact && width - fixed - panes_width >= title_room;
             let fixed = fixed + if show_panes { panes_width } else { 0.0 };
             let title_width = (width - fixed).max(16.0);
@@ -1608,7 +1616,7 @@ impl Workspace {
             .pl(px(if cfg!(target_os = "macos") { 84.0 } else { 10.0 }))
             .pr(px(10.0))
             .gap(px(4.0))
-            .font_family(UI_FONT)
+            .font_family(ui_font())
             .text_size(px(12.5))
             .when(!self.quick, |d| {
                 d.on_mouse_down(MouseButton::Left, |ev, window, _| {
@@ -1643,7 +1651,7 @@ fn problem_banner(problems: &[String], plugin_problems: &[String], theme: &Theme
         .unwrap_or_else(|| "config.toml".into());
     div()
         .absolute()
-        .bottom(px(GAP * 2.0))
+        .bottom(px(EDGE * 2.0))
         .left_0()
         .right_0()
         .flex()
@@ -1660,7 +1668,7 @@ fn problem_banner(problems: &[String], plugin_problems: &[String], theme: &Theme
                 .bg(theme.raised)
                 .border_1()
                 .border_color(alpha(theme.ansi[1], 0.5))
-                .font_family(UI_FONT)
+                .font_family(ui_font())
                 .text_size(px(12.5))
                 .text_color(theme.text)
                 .shadow(vec![BoxShadow {
@@ -1687,7 +1695,7 @@ fn problem_banner(problems: &[String], plugin_problems: &[String], theme: &Theme
 /// `title` shortened with an ellipsis to fit `width` in the tab font. (GPUI's
 /// own text ellipsis doesn't apply to text measured before its box shrank.)
 fn truncate_title(title: SharedString, width: f32, cx: &App) -> SharedString {
-    let font = gpui::font(UI_FONT);
+    let font = gpui::font(ui_font());
     let mut runs = vec![gpui::TextRun {
         len: title.len(),
         font: font.clone(),
@@ -1801,6 +1809,52 @@ fn clears_on_disconnect(style_owner: Option<u64>, conn: Option<u64>) -> bool {
     conn.is_some() && style_owner == conn
 }
 
+/// Where a new pane starts, given the `working-directory` setting, the
+/// focused pane's folder and home. A folder that's gone falls back to home.
+fn start_dir(setting: &WorkingDirectory, inherited: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    match setting {
+        WorkingDirectory::Inherit => inherited,
+        WorkingDirectory::Home => home,
+        WorkingDirectory::Path(p) if p.is_dir() => Some(p.clone()),
+        WorkingDirectory::Path(_) => home,
+    }
+}
+
+/// A fresh window's session when `working-directory` names a folder (home or
+/// a path): one tab, one pane, there. `None` for "inherit", which keeps the
+/// usual start (Lumen's own folder, or home).
+pub fn fresh_session(setting: &WorkingDirectory, home: Option<PathBuf>) -> Option<Session> {
+    if *setting == WorkingDirectory::Inherit {
+        return None;
+    }
+    let cwd = start_dir(setting, None, home)?;
+    Some(Session::new(
+        None,
+        0,
+        vec![TabState { root: NodeState::Pane { cwd: Some(cwd) }, active: 0, zoomed: false, title: None }],
+    ))
+}
+
+/// Move the divider after child `i` of a split to `pos` along a split `size`
+/// long whose children are `gap` apart. Children are flex-basis 0 with
+/// flex-grow = ratio, so the space left after the gaps is shared in
+/// proportion to the ratios. False when there's no room to move.
+fn drag_ratios(ratios: &mut [f32], i: usize, pos: f32, size: f32, gap: f32) -> bool {
+    let free = size - gap * (ratios.len() - 1) as f32;
+    if free <= 0.0 || i + 1 >= ratios.len() {
+        return false;
+    }
+    let total: f32 = ratios.iter().sum();
+    let before: f32 = ratios[..i].iter().sum();
+    let pair = ratios[i] + ratios[i + 1];
+    let target = (pos - i as f32 * gap - gap / 2.0) / free * total - before;
+    let min = (MIN_PANE / free * total).min(pair / 2.0);
+    let left = target.clamp(min, pair - min);
+    ratios[i] = left;
+    ratios[i + 1] = pair - left;
+    true
+}
+
 /// Height of the strip that names a split pane.
 const PANE_LABEL_HEIGHT: f32 = 22.0;
 
@@ -1826,6 +1880,7 @@ fn pane_frame(
             spread_radius: px(1.0),
         });
     }
+    let dim = Settings::get(cx).unfocused_dim.unwrap_or(if theme.is_light { 0.25 } else { 0.35 });
     // A split pane with a label gets a strip above its terminal.
     let label = term.read(cx).label.clone().filter(|_| multi);
     let tint = term.read(cx).label_color.map(|c| c.resolve(theme));
@@ -1852,7 +1907,7 @@ fn pane_frame(
                     .bg(tint.map_or(alpha(theme.shell, 0.4), |t| mix(theme.pane, t, 0.16)))
                     .border_b_1()
                     .border_color(theme.border)
-                    .font_family(UI_FONT)
+                    .font_family(ui_font())
                     .text_size(px(11.5))
                     .text_color(if focused { theme.text } else { theme.subtext })
                     .overflow_hidden()
@@ -1867,14 +1922,14 @@ fn pane_frame(
                 AnyView::from(term.clone()).cached(StyleRefinement::default().size_full()),
             ),
         )
-        .when(multi && !focused, |d| {
+        .when(multi && !focused && dim > 0.0, |d| {
             d.child(
                 div()
                     .absolute()
                     .top_0()
                     .left_0()
                     .size_full()
-                    .bg(alpha(theme.shell, if theme.is_light { 0.25 } else { 0.35 })),
+                    .bg(alpha(theme.shell, dim)),
             )
         })
         .into_any_element()
@@ -2572,7 +2627,7 @@ impl Render for Workspace {
             .flex_col()
             .bg(theme.shell)
             .text_color(theme.text)
-            .font_family(UI_FONT)
+            .font_family(ui_font())
             .cursor(CursorStyle::Arrow)
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .when_some(tiling, |d, tiling| {
@@ -2619,8 +2674,8 @@ impl Render for Workspace {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .px(px(GAP))
-                    .pb(px(GAP))
+                    .px(px(EDGE))
+                    .pb(px(EDGE))
                     .children(content),
             )
             .when_some(self.palette.clone(), |d, palette| {
@@ -2742,9 +2797,9 @@ pub fn startup_panes(saved: Option<&Session>, window: Size<Pixels>, cx: &App) ->
         cell_height: line as u16,
     };
     // Below the title bar, inside the gaps around the panes.
-    let content = (f32::from(window.width) - 2.0 * GAP, f32::from(window.height) - TITLEBAR_HEIGHT - GAP);
+    let content = (f32::from(window.width) - 2.0 * EDGE, f32::from(window.height) - TITLEBAR_HEIGHT - EDGE);
     match saved {
-        Some(saved) => layout_panes(&saved.tabs, content, &grid),
+        Some(saved) => layout_panes(&saved.tabs, content, settings.pane_gap, &grid),
         None => vec![(None, grid(content.0, content.1))],
     }
 }
@@ -2754,11 +2809,13 @@ pub fn startup_panes(saved: Option<&Session>, window: Size<Pixels>, cx: &App) ->
 fn layout_panes(
     tabs: &[TabState],
     content: (f32, f32),
+    gap: f32,
     grid: &dyn Fn(f32, f32) -> GridSize,
 ) -> Vec<(Option<PathBuf>, GridSize)> {
     fn walk(
         node: &NodeState,
         (w, h): (f32, f32),
+        gap: f32,
         grid: &dyn Fn(f32, f32) -> GridSize,
         out: &mut Vec<(Option<PathBuf>, GridSize)>,
     ) {
@@ -2766,11 +2823,11 @@ fn layout_panes(
             NodeState::Pane { cwd } => out.push((cwd.clone(), grid(w, h))),
             NodeState::Split { axis, children, ratios } => {
                 let along = if *axis == Axis::Row { w } else { h };
-                let room = (along - GAP * children.len().saturating_sub(1) as f32).max(0.0);
+                let room = (along - gap * children.len().saturating_sub(1) as f32).max(0.0);
                 let total: f32 = ratios.iter().sum::<f32>().max(f32::EPSILON);
                 for (child, r) in children.iter().zip(ratios) {
                     let share = room * r / total;
-                    walk(child, if *axis == Axis::Row { (share, h) } else { (w, share) }, grid, out);
+                    walk(child, if *axis == Axis::Row { (share, h) } else { (w, share) }, gap, grid, out);
                 }
             }
         }
@@ -2778,7 +2835,7 @@ fn layout_panes(
     let mut out = Vec::new();
     for tab in tabs {
         let first = out.len();
-        walk(&tab.root, content, grid, &mut out);
+        walk(&tab.root, content, gap, grid, &mut out);
         // A zoomed tab shows its focused pane alone.
         if tab.zoomed
             && let Some(pane) = out.get_mut(first + tab.active)
@@ -2792,6 +2849,49 @@ fn layout_panes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_dir_follows_setting() {
+        let inherited = Some(PathBuf::from("/inherited"));
+        let home = Some(PathBuf::from("/home/me"));
+        assert_eq!(start_dir(&WorkingDirectory::Inherit, inherited.clone(), home.clone()), inherited);
+        assert_eq!(start_dir(&WorkingDirectory::Home, inherited.clone(), home.clone()), home);
+        let tmp = std::env::temp_dir();
+        assert_eq!(start_dir(&WorkingDirectory::Path(tmp.clone()), inherited.clone(), home.clone()), Some(tmp));
+        let gone = WorkingDirectory::Path(PathBuf::from("/nonexistent-lumen-test"));
+        assert_eq!(start_dir(&gone, inherited, home.clone()), home);
+    }
+
+    #[test]
+    fn fresh_windows_follow_working_directory() {
+        let home = Some(PathBuf::from("/home/me"));
+        assert!(fresh_session(&WorkingDirectory::Inherit, home.clone()).is_none());
+        let cwd = |s: Option<Session>| match s.as_ref().map(|s| &s.tabs[0].root) {
+            Some(NodeState::Pane { cwd }) => cwd.clone(),
+            _ => None,
+        };
+        assert_eq!(cwd(fresh_session(&WorkingDirectory::Home, home.clone())), home);
+        let tmp = std::env::temp_dir();
+        assert_eq!(cwd(fresh_session(&WorkingDirectory::Path(tmp.clone()), home)), Some(tmp));
+    }
+
+    #[test]
+    fn layout_with_no_gap() {
+        let grid = |w: f32, h: f32| GridSize { cols: w as u16, rows: h as u16, cell_width: 1, cell_height: 1 };
+        let pane = || NodeState::Pane { cwd: Some("/x".into()) };
+        let tabs = vec![TabState {
+            root: NodeState::Split { axis: Axis::Row, children: vec![pane(), pane(), pane()], ratios: vec![1.0, 1.0, 1.0] },
+            active: 0,
+            zoomed: false,
+            title: None,
+        }];
+        let widths: Vec<u16> = layout_panes(&tabs, (900.0, 100.0), 0.0, &grid).iter().map(|(_, g)| g.cols).collect();
+        assert_eq!(widths, [300, 300, 300]);
+        let mut ratios: Vec<f32> = vec![1.0, 1.0, 1.0];
+        assert!(drag_ratios(&mut ratios, 0, 450.0, 900.0, 0.0));
+        assert!(ratios.iter().all(|r| r.is_finite() && *r > 0.0), "{ratios:?}");
+        assert!((ratios[0] - 1.5).abs() < 0.01, "{ratios:?}");
+    }
 
     #[test]
     fn startup_panes_get_their_share_of_the_window() {
@@ -2814,7 +2914,7 @@ mod tests {
             ),
             tab(NodeState::Split { axis: Axis::Row, children: vec![pane("/d"), pane("/e")], ratios: vec![1.0, 1.0] }, 1, true),
         ];
-        let got: Vec<(String, u16, u16)> = layout_panes(&tabs, (408.0, 208.0), &grid)
+        let got: Vec<(String, u16, u16)> = layout_panes(&tabs, (408.0, 208.0), 8.0, &grid)
             .into_iter()
             .map(|(cwd, g)| (cwd.unwrap().display().to_string(), g.cols, g.rows))
             .collect();

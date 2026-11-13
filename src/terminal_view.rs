@@ -34,13 +34,10 @@ use crate::shell_integration;
 use crate::marks;
 use crate::mouse::{self, Action as MouseAction, Button as ReportButton};
 use crate::pty::{GridSize, Owner, Pty};
-use crate::settings::{MONO_FONT, Settings, UI_FONT};
+use crate::settings::{Bell, LinkModifier, MONO_FONT, RightClick, Settings, ui_font};
 use crate::theme::{Theme, alpha, indexed};
 use crate::vi::{self, Outcome, ViState};
 use crate::{Copy, CopyLastOutput, Find, NextPrompt, Paste, PrevPrompt, ToggleSelectMode, input};
-
-/// Half a blink: how long the cursor stays shown, then hidden.
-const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
 pub enum TerminalEvent {
     TitleChanged,
@@ -134,6 +131,10 @@ pub struct TerminalView {
     /// A long command finished while you weren't here: whether it succeeded.
     /// Shown as a dot on the tab until the pane is focused.
     pub attention: Option<bool>,
+    /// A bell rang while you weren't looking (`bell = "flash"`); a yellow tab dot.
+    pub rang: bool,
+    /// When the pane last flashed for a bell.
+    bell_at: Option<Instant>,
     /// A short label drawn above the pane when its tab is split, and a colour
     /// for it, set over the socket API. Not saved. `style_owner` is the
     /// plugin connection that set them (they go when it disconnects).
@@ -263,7 +264,8 @@ impl TerminalView {
 
         let blink = cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(BLINK_INTERVAL).await;
+                let Ok(interval) = cx.update(|cx| Settings::get(cx).cursor_blink_interval) else { break };
+                cx.background_executor().timer(interval).await;
                 if this.update(cx, |this, cx| this.blink_tick(cx)).is_err() {
                     break;
                 }
@@ -325,6 +327,8 @@ impl TerminalView {
             window_active: window.is_window_active(),
             running_command: None,
             attention: None,
+            rang: false,
+            bell_at: None,
             label: None,
             label_color: None,
             style_owner: None,
@@ -358,8 +362,27 @@ impl TerminalView {
 
     /// Clear the tab badge once you've looked at the pane.
     fn seen(&mut self, cx: &mut Context<Self>) {
-        if self.attention.take().is_some() {
+        let rang = std::mem::take(&mut self.rang);
+        if self.attention.take().is_some() || rang {
             cx.emit(TerminalEvent::Attention);
+        }
+    }
+
+    fn ring(&mut self, cx: &mut Context<Self>) {
+        let looking = self.focused && self.window_active;
+        let (flash, mark) = on_bell(Settings::get(cx).bell, looking);
+        if mark && !self.rang {
+            self.rang = true;
+            cx.emit(TerminalEvent::Attention);
+        }
+        if flash && flash_due(self.bell_at, Instant::now()) {
+            self.bell_at = Some(Instant::now());
+            cx.notify();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(BELL_FLASH).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
         }
     }
 
@@ -499,7 +522,10 @@ impl TerminalView {
             Event::TextAreaSizeRequest(format) => {
                 self.pty.write(format(self.pty.window_size()).into_bytes())
             }
-            Event::Bell => crate::api::emit("bell", serde_json::json!({ "pane": cx.entity_id().as_u64() })),
+            Event::Bell => {
+                crate::api::emit("bell", serde_json::json!({ "pane": cx.entity_id().as_u64() }));
+                self.ring(cx);
+            }
             Event::ChildExit(_) | Event::Exit => cx.emit(TerminalEvent::Exited),
             _ => {}
         }
@@ -577,7 +603,9 @@ impl TerminalView {
 
     fn update_hovered_link(&mut self, cx: &mut Context<Self>) {
         let link = match self.pointer {
-            Some((pos, mods)) if link_modifier(&mods) && !self.selecting => self.link_at(pos),
+            Some((pos, mods)) if link_held(&mods, Settings::get(cx).link_modifier) && !self.selecting => {
+                self.link_at(pos)
+            }
             _ => None,
         };
         if link != self.hovered_link {
@@ -617,7 +645,8 @@ impl TerminalView {
     }
 
     fn blink_tick(&mut self, cx: &mut Context<Self>) {
-        let on = !self.blinks(cx) || self.last_typed.elapsed() < BLINK_INTERVAL || !self.blink_on;
+        let interval = Settings::get(cx).cursor_blink_interval;
+        let on = !self.blinks(cx) || self.last_typed.elapsed() < interval || !self.blink_on;
         if on != self.blink_on {
             self.blink_on = on;
             cx.notify();
@@ -650,7 +679,8 @@ impl TerminalView {
         }
         let mode = *self.pty.term.lock().mode();
         let event = if ev.is_held { input::KeyEvent::Repeat } else { input::KeyEvent::Press };
-        if let Some(bytes) = input::encode(ks, mode, event) {
+        let alt_sends_esc = !cfg!(target_os = "macos") || Settings::get(cx).option_as_alt;
+        if let Some(bytes) = input::encode(ks, mode, event, alt_sends_esc) {
             self.jump_target = None;
             {
                 let mut term = self.pty.term.lock();
@@ -665,12 +695,13 @@ impl TerminalView {
 
     /// Key releases, for programs that asked the kitty keyboard protocol to
     /// report them.
-    fn on_key_up(&mut self, ev: &KeyUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn on_key_up(&mut self, ev: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         let mode = *self.pty.term.lock().mode();
         if !mode.contains(TermMode::REPORT_EVENT_TYPES) || self.search.is_some() {
             return;
         }
-        if let Some(bytes) = input::encode(&ev.keystroke, mode, input::KeyEvent::Release) {
+        let alt_sends_esc = !cfg!(target_os = "macos") || Settings::get(cx).option_as_alt;
+        if let Some(bytes) = input::encode(&ev.keystroke, mode, input::KeyEvent::Release, alt_sends_esc) {
             self.pty.write(bytes);
         }
     }
@@ -696,7 +727,8 @@ impl TerminalView {
             return;
         }
 
-        self.scroll_acc += lines;
+        // GPUI's lines already count a notch as LINES_PER_NOTCH; scale to the setting.
+        self.scroll_acc += lines * Settings::get(cx).scroll_speed / LINES_PER_NOTCH;
         let n = self.scroll_acc.trunc() as i32;
         if n == 0 {
             return;
@@ -719,7 +751,7 @@ impl TerminalView {
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
         if ev.button == MouseButton::Left
-            && link_modifier(&ev.modifiers)
+            && link_held(&ev.modifiers, Settings::get(cx).link_modifier)
             && let Some(link) = self.link_at(ev.position)
         {
             if links::openable(&link) {
@@ -740,6 +772,14 @@ impl TerminalView {
         match ev.button {
             MouseButton::Left => self.start_selection(ev, cx),
             MouseButton::Middle => self.paste_primary(cx),
+            MouseButton::Right => {
+                let has_selection = self.pty.term.lock().selection.as_ref().is_some_and(|s| !s.is_empty());
+                match right_click(has_selection, Settings::get(cx).right_click) {
+                    Some(ClickAction::Copy) => self.copy(&Copy, window, cx),
+                    Some(ClickAction::Paste) => self.paste(&Paste, window, cx),
+                    None => {}
+                }
+            }
             _ => {}
         }
     }
@@ -815,8 +855,14 @@ impl TerminalView {
         if term.selection.as_ref().is_some_and(|s| s.is_empty()) {
             term.selection = None;
         }
-        #[cfg(target_os = "linux")]
-        if let Some(text) = term.selection_to_string() {
+        let copy_on_select = Settings::get(cx).copy_on_select;
+        if selection_wanted(copy_on_select, cfg!(target_os = "linux"))
+            && let Some(text) = term.selection_to_string()
+        {
+            if copy_on_select {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            }
+            #[cfg(target_os = "linux")]
             cx.write_to_primary(ClipboardItem::new_string(text));
         }
         cx.notify();
@@ -1253,9 +1299,59 @@ impl EntityInputHandler for TerminalView {
     }
 }
 
-/// Ctrl on Linux, Cmd on macOS: held to underline and click links.
-fn link_modifier(m: &Modifiers) -> bool {
-    if cfg!(target_os = "macos") { m.platform } else { m.control }
+/// Whether the key the `link-modifier` setting names is held (to underline
+/// and click links). `None` needs no key.
+fn link_held(m: &Modifiers, wanted: LinkModifier) -> bool {
+    match wanted {
+        LinkModifier::Ctrl => m.control,
+        LinkModifier::Cmd => m.platform,
+        LinkModifier::Alt => m.alt,
+        LinkModifier::None => true,
+    }
+}
+
+/// Where clicks reach the scrollbar: a little wider than the track, so it's
+/// easy to hit.
+fn scrollbar_zone(track: Bounds<Pixels>) -> Bounds<Pixels> {
+    Bounds::new(point(track.origin.x - px(4.0), track.origin.y), size(track.size.width + px(8.0), track.size.height))
+}
+
+/// How long a pane flashes for a bell.
+const BELL_FLASH: Duration = Duration::from_millis(150);
+
+/// Whether a bell starts a new flash: not while one is still showing, so a
+/// program ringing in a loop costs one timer per flash, not one per bell.
+fn flash_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|t| now.duration_since(t) >= BELL_FLASH)
+}
+
+/// Whether letting go of a selection needs its text: for the clipboard
+/// (`copy-on-select`) or the primary selection (Linux).
+fn selection_wanted(copy_on_select: bool, primary: bool) -> bool {
+    copy_on_select || primary
+}
+
+/// What a bell does: (flash the pane, mark its tab).
+fn on_bell(setting: Bell, looking: bool) -> (bool, bool) {
+    match setting {
+        Bell::Off => (false, false),
+        Bell::Flash => (true, !looking),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ClickAction {
+    Copy,
+    Paste,
+}
+
+/// What a right click does, given the `right-click` setting.
+fn right_click(has_selection: bool, setting: RightClick) -> Option<ClickAction> {
+    match setting {
+        RightClick::None => None,
+        RightClick::Paste => Some(ClickAction::Paste),
+        RightClick::CopyOrPaste => Some(if has_selection { ClickAction::Copy } else { ClickAction::Paste }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1277,6 +1373,9 @@ struct Frame {
     /// Where the scrollbar's track goes (for the mouse, even while it's
     /// hidden), and what to draw, if anything.
     scrollbar_track: Option<Bounds<Pixels>>,
+    /// The scrollbar's clickable zone, so something drawn over it (a split's
+    /// divider handle) can take the click instead.
+    scrollbar_hitbox: Option<gpui::Hitbox>,
     scrollbar: Option<ScrollbarDraw>,
 }
 
@@ -1328,13 +1427,29 @@ fn term_config(settings: &Settings) -> alacritty_terminal::term::Config {
     alacritty_terminal::term::Config {
         scrolling_history: settings.scrollback,
         default_cursor_style: settings.cursor_style(),
-        kitty_keyboard: true,
+        kitty_keyboard: settings.kitty_keyboard,
+        semantic_escape_chars: match &settings.word_separators {
+            // Spaces and tabs always end a word, whatever the list says.
+            Some(list) => {
+                let mut chars = list.clone();
+                for c in [' ', '\t'] {
+                    if !chars.contains(c) {
+                        chars.push(c);
+                    }
+                }
+                chars
+            }
+            None => alacritty_terminal::term::SEMANTIC_ESCAPE_CHARS.to_owned(),
+        },
         ..Default::default()
     }
 }
 
 fn same_term_config(a: &alacritty_terminal::term::Config, b: &alacritty_terminal::term::Config) -> bool {
-    a.scrolling_history == b.scrolling_history && a.default_cursor_style == b.default_cursor_style
+    a.scrolling_history == b.scrolling_history
+        && a.default_cursor_style == b.default_cursor_style
+        && a.kitty_keyboard == b.kitty_keyboard
+        && a.semantic_escape_chars == b.semantic_escape_chars
 }
 
 /// The find bar floating at the top right of the pane.
@@ -1376,7 +1491,7 @@ fn search_bar(search: &Search, theme: &Theme) -> gpui::AnyElement {
         .pl(px(12.0))
         .pr(px(6.0))
         .min_w(px(280.0))
-        .font_family(UI_FONT)
+        .font_family(ui_font())
         .text_size(px(12.5))
         .bg(theme.raised)
         .border_1()
@@ -1453,7 +1568,7 @@ fn select_badge(text: String, theme: &Theme) -> gpui::AnyElement {
         .gap(px(8.0))
         .h(px(26.0))
         .px(px(10.0))
-        .font_family(UI_FONT)
+        .font_family(ui_font())
         .text_size(px(12.0))
         .text_color(theme.muted)
         .bg(theme.raised)
@@ -1569,6 +1684,8 @@ impl Render for TerminalView {
         let font_size = settings.font_size();
         let font_family = settings.font_family.clone();
         let line_height_factor = settings.line_height;
+        let bold_is_bright = settings.bold_is_bright;
+        let ligatures = settings.ligatures;
         let focused = self.focus.is_focused(window);
         let blink_hidden = focused && !self.blink_on;
         let marked = self.marked.clone();
@@ -1588,6 +1705,8 @@ impl Render for TerminalView {
             .map(|s| s.visible(&self.pty.term.lock()))
             .unwrap_or_default();
         let search_bar = self.search.as_ref().map(|s| search_bar(s, &theme));
+        let flashing = self.bell_at.is_some_and(|t| t.elapsed() < BELL_FLASH);
+        let flash_color = alpha(theme.text, 0.08);
         let select_badge = {
             let term = self.pty.term.lock();
             vi::active(&term).then(|| select_badge(vi::status(&term, &self.vi), &theme))
@@ -1758,7 +1877,8 @@ impl Render for TerminalView {
 
                 // Colors
                 let mut fg_color = cell.fg;
-                if flags.contains(Flags::BOLD)
+                if bold_is_bright
+                    && flags.contains(Flags::BOLD)
                     && let Color::Named(n) = fg_color
                     && (n as usize) < 8
                 {
@@ -1836,7 +1956,7 @@ impl Render for TerminalView {
                 let style = (flags.contains(Flags::BOLD) as u8)
                     | ((flags.contains(Flags::ITALIC) as u8) << 1);
                 let zerowidth = cell.zerowidth().filter(|z| !z.is_empty() && ch != ' ');
-                if !wide && zerowidth.is_none() && glyphs::joins(ch) {
+                if ligatures && !wide && zerowidth.is_none() && glyphs::joins(ch) {
                     if let Some(j) = &mut join
                         && j.row == row
                         && j.col + j.len == col
@@ -1957,7 +2077,7 @@ impl Render for TerminalView {
                 let len = uri.len();
                 let run = TextRun {
                     len,
-                    font: font(UI_FONT),
+                    font: font(ui_font()),
                     color: theme.subtext,
                     background_color: None,
                     underline: None,
@@ -1968,6 +2088,8 @@ impl Render for TerminalView {
             });
 
             let scrollbar_track = scrollbar_on.then(|| scrollbar::track(bounds, padding, scrollbar_width));
+            let scrollbar_hitbox = scrollbar_track
+                .map(|track| window.insert_hitbox(scrollbar_zone(track), gpui::HitboxBehavior::Normal));
             let scrollbar = scrollbar_track.filter(|_| scrollbar_opacity > 0.0).map(|track| {
                 let pos = Position { history, rows, offset: offset as usize };
                 ScrollbarDraw {
@@ -1983,6 +2105,7 @@ impl Render for TerminalView {
 
             Frame {
                 scrollbar_track,
+                scrollbar_hitbox,
                 scrollbar,
                 backgrounds,
                 glyphs,
@@ -2094,11 +2217,8 @@ impl Render for TerminalView {
                 }
             }
             if let Some(track) = frame.scrollbar_track {
-                // A little wider than the track, so it's easy to hit.
-                let zone = Bounds::new(
-                    point(track.origin.x - px(4.0), track.origin.y),
-                    size(track.size.width + px(8.0), track.size.height),
-                );
+                let zone = scrollbar_zone(track);
+                let hitbox = frame.scrollbar_hitbox.clone();
                 let entity = scrollbar_entity.clone();
                 window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                     if phase != DispatchPhase::Bubble {
@@ -2119,8 +2239,12 @@ impl Render for TerminalView {
                     });
                 });
                 let entity = scrollbar_entity.clone();
-                window.on_mouse_event(move |ev: &MouseDownEvent, phase, _, cx| {
-                    if phase != DispatchPhase::Capture || ev.button != MouseButton::Left || !zone.contains(&ev.position) {
+                window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Capture
+                        || ev.button != MouseButton::Left
+                        || !zone.contains(&ev.position)
+                        || hitbox.as_ref().is_some_and(|h| !h.is_hovered(window))
+                    {
                         return;
                     }
                     cx.stop_propagation();
@@ -2191,6 +2315,9 @@ impl Render for TerminalView {
             .child(canvas(prepaint, paint).size_full())
             .children(search_bar)
             .children(select_badge)
+            .when(flashing, |d| {
+                d.child(div().absolute().inset_0().bg(flash_color))
+            })
     }
 }
 
@@ -2198,6 +2325,84 @@ impl Render for TerminalView {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_bell_during_a_flash_starts_no_new_timer() {
+        let now = Instant::now();
+        assert!(flash_due(None, now));
+        assert!(!flash_due(Some(now - Duration::from_millis(50)), now));
+        assert!(flash_due(Some(now - BELL_FLASH), now));
+    }
+
+    #[test]
+    fn selection_text_only_when_wanted() {
+        assert!(!selection_wanted(false, false), "macOS without copy-on-select builds no string");
+        assert!(selection_wanted(true, false));
+        assert!(selection_wanted(false, true));
+    }
+
+    #[test]
+    fn bell_flash_only_when_set() {
+        assert_eq!(on_bell(Bell::Off, true), (false, false));
+        assert_eq!(on_bell(Bell::Off, false), (false, false));
+        assert_eq!(on_bell(Bell::Flash, true), (true, false));
+        assert_eq!(on_bell(Bell::Flash, false), (true, true));
+    }
+
+    #[test]
+    fn link_held_follows_setting() {
+        let ctrl = Modifiers { control: true, ..Default::default() };
+        assert!(link_held(&ctrl, LinkModifier::Ctrl));
+        assert!(!link_held(&ctrl, LinkModifier::Cmd));
+        assert!(!link_held(&ctrl, LinkModifier::Alt));
+        let none = Modifiers::default();
+        assert!(link_held(&none, LinkModifier::None));
+        assert!(!link_held(&none, LinkModifier::Ctrl));
+        assert!(link_held(&Modifiers { alt: true, ..Default::default() }, LinkModifier::Alt));
+        assert!(link_held(&Modifiers { platform: true, ..Default::default() }, LinkModifier::Cmd));
+    }
+
+    #[test]
+    fn right_click_actions() {
+        assert_eq!(right_click(true, RightClick::CopyOrPaste), Some(ClickAction::Copy));
+        assert_eq!(right_click(false, RightClick::CopyOrPaste), Some(ClickAction::Paste));
+        assert_eq!(right_click(true, RightClick::Paste), Some(ClickAction::Paste));
+        assert_eq!(right_click(true, RightClick::None), None);
+        assert_eq!(right_click(false, RightClick::None), None);
+    }
+
+    #[test]
+    fn term_config_carries_keyboard_and_separators() {
+        let base = term_config(&Settings::default());
+        let s = Settings { kitty_keyboard: false, ..Default::default() };
+        let c = term_config(&s);
+        assert!(!c.kitty_keyboard);
+        assert!(!same_term_config(&base, &c));
+        let s = Settings { word_separators: Some(" ,".into()), ..Default::default() };
+        let c = term_config(&s);
+        assert_eq!(c.semantic_escape_chars, " ,\t");
+        assert!(!same_term_config(&base, &c));
+        assert!(same_term_config(&base, &term_config(&Settings::default())));
+        // An empty list still splits words on spaces.
+        let s = Settings { word_separators: Some(String::new()), ..Default::default() };
+        let c = term_config(&s);
+        assert_eq!(c.semantic_escape_chars, " \t");
+        assert_eq!(semantic_word(c, "ab cd", 1), "ab");
+    }
+
+    /// The word a double-click at `col` selects in a one-line terminal.
+    fn semantic_word(config: alacritty_terminal::term::Config, text: &str, col: usize) -> String {
+        use alacritty_terminal::event::VoidListener;
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::term::test::TermSize;
+        use alacritty_terminal::vte::ansi::Processor;
+        let mut term = alacritty_terminal::Term::new(config, &TermSize::new(20, 2), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, text.as_bytes());
+        let p = Point::new(Line(0), Column(col));
+        term.selection = Some(Selection::new(SelectionType::Semantic, p, Side::Left));
+        term.selection_to_string().unwrap_or_default()
+    }
 
     #[test]
     fn notification_wording() {
