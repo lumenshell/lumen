@@ -9,7 +9,7 @@ use gpui::{
     Styled, StyledText, Window, div, point, prelude::FluentBuilder, px,
 };
 
-use crate::settings::{MONO_FONT, Settings, UI_FONT};
+use crate::settings::{MONO_FONT, Settings, ui_font};
 use crate::theme::alpha;
 
 /// Something the palette runs: a choice, or what happens on cancel.
@@ -282,7 +282,7 @@ const VISIBLE_ROWS: f32 = 12.0;
 const ROW_ROOM: f32 = 560.0 - 2.0 - 12.0 - 24.0;
 
 /// A text run in `family`, for measuring.
-fn run(text: &str, family: &'static str) -> gpui::TextRun {
+fn run(text: &str, family: SharedString) -> gpui::TextRun {
     gpui::TextRun {
         len: text.len(),
         font: gpui::font(family),
@@ -299,21 +299,21 @@ fn run(text: &str, family: &'static str) -> gpui::TextRun {
 fn fit_hint(item: &PaletteItem, dots: bool, window: &Window, cx: &App) -> Option<SharedString> {
     let (text, family, size) = match &item.hint {
         Hint::None => return None,
-        Hint::Keys(keys) => (keys, MONO_FONT, 11.5),
-        Hint::Note(note) => (note, UI_FONT, 12.0),
+        Hint::Keys(keys) => (keys, SharedString::from(MONO_FONT), 11.5),
+        Hint::Note(note) => (note, ui_font(), 12.0),
     };
-    let width = |t: &SharedString, family, size| {
+    let width = |t: &SharedString, family: SharedString, size| {
         f32::from(window.text_system().shape_line(t.clone(), px(size), &[run(t, family)], None).width)
     };
-    let label = width(&item.label, UI_FONT, 13.5).min(380.0);
+    let label = width(&item.label, ui_font(), 13.5).min(380.0);
     let room = ROW_ROOM - label - 12.0 - if dots { 16.0 } else { 0.0 } - 2.0;
     if room < 40.0 {
         return None;
     }
-    if width(text, family, size) <= room {
+    if width(text, family.clone(), size) <= room {
         return Some(text.clone());
     }
-    let mut runs = vec![run(text, family)];
+    let mut runs = vec![run(text, family.clone())];
     Some(cx.text_system().line_wrapper(gpui::font(family), px(size)).truncate_line(text.clone(), px(room), "…", &mut runs))
 }
 
@@ -406,7 +406,7 @@ impl Render for CommandPalette {
             .flex()
             .flex_col()
             .pb(px(6.0))
-            .font_family(UI_FONT)
+            .font_family(ui_font())
             .text_size(px(13.5))
             .bg(theme.raised)
             .border_1()

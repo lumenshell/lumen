@@ -25,7 +25,9 @@ The full list, grouped by area. The [README](../README.md) has the highlights.
   along the bar to reorder it.
 - Drag the title bar to move the window. Double-click it to maximize.
 - Split panes sit on a padded canvas with rounded frames. The focused pane
-  gets an accent halo and the others dim. Focus Mode zooms the active pane.
+  gets an accent halo and the others dim (`unfocused-dim`; `pane-gap` sets the
+  space between them). Focus Mode zooms the active pane. With `bell = "flash"`
+  a bell flashes its pane, and marks its tab yellow if you're elsewhere.
 - Drag the gap between panes to resize a split. Double-click the gap to even
   it out.
 - Open as many windows as you like (Ctrl+Shift+N, ⌘N). A new window opens in
@@ -56,17 +58,19 @@ The full list, grouped by area. The [README](../README.md) has the highlights.
   screen and scrollback with vi keys, then select and copy without the mouse.
 - Mouse selection: drag, double-click for a word, triple-click for a line,
   Shift+click to extend. On Linux, selecting copies to the primary selection
-  and middle-click pastes. Bracketed paste.
+  and middle-click pastes. `copy-on-select = true` also copies to the
+  clipboard, and `right-click` can paste or copy. `word-separators` sets what
+  ends a word. Bracketed paste.
 - A scrollbar appears while you scroll, with a mark for every command (red for
   the ones that failed). Click a mark to jump to that command, or drag the
   bar. It fades out when you stop. Point at a pane's right edge to bring it
   back. `scrollbar = false` turns it off.
-- The wheel scrolls history. In full-screen programs that don't use the
+- The wheel scrolls history, `scroll-speed` lines per notch (3 by default). In full-screen programs that don't use the
   mouse, such as `less` and `man`, it moves through the text with arrow keys.
 
 ## Links and the mouse
 
-- Hold Ctrl (⌘ on macOS) to underline URLs and OSC 8 hyperlinks under the
+- Hold Ctrl (⌘ on macOS; change it with `link-modifier`) to underline URLs and OSC 8 hyperlinks under the
   pointer, with the target shown at the bottom of the pane. Click to open.
   Plain-text URLs with common schemes open. OSC 8 links hide their target
   behind other text, so only http, https and mailto ones open.

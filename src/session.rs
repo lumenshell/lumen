@@ -181,8 +181,23 @@ pub fn forget(window: u64) {
 
 /// Write every window atomically; with none left, remove the file so the
 /// next launch starts fresh.
+/// Whether the session file is written (`restore-session`), set at launch.
+static SAVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Turn writing the session file on or off. Off leaves the file as it is.
+pub fn set_saving(on: bool) {
+    SAVING.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn write(open: &[(u64, Option<Session>)]) {
-    let Some(path) = path() else { return };
+    write_to(path(), open, SAVING.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+fn write_to(path: Option<PathBuf>, open: &[(u64, Option<Session>)], saving: bool) {
+    if !saving {
+        return;
+    }
+    let Some(path) = path else { return };
     let windows: Vec<&Session> = open.iter().filter_map(|(_, s)| s.as_ref()).collect();
     if windows.is_empty() {
         let _ = std::fs::remove_file(path);
@@ -201,6 +216,20 @@ fn write(open: &[(u64, Option<Session>)]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn no_restore_leaves_the_session_file() {
+        let dir = std::env::temp_dir().join(format!("lumen-session-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("session.json");
+        std::fs::write(&file, "old").unwrap();
+        let open = vec![(1, Some(super::Session::new(None, 0, Vec::new())))];
+        super::write_to(Some(file.clone()), &open, false);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "old");
+        super::write_to(Some(file.clone()), &[], false);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "old", "not even removed");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     use super::*;
 
     fn window(cwd: &str) -> Session {

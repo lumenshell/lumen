@@ -120,3 +120,9 @@ A number before a move repeats it: `5j`, `3w`, `2[`.
 Clicking moves the cursor there, and `y` copies a mouse selection too. On
 Linux, copying also fills the primary selection, so middle-click pastes it.
 Leaving scrolls back to the bottom.
+
+## Option as Alt (macOS)
+
+On macOS, Option types special characters (Option+B is ∫) unless you set
+`option-as-alt = true` in [Config](config.md). Then Option works as Alt does
+on Linux: Option+B sends Alt+B, which shells use to move back a word.

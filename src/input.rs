@@ -15,13 +15,15 @@ pub enum KeyEvent {
 }
 
 /// Bytes to send for a key event, or `None` to send nothing.
-pub fn encode(ks: &Keystroke, mode: TermMode, event: KeyEvent) -> Option<Vec<u8>> {
+/// `alt_sends_esc`: Alt+key sends ESC then the key (always on Linux; on
+/// macOS only with `option-as-alt`, since Option normally types characters).
+pub fn encode(ks: &Keystroke, mode: TermMode, event: KeyEvent, alt_sends_esc: bool) -> Option<Vec<u8>> {
     if mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL) {
-        return kitty(ks, mode, event);
+        return kitty(ks, mode, event, alt_sends_esc);
     }
     match event {
         KeyEvent::Release => None,
-        _ => to_esc(ks, mode),
+        _ => to_esc(ks, mode, alt_sends_esc),
     }
 }
 
@@ -75,7 +77,7 @@ fn kitty_key(key: &str) -> Option<KittyKey> {
 /// pushed: disambiguate, report event types, report alternate keys, report
 /// all keys as escape codes, report associated text. Keys that only modify
 /// (Shift on its own and so on) aren't reported.
-fn kitty(ks: &Keystroke, mode: TermMode, event: KeyEvent) -> Option<Vec<u8>> {
+fn kitty(ks: &Keystroke, mode: TermMode, event: KeyEvent, alt_sends_esc: bool) -> Option<Vec<u8>> {
     let m = &ks.modifiers;
     if m.platform {
         return None;
@@ -101,11 +103,11 @@ fn kitty(ks: &Keystroke, mode: TermMode, event: KeyEvent) -> Option<Vec<u8>> {
         let plain = !m.control && !m.alt;
         match key {
             KittyKey::Text(_) if plain => return text.map(|t| t.as_bytes().to_vec()),
-            KittyKey::Functional { .. } if legacy_safe && mods == 1 => return to_esc(ks, mode),
+            KittyKey::Functional { .. } if legacy_safe && mods == 1 => return to_esc(ks, mode, alt_sends_esc),
             // Unmodified cursor and function keys keep their legacy form
             // (which respects application cursor mode) unless events are reported.
             KittyKey::Functional { last, .. } if last != 'u' && mods == 1 && !event_types => {
-                return to_esc(ks, mode);
+                return to_esc(ks, mode, alt_sends_esc);
             }
             _ => {}
         }
@@ -159,7 +161,7 @@ fn kitty(ks: &Keystroke, mode: TermMode, event: KeyEvent) -> Option<Vec<u8>> {
     Some(out.into_bytes())
 }
 
-pub fn to_esc(ks: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
+pub fn to_esc(ks: &Keystroke, mode: TermMode, alt_sends_esc: bool) -> Option<Vec<u8>> {
     let m = &ks.modifiers;
     // Platform key (cmd on macOS, super on Linux) is reserved for app shortcuts.
     if m.platform {
@@ -276,7 +278,7 @@ pub fn to_esc(ks: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
                     return None;
                 }
                 let mut v = Vec::new();
-                if m.alt && !cfg!(target_os = "macos") {
+                if m.alt && alt_sends_esc {
                     v.push(0x1b);
                     // On Linux key_char may already be the plain char; use the key.
                     if key.chars().count() == 1 {
@@ -305,11 +307,18 @@ mod tests {
     }
 
     fn send(spec: &str, key_char: Option<&str>, mode: TermMode, event: KeyEvent) -> Option<String> {
-        encode(&key(spec, key_char), mode, event).map(|b| String::from_utf8(b).unwrap())
+        encode(&key(spec, key_char), mode, event, !cfg!(target_os = "macos")).map(|b| String::from_utf8(b).unwrap())
     }
 
     fn press(spec: &str, key_char: Option<&str>, mode: TermMode) -> Option<String> {
         send(spec, key_char, mode, KeyEvent::Press)
+    }
+
+    #[test]
+    fn option_as_alt_sends_escape() {
+        let ks = key("alt-b", Some("∫"));
+        assert_eq!(encode(&ks, T::empty(), KeyEvent::Press, true).as_deref(), Some(&b"\x1bb"[..]));
+        assert_eq!(encode(&ks, T::empty(), KeyEvent::Press, false).as_deref(), Some("∫".as_bytes()));
     }
 
     #[test]
