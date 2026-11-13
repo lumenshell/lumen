@@ -24,6 +24,7 @@ mod settings;
 mod shell_integration;
 mod terminal_view;
 mod theme;
+mod theme_file;
 mod vi;
 mod workspace;
 
@@ -133,6 +134,7 @@ fn main() {
         load_fonts(cx);
         cx.set_global(Settings::load());
         settings::publish_ui_font(Settings::get(cx));
+        Settings::set_appearance(cx, cx.window_appearance());
         Settings::watch(cx);
         keymap::apply(cx);
         let listener = api::listen(cx);

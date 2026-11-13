@@ -7,7 +7,8 @@ comments, the first time it runs. Open it from the command palette with
 Changes apply as soon as you save. No restart needed.
 
 ```toml
-theme = "Rosé Pine"            # or "Rosé Pine Moon", "Catppuccin Mocha", "Tokyo Night", "Rosé Pine Dawn"
+theme = "Rosé Pine"            # any theme below, or "light:Rosé Pine Dawn, dark:Rosé Pine"
+accent-color = "#c4a7e7"       # replace the theme's accent colour (unset: the theme's own)
 font-family = "JetBrains Mono" # any installed monospace font; JetBrains Mono is built in
 font-size = 14
 line-height = 1.35             # multiple of the font size
@@ -55,6 +56,79 @@ can't be parsed at all, Lumen keeps the previous settings.
 
 Switching theme or zooming the font from inside Lumen edits just those keys
 and keeps your comments.
+
+## Themes
+
+Each theme colours the terminal and the window around it: title bar, tabs,
+palette and the gaps between panes.
+
+**Built in (24).** Dark: Rosé Pine, Rosé Pine Moon, Catppuccin Mocha,
+Catppuccin Macchiato, Catppuccin Frappé, Tokyo Night, Tokyo Night Storm, Nord,
+Gruvbox Dark, Kanagawa, Everforest Dark, GitHub Dark, Flexoki Dark, Solarized
+Dark, Dracula, One Dark. Light: Rosé Pine Dawn, Catppuccin Latte, Tokyo Night
+Day, Gruvbox Light, Everforest Light, GitHub Light, Flexoki Light, Solarized
+Light. Pick one with `theme = "Name"`, from the palette (**Theme:** entries), or
+cycle with **Cycle Theme** (Ctrl+Shift+Y, ⌘⇧Y).
+
+**Follow the system's light or dark** with a pair:
+
+```toml
+theme = "light:Rosé Pine Dawn, dark:Rosé Pine"
+```
+
+Lumen switches when the system does. On Linux that's the desktop's dark-style
+setting (the freedesktop `color-scheme`, which GNOME, KDE and Cinnamon set);
+on a desktop that doesn't set it, the light one is used. Picking a theme from
+the palette replaces the pair with that one theme.
+
+**Your own themes** go in `~/.config/lumen/themes/`, one file per theme, named
+after it: `Midnight.toml` is "Midnight". Lumen picks up new and changed files
+as you save them, and a file named like a built-in theme replaces it. Two
+formats work:
+
+- Lumen's own, in TOML. Only `background` and `foreground` are required. Left
+  out, the palette is Rosé Pine's, and the window colours are worked out from
+  the rest.
+
+  ```toml
+  background = "#191724"
+  foreground = "#e0def4"
+  cursor = "#ebbcba"
+  selection = "#403d52"
+  palette = ["#26233a", "#eb6f92", "#31748f", "#f6c177", "#9ccfd8", "#c4a7e7", "#ebbcba", "#e0def4",
+             "#6e6a86", "#eb6f92", "#31748f", "#f6c177", "#9ccfd8", "#c4a7e7", "#ebbcba", "#e0def4"]
+
+  [chrome]          # the window around the panes; all optional
+  shell = "#12101b" # behind the panes and the title bar
+  raised = "#26233a" # active tab, palette
+  border = "#2a2738"
+  subtext = "#908caa"
+  muted = "#6e6a86"
+  accent = "#c4a7e7"
+  ```
+
+- [Ghostty](https://ghostty.org) theme files, unchanged (no extension, or
+  `.conf`): `background`, `foreground`, `cursor-color`,
+  `selection-background` and `palette = N=#rrggbb` lines. Ghostty ships
+  hundreds of them.
+
+A file with a mistake is named in the banner, and the other themes still load.
+
+`accent-color = "#rrggbb"` replaces the accent (the focused pane's border,
+highlights in the palette) of whichever theme is in use.
+
+The built-in themes come from their projects' published palettes, all under
+the MIT licence: [Rosé Pine](https://rosepinetheme.com),
+[Catppuccin](https://catppuccin.com),
+[Tokyo Night](https://github.com/folke/tokyonight.nvim),
+[Nord](https://www.nordtheme.com), [Gruvbox](https://github.com/morhetz/gruvbox),
+[Kanagawa](https://github.com/rebelot/kanagawa.nvim),
+[Everforest](https://github.com/sainnhe/everforest),
+[GitHub](https://github.com/primer/github-vscode-theme),
+[Flexoki](https://stephango.com/flexoki),
+[Solarized](https://ethanschoonover.com/solarized),
+[Dracula](https://draculatheme.com) and
+[One Dark](https://github.com/atom/atom/tree/master/packages/one-dark-syntax).
 
 ## When settings apply
 

@@ -19,7 +19,7 @@ use crate::api::{self, ApiError, ApiResult};
 use crate::keymap;
 use crate::palette::{CommandPalette, Dot, PaletteEvent, PaletteFn, PaletteItem};
 use crate::session::{self, Axis, NodeState, Session, TabState, WindowState};
-use crate::settings::{MONO_FONT, Settings, WorkingDirectory, ui_font};
+use crate::settings::{MONO_FONT, Settings, ThemeChoice, WorkingDirectory, ui_font};
 use crate::pty::{GridSize, Owner};
 use std::path::PathBuf;
 use crate::terminal_view::{TerminalEvent, TerminalView};
@@ -457,6 +457,12 @@ impl Workspace {
         }
         this.track_window(window);
         this._subs.push(cx.observe_window_bounds(window, |this, window, _| this.track_window(window)));
+        // A light/dark theme pair follows the system (read now too, in case
+        // the desktop answered after startup).
+        Settings::set_appearance(cx, window.appearance());
+        this._subs.push(cx.observe_window_appearance(window, |_, window, cx| {
+            Settings::set_appearance(cx, window.appearance());
+        }));
         // Built-in plugins turned on or off (in the gallery or config.toml).
         this._subs.push(cx.observe_global_in::<Settings>(window, |this, window, cx| {
             if Settings::get(cx).plugins != crate::plugins::builtins_running() {
@@ -2541,7 +2547,10 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
     for (i, theme) in settings.themes.iter().enumerate() {
         let item = PaletteItem::new(
             format!("Theme: {}", theme.name),
-            Rc::new(move |_, cx| Settings::update(cx, |s| s.theme_index = i)),
+            Rc::new(move |_, cx| Settings::update(cx, |s| {
+                s.theme_index = i;
+                s.theme_choice = ThemeChoice::One(i);
+            })),
         );
         items.push(if i == settings.theme_index { item.note("current") } else { item });
     }

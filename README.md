@@ -48,9 +48,10 @@ To uninstall, pick a version, or build from source, see
   panes, reads their screens and streams events. [More](docs/scripting.md)
 - **Plugins in any language.** Seven come built in, from command history to a
   pomodoro timer. [More](docs/builtin-plugins.md)
-- **Themes for the whole window.** Rosé Pine, Rosé Pine Moon, Catppuccin
-  Mocha, Tokyo Night and Rosé Pine Dawn recolour the terminal and the chrome
-  around it.
+- **Themes for the whole window.** 24 built in, from Rosé Pine, Catppuccin
+  and Tokyo Night to Gruvbox, Nord and Solarized, 8 of them light. Each
+  recolours the terminal and the chrome around it. Add your own, or use any
+  Ghostty theme file. [More](docs/config.md#themes)
 
 It also handles CJK input methods, the kitty keyboard protocol, clickable
 links, mouse reporting for vim and tmux, and colour emoji. See

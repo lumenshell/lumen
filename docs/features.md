@@ -8,8 +8,9 @@ The full list, grouped by area. The [README](../README.md) has the highlights.
   strikethrough, wide (CJK) glyphs, colour emoji, configurable scrollback.
 - Box-drawing, block and powerline characters are drawn as shapes, so lines
   and prompt segments join without gaps.
-- Themes recolour both the terminal and the window around it: Rosé Pine, Rosé
-  Pine Moon, Catppuccin Mocha, Tokyo Night and Rosé Pine Dawn (light).
+- 24 built-in themes, 8 of them light, recolour both the terminal and the
+  window around it. Add your own, or drop in any Ghostty theme file, and pick
+  a light and a dark one to follow the system ([Themes](config.md#themes)).
 - JetBrains Mono and Inter are bundled, so it looks the same everywhere.
 - A blinking cursor, or a steady one (`cursor-blink`).
 - A see-through, blurred background where the desktop supports it
