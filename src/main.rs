@@ -14,6 +14,7 @@ mod links;
 mod marks;
 mod mouse;
 mod palette;
+mod plugin_settings;
 mod plugins;
 mod pty;
 mod quick;

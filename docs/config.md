@@ -133,6 +133,21 @@ the MIT licence: [Rosé Pine](https://rosepinetheme.com),
 [Dracula](https://draculatheme.com) and
 [One Dark](https://github.com/atom/atom/tree/master/packages/one-dark-syntax).
 
+## Plugin settings
+
+A plugin can have settings of its own. Set them in a table named after the
+plugin:
+
+```toml
+[plugin.command-history]
+max-entries = 50000
+```
+
+A value of the wrong kind, or out of range, is named in the banner and the
+plugin uses its default instead; so is a setting the plugin doesn't have.
+Changes apply when you save, without restarting the plugin. The built-in
+plugins' settings are listed in [built-in plugins](builtin-plugins.md).
+
 ## When settings apply
 
 - `shell` and `shell-integration` apply to new panes.

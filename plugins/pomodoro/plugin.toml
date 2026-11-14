@@ -3,3 +3,10 @@ version = "1.0.0"
 command = "python3 main.py"
 # panes: to open the timer's pane, draw it and mark its tab.
 permissions = ["panes"]
+
+[settings.long-break-every]
+type = "integer"
+default = 4
+min = 2
+max = 10
+description = "Every how many breaks is a long one"

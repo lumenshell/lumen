@@ -23,7 +23,6 @@ from lumen_plugin import Plugin, quote, typeable
 app = Plugin()
 MAC = sys.platform == "darwin"
 FILE = os.path.join(app.data_dir, "history.jsonl")
-KEEP = 10_000           # entries kept
 INTERRUPTED = {130}     # Ctrl+C isn't a failure worth rerunning
 
 history = []            # oldest first: {"command", "exit", "ms", "cwd", "at", "pane"}
@@ -45,7 +44,12 @@ def load():
                     history.append(entry)
     except OSError:
         pass
-    history = history[-KEEP:]
+    history = history[-keep():]
+
+
+def keep():
+    """How many commands to keep (the max-entries setting)."""
+    return app.settings.get("max-entries", 10_000)
 
 
 def append(entry):
@@ -53,8 +57,8 @@ def append(entry):
     fd = os.open(FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "a") as f:
         f.write(json.dumps(entry) + "\n")
-    if len(history) > KEEP * 1.2:
-        rewrite(history[-KEEP:])
+    if len(history) > keep() * 1.2:
+        rewrite(history[-keep():])
 
 
 def rewrite(entries):

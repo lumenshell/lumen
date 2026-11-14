@@ -7,6 +7,7 @@
 //! zooming the font) it edits just that key, keeping the file's comments and
 //! layout.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -42,6 +43,24 @@ pub fn publish_ui_font(settings: &Settings) {
 
 /// Prefix for a file that couldn't be read at all.
 const PARSE_ERROR: &str = "Couldn't read the file at";
+
+/// A `[plugin.NAME]` table from config.toml. Equal when written the same, so
+/// `Settings` can tell when the file changed.
+#[derive(Clone, Debug)]
+pub struct PluginTable(pub toml_edit::Table);
+
+impl PartialEq for PluginTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_string() == other.0.to_string()
+    }
+}
+
+impl std::ops::Deref for PluginTable {
+    type Target = toml_edit::Table;
+    fn deref(&self) -> &toml_edit::Table {
+        &self.0
+    }
+}
 
 #[derive(Clone, PartialEq)]
 pub struct Settings {
@@ -93,6 +112,9 @@ pub struct Settings {
     pub keys: Vec<(String, Option<String>)>,
     /// Built-in plugins to run, by name (the Plugin Gallery edits this).
     pub plugins: Vec<String>,
+    /// Each `[plugin.NAME]` table as written, by plugin name. Checked against
+    /// the plugin's own settings when it starts (see `plugin_settings`).
+    pub plugin_settings: BTreeMap<String, PluginTable>,
     /// Bold text in colours 0-7 uses the bright 8-15.
     pub bold_is_bright: bool,
     /// Shape operator runs together so ligatures form.
@@ -207,6 +229,7 @@ impl Default for Settings {
             notify_after: 10,
             keys: Vec::new(),
             plugins: Vec::new(),
+            plugin_settings: BTreeMap::new(),
             bold_is_bright: true,
             ligatures: true,
             cursor_blink_interval: Duration::from_millis(530),
@@ -525,6 +548,22 @@ impl Settings {
                         })
                     }
                     None => Some(bad("a list of built-in plugin names, like [\"recent-dirs\"]")),
+                },
+                "plugin" => match item.as_table_like() {
+                    Some(t) => {
+                        let mut bad_names = Vec::new();
+                        for (name, sub) in t.iter() {
+                            let table = sub.as_table().cloned().or_else(|| sub.as_inline_table().map(|i| i.clone().into_table()));
+                            match table {
+                                Some(table) => {
+                                    s.plugin_settings.insert(name.to_string(), PluginTable(table));
+                                }
+                                None => bad_names.push(format!("`plugin.{name}` should be a table like [plugin.{name}]")),
+                            }
+                        }
+                        (!bad_names.is_empty()).then(|| bad_names.join("; "))
+                    }
+                    None => Some(bad("tables like [plugin.recent-dirs]")),
                 },
                 "socket-api" => match item.as_bool() {
                     Some(v) => {
@@ -1334,6 +1373,29 @@ mod tests {
         assert_eq!(s.theme_choice, ThemeChoice::One(index(&s, "Rosé Pine Dawn") + 1), "next goes on from what's shown");
         s.choose_theme(index(&s, "Rosé Pine"));
         assert_eq!(s.theme_choice, ThemeChoice::One(index(&s, "Rosé Pine")));
+    }
+
+    #[test]
+    fn plugin_tables_are_kept() {
+        let s = Settings::parse("[plugin.recent-dirs]\nmax-shown = 50\n[plugin.\"mira/docker-panes\"]\nengine = \"podman\"\n");
+        assert!(s.problems.is_empty(), "{:?}", s.problems);
+        assert_eq!(s.plugin_settings["recent-dirs"].get("max-shown").and_then(|v| v.as_integer()), Some(50));
+        assert!(s.plugin_settings.contains_key("mira/docker-panes"));
+        let bad = Settings::parse("plugin = 5\n");
+        assert_eq!(bad.problems.len(), 1, "{:?}", bad.problems);
+        let bad = Settings::parse("[plugin]\nrecent-dirs = 5\n");
+        assert!(bad.problems[0].contains("recent-dirs"), "{:?}", bad.problems);
+    }
+
+    #[test]
+    fn saving_keeps_plugin_tables() {
+        let text = "font-size = 14\n\n[plugin.recent-dirs]\n# fewer, please\nmax-shown = 50\n";
+        let mut s = Settings::parse(text);
+        s.font_size = 15.0;
+        let mut doc = text.parse::<DocumentMut>().unwrap();
+        assert!(s.apply_to(&mut doc, false));
+        let out = doc.to_string();
+        assert!(out.contains("[plugin.recent-dirs]\n# fewer, please\nmax-shown = 50"), "{out}");
     }
 
     #[test]

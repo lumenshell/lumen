@@ -11,6 +11,7 @@ examples, from 40 lines (`git-branch`) to 200 (`command-history`).
 - [Your first plugin](#your-first-plugin)
 - [Commands](#commands)
 - [Events](#events)
+- [Settings](#settings)
 - [Talking to Lumen](#talking-to-lumen)
 - [Permissions](#permissions)
 - [Scripts outside Lumen](#scripts-outside-lumen)
@@ -98,6 +99,62 @@ Handlers can be `async def` (most are, since talking to Lumen is async) or
 plain functions. Each runs on its own, so a handler waiting for you to pick
 something doesn't hold up the others. If one raises, the error and traceback
 go to the plugin's log and the plugin carries on.
+
+## Settings
+
+Give your plugin settings by describing them in `plugin.toml`:
+
+```toml
+[settings.max-entries]
+type = "integer"
+default = 500
+min = 1
+max = 100000
+description = "How many entries to keep"
+
+[settings.engine]
+type = "choice"
+choices = ["docker", "podman"]
+default = "docker"
+description = "Which container engine to use"
+
+[settings.hosts]
+type = "list"
+default = []
+description = "Hosts to leave out"
+```
+
+The types are `string`, `integer`, `number`, `boolean`, `choice` and `list`
+(a list of strings). Each setting needs a `default` and a `description`.
+
+People set them in their `config.toml`:
+
+```toml
+[plugin.where]
+max-entries = 2000
+```
+
+`app.settings` is a dict holding every setting, with defaults filled in for
+any not set. Lumen checks the values against your description first, so they
+always have the right type and range: a wrong value is shown in the person's
+banner and you get the default.
+
+Read `app.settings` at the moment you need a value. It's updated when the
+person saves `config.toml`, without restarting your plugin, so a value read
+then is always current:
+
+```python
+def trim(entries):
+    return entries[-app.settings["max-entries"]:]
+```
+
+For work to redo when settings change, such as refreshing a list:
+
+```python
+@app.on("settings-changed")
+async def changed(event):
+    await refresh()
+```
 
 ## Talking to Lumen
 

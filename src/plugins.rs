@@ -71,6 +71,8 @@ pub struct Manifest {
     /// Program and arguments, run in `dir`.
     pub command: Vec<String>,
     pub permissions: Vec<Permission>,
+    /// What `[plugin.NAME]` in config.toml may set.
+    pub settings: Vec<crate::plugin_settings::Spec>,
     pub dir: PathBuf,
     /// One of Lumen's built-in plugins, turned on in the Plugin Gallery.
     pub builtin: bool,
@@ -188,6 +190,7 @@ pub fn parse_manifest(dir: &Path, text: &str) -> Result<Manifest, String> {
         version: string("version").unwrap_or_default(),
         command,
         permissions,
+        settings: crate::plugin_settings::parse_schema(&doc)?,
         dir: dir.to_path_buf(),
         builtin: false,
     })
@@ -400,6 +403,8 @@ struct Running {
     /// Which start this is, so a copy still shutting down after a reload
     /// can't touch its replacement.
     generation: u64,
+    /// Its settings now, defaults filled in: given to every (re)start.
+    settings: serde_json::Map<String, Value>,
 }
 
 static PLUGINS: Mutex<Vec<Running>> = Mutex::new(Vec::new());
@@ -437,7 +442,7 @@ fn with_plugin<R>(name: &str, f: impl FnOnce(&mut Running) -> R) -> Option<R> {
 
 /// Note a plugin that isn't running (refused, or waiting for approval), so
 /// it still shows in the palette.
-pub fn add_stopped(m: Manifest, status: &str) {
+pub fn add_stopped(m: Manifest, status: &str, settings: serde_json::Map<String, Value>) {
     let mut all = PLUGINS.lock().unwrap();
     all.retain(|r| r.manifest.name != m.name);
     all.push(Running {
@@ -448,6 +453,7 @@ pub fn add_stopped(m: Manifest, status: &str) {
         stop: Arc::new(AtomicBool::new(true)),
         pid: None,
         generation: 0,
+        settings,
     });
 }
 
@@ -479,7 +485,7 @@ fn now() -> String {
 
 /// Start `m` and keep it running: restart it when it exits, waiting longer
 /// after each quick crash, until [`stop_all`].
-pub fn start(m: Manifest) {
+pub fn start(m: Manifest, settings: serde_json::Map<String, Value>) {
     let Some(jobs) = api::jobs() else { return };
     let stop = Arc::new(AtomicBool::new(false));
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst);
@@ -497,6 +503,7 @@ pub fn start(m: Manifest) {
             stop: stop.clone(),
             pid: None,
             generation,
+            settings,
         });
     }
     let name = m.name.clone();
@@ -513,6 +520,7 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
     let mut quick_failures = 0usize;
     while !stop.load(Ordering::SeqCst) {
         let started = Instant::now();
+        let started_with = current_settings(&name).unwrap_or_default();
         let mut cmd = Command::new(&m.command[0]);
         if let Some(path) = plugin_python_path() {
             cmd.env("PYTHONPATH", path);
@@ -525,6 +533,8 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
             .env("LUMEN_PLUGIN", &name)
             .env("LUMEN_PLUGIN_DIR", &m.dir)
             .envs(data_dir(&name).map(|d| ("LUMEN_PLUGIN_DATA", d)))
+            // Read now, not at the first start: they may have changed since.
+            .env("LUMEN_PLUGIN_SETTINGS", Value::Object(started_with.clone()).to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -541,11 +551,7 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
         };
         let pid = child.id();
         let out = api::writer(child.stdin.take().expect("piped"));
-        with_run(&name, generation, |r| {
-            r.out = Some(out.clone());
-            r.pid = Some(pid);
-            r.status = "running".into();
-        });
+        attach(&name, generation, out.clone(), pid, &started_with);
         log(&name, &format!("{} [lumen] started `{}` (pid {pid})", now(), m.command.join(" ")));
         if stop.load(Ordering::SeqCst) {
             // Told to stop while starting: don't leave it behind.
@@ -615,6 +621,50 @@ pub fn clear() {
     PLUGINS.lock().unwrap().clear();
 }
 
+// ---- settings ------------------------------------------------------------
+
+/// The plugin's process is up and can be written to. Settings saved since
+/// it was given `started_with` reached nobody, so they're sent now.
+fn attach(name: &str, generation: u64, out: mpsc::Sender<String>, pid: u32, started_with: &serde_json::Map<String, Value>) {
+    with_run(name, generation, |r| {
+        if &r.settings != started_with {
+            let _ = out.send(settings_message(&r.settings));
+        }
+        r.out = Some(out);
+        r.pid = Some(pid);
+        r.status = "running".into();
+    });
+}
+
+/// A plugin's settings now, if Lumen knows the plugin.
+fn current_settings(name: &str) -> Option<serde_json::Map<String, Value>> {
+    with_plugin(name, |r| r.settings.clone())
+}
+
+/// The `settings-changed` notification for a plugin.
+fn settings_message(settings: &serde_json::Map<String, Value>) -> String {
+    json!({"jsonrpc": "2.0", "method": "event", "params": {"event": "settings-changed", "settings": settings}})
+        .to_string()
+}
+
+/// Give a plugin new settings. When they differ from what it has, they're
+/// kept for its next start and, if it's running, sent to it now: it isn't
+/// restarted. Returns whether they differed, so the same change seen by
+/// several windows reaches the plugin once.
+pub fn update_settings(name: &str, settings: serde_json::Map<String, Value>) -> bool {
+    with_plugin(name, |r| {
+        if r.settings == settings {
+            return false;
+        }
+        if let Some(out) = &r.out {
+            let _ = out.send(settings_message(&settings));
+        }
+        r.settings = settings;
+        true
+    })
+    .unwrap_or(false)
+}
+
 // ---- commands ------------------------------------------------------------
 
 /// `register-command` from a plugin: add (or replace) a palette command,
@@ -662,6 +712,87 @@ pub fn run_command(plugin: &str, id: &str, pane: Option<u64>) -> Result<(), Stri
 mod tests {
     use super::*;
 
+    fn running(name: &str, settings: serde_json::Map<String, Value>) -> mpsc::Receiver<String> {
+        let (tx, rx) = mpsc::channel();
+        let m = parse_manifest(Path::new(name), "command = \"x\"").unwrap();
+        PLUGINS.lock().unwrap().push(Running {
+            manifest: m,
+            status: "running".into(),
+            out: Some(tx),
+            commands: Vec::new(),
+            stop: Arc::new(AtomicBool::new(false)),
+            pid: None,
+            generation: 0,
+            settings,
+        });
+        rx
+    }
+
+    fn map(v: Value) -> serde_json::Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn changed_settings_are_sent() {
+        let rx = running("t-changed", map(json!({"n": 1})));
+        assert!(update_settings("t-changed", map(json!({"n": 2}))));
+        let msg: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(
+            msg,
+            json!({"jsonrpc": "2.0", "method": "event", "params": {"event": "settings-changed", "settings": {"n": 2}}})
+        );
+    }
+
+    #[test]
+    fn same_settings_send_nothing() {
+        let rx = running("t-same", map(json!({"n": 1})));
+        assert!(!update_settings("t-same", map(json!({"n": 1}))));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn restart_uses_current_settings() {
+        let _rx = running("t-restart", map(json!({"n": 1})));
+        update_settings("t-restart", map(json!({"n": 3})));
+        assert_eq!(current_settings("t-restart"), Some(map(json!({"n": 3}))));
+    }
+
+    #[test]
+    fn settings_saved_while_starting_are_sent() {
+        // Saved after the process got its environment, before its stdin was ready.
+        let (tx, rx) = mpsc::channel();
+        let m = parse_manifest(Path::new("t-starting"), "command = \"x\"").unwrap();
+        PLUGINS.lock().unwrap().push(Running {
+            manifest: m,
+            status: "starting".into(),
+            out: None,
+            commands: Vec::new(),
+            stop: Arc::new(AtomicBool::new(false)),
+            pid: None,
+            generation: 7,
+            settings: map(json!({"n": 1})),
+        });
+        assert!(update_settings("t-starting", map(json!({"n": 2}))));
+        attach("t-starting", 7, tx.clone(), 1, &map(json!({"n": 1})));
+        let msg: Value = serde_json::from_str(&rx.try_recv().expect("the newer values are sent")).unwrap();
+        assert_eq!(msg["params"]["settings"], json!({"n": 2}));
+        attach("t-starting", 7, tx, 1, &map(json!({"n": 2})));
+        assert!(rx.try_recv().is_err(), "nothing when it started with them");
+    }
+
+    #[test]
+    fn manifest_reads_settings() {
+        let m = parse_manifest(
+            Path::new("p"),
+            "command = \"x\"\n[settings.n]\ntype = \"integer\"\ndefault = 1\ndescription = \"d\"",
+        )
+        .unwrap();
+        assert_eq!(m.settings.len(), 1);
+        let e = parse_manifest(Path::new("p"), "command = \"x\"\n[settings.n]\ntype = \"integer\"\ndescription = \"d\"")
+            .unwrap_err();
+        assert!(e.contains("default"), "{e}");
+    }
+
     #[test]
     fn builtin_plugins_have_valid_manifests() {
         for b in BUILTINS {
@@ -670,6 +801,23 @@ mod tests {
             assert!(!m.description.is_empty(), "{}", b.name);
             assert!(b.files.iter().any(|(f, _)| *f == m.command[1]), "{} runs a file it doesn't ship", b.name);
             assert!(b.files.iter().any(|(_, t)| t.contains("from lumen_plugin import")), "{}", b.name);
+            let expected: &[(&str, i64, i64, i64)] = match b.name {
+                "command-history" => &[("max-entries", 10_000, 100, 1_000_000)],
+                "recent-dirs" => &[("max-shown", 200, 10, 1000)],
+                "pomodoro" => &[("long-break-every", 4, 2, 10)],
+                _ => &[],
+            };
+            let got: Vec<(&str, i64, i64, i64)> = m
+                .settings
+                .iter()
+                .map(|s| match s.kind {
+                    crate::plugin_settings::Kind::Integer { min: Some(lo), max: Some(hi) } => {
+                        (s.key.as_str(), s.default.as_i64().unwrap(), lo, hi)
+                    }
+                    ref k => panic!("{}: {} is {k:?}", b.name, s.key),
+                })
+                .collect();
+            assert_eq!(got, expected, "{}'s settings", b.name);
             // Approvals for built-ins never apply to a folder of the same name.
             assert_eq!(m.approval_key(), b.name);
             m.builtin = true;

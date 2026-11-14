@@ -26,8 +26,6 @@ PLANS = {
     "long": ("50 minutes, then a 10 minute break", 50, 10, 20),
     "short": ("15 minutes, then a 3 minute break", 15, 3, 10),
 }
-# Every fourth break is a long one.
-LONG_EVERY = 4
 
 PHASES = {
     # phase: (title, tab icon, tab colour, ANSI colour)
@@ -122,7 +120,8 @@ class Timer:
         """End this part and move on; returns what to tell you."""
         if self.phase == "focus":
             self.sessions += 1
-            nxt = "long" if self.sessions % LONG_EVERY == 0 else "break"
+            # Every fourth break is a long one, unless set otherwise.
+            nxt = "long" if self.sessions % app.settings.get("long-break-every", 4) == 0 else "break"
             self.start(nxt)
             return f"Focus session done. Take {self.minutes(nxt)} minutes."
         self.start("focus")

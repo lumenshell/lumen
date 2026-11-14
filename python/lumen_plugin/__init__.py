@@ -55,6 +55,7 @@ EVENTS = (
     "bell",
     "command-started",
     "command-finished",
+    "settings-changed",
 )
 
 _PLAIN = re.compile(r"[A-Za-z0-9_./:,@+-]+")
@@ -414,6 +415,16 @@ class Event:
         return f"Event({self.name!r}, {self.data!r})"
 
 
+def _settings_from_env() -> dict:
+    """LUMEN_PLUGIN_SETTINGS as a dict; {} when it's missing or isn't a
+    JSON object."""
+    try:
+        value = json.loads(os.environ.get("LUMEN_PLUGIN_SETTINGS") or "{}")
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 class Plugin:
     """A connection to Lumen, plus the commands and event handlers you add
     with the decorators. Call `run()` last."""
@@ -426,6 +437,9 @@ class Plugin:
         #: the socket.
         self.is_plugin = "LUMEN_PLUGIN" in os.environ
         self._data_dir = os.environ.get("LUMEN_PLUGIN_DATA")
+        #: The plugin's settings from config.toml, every one present with
+        #: defaults filled in. Kept current: read it when you need a value.
+        self.settings: dict = _settings_from_env()
         self._commands: dict = {}
         self._handlers: dict = {}
         self._startup: list = []
@@ -701,6 +715,9 @@ class Plugin:
             elif params.get("event") != "closed":
                 self._early.setdefault(params.get("pane"), []).append(params)
         elif msg["method"] == "event":
+            if params.get("event") == "settings-changed" and isinstance(params.get("settings"), dict):
+                # Current before any handler runs.
+                self.settings = dict(params["settings"])
             event = Event(self, params)
             for fn in self._handlers.get(event.name, []) + self._handlers.get("*", []):
                 self._spawn(fn, event)

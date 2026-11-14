@@ -33,6 +33,31 @@ command = "python3 main.py"      # run in the plugin's folder; or a list: ["node
 permissions = ["input"]           # any of "panes", "input", "screen"; leave out if none
 ```
 
+### Settings
+
+A plugin can have settings, which people set in their `config.toml` under
+`[plugin.NAME]`. Describe each one in `plugin.toml`:
+
+```toml
+[settings.max-entries]
+type = "integer"            # "string", "integer", "number", "boolean", "choice" or "list"
+default = 500               # required, and must suit the type
+min = 1                     # integer and number only, optional
+max = 100000
+description = "How many entries to keep"   # required
+
+[settings.engine]
+type = "choice"
+choices = ["docker", "podman"]
+default = "docker"
+description = "Which container engine to use"
+```
+
+`number` takes whole numbers too. `list` is a list of strings. A mistake in
+`[settings]` stops the plugin from loading, with the reason in the banner. A
+wrong value in someone's `[plugin.NAME]` table is shown in their banner and
+the default is used instead, so the plugin always gets valid values.
+
 ## Talking to Lumen
 
 A plugin talks to Lumen over its stdin and stdout. It uses the same JSON-RPC
@@ -49,6 +74,7 @@ Its environment has:
 | `LUMEN_PLUGIN` | Its name |
 | `LUMEN_PLUGIN_DIR` | Its folder |
 | `LUMEN_PLUGIN_DATA` | A folder for its own data, kept across updates and readable only by you |
+| `LUMEN_PLUGIN_SETTINGS` | Its settings as a JSON object, every one present, defaults filled in (`{}` with none) |
 | `PYTHONPATH` | Starts with the folder holding `lumen_plugin` |
 
 ## What plugins can do
@@ -60,6 +86,13 @@ Everything in the socket API, plus:
   plugin
   `{"jsonrpc":"2.0","method":"command","params":{"id":"switch","pane":4294967298}}`,
   where `pane` is the focused pane. Commands go away when the plugin stops.
+- **Hear about new settings.** When someone saves `config.toml` with
+  different values for the plugin, Lumen sends it
+  `{"jsonrpc":"2.0","method":"event","params":{"event":"settings-changed","settings":{…}}}`
+  with every setting, defaults filled in. The plugin isn't restarted, and
+  doesn't need to subscribe: this goes only to the plugin concerned, and
+  only when its values changed. A plugin restarted later gets the new values
+  in `LUMEN_PLUGIN_SETTINGS`.
 - **Ask you to choose.** `show-picker` opens the palette with the plugin's
   items, and answers with the one you pick (or `null` for Esc).
 - **Ask you to type.** `show-prompt` opens the palette as a text input, and

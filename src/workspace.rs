@@ -403,6 +403,9 @@ pub struct Workspace {
     pending_approvals: Vec<crate::plugins::Manifest>,
     /// Problems reading plugin manifests, shown in the banner.
     plugin_problems: Vec<String>,
+    /// Wrong values in `[plugin.NAME]` tables, shown with config.toml's
+    /// own problems.
+    plugin_setting_problems: Vec<String>,
     /// Axis of the divider being dragged, for the window-wide resize cursor.
     dragging: Option<Axis>,
     /// This window's id, which the session file keys its state by.
@@ -439,6 +442,7 @@ impl Workspace {
             palette: None,
             pending_approvals: Vec::new(),
             plugin_problems: Vec::new(),
+            plugin_setting_problems: Vec::new(),
             dragging: None,
             window_id: window.window_handle().window_id().as_u64(),
             saved_on_quit: false,
@@ -467,6 +471,8 @@ impl Workspace {
         this._subs.push(cx.observe_global_in::<Settings>(window, |this, window, cx| {
             if Settings::get(cx).plugins != crate::plugins::builtins_running() {
                 this.reload_plugins(window, cx);
+            } else {
+                this.push_plugin_settings(cx);
             }
         }));
 
@@ -918,19 +924,37 @@ impl Workspace {
         plugins::set_builtins_running(enabled.clone());
         let (manifests, problems) = plugins::discover(&enabled);
         self.plugin_problems = problems;
+        self.plugin_setting_problems.clear();
         self.pending_approvals.clear();
         for m in manifests {
+            let (settings, problems) = plugin_settings_for(&m, cx);
+            self.plugin_setting_problems.extend(problems);
             match plugins::decision(&m) {
-                Decision::Allowed => plugins::start(m),
-                Decision::Refused => plugins::add_stopped(m, "not allowed"),
+                Decision::Allowed => plugins::start(m, settings),
+                Decision::Refused => plugins::add_stopped(m, "not allowed", settings),
                 Decision::Ask => {
-                    plugins::add_stopped(m.clone(), "waiting for your approval");
+                    plugins::add_stopped(m.clone(), "waiting for your approval", settings);
                     self.pending_approvals.push(m);
                 }
             }
         }
         self.ask_next_approval(window, cx);
         cx.notify();
+    }
+
+    /// `config.toml` changed: give every plugin its settings as they are now.
+    /// Only plugins whose values changed hear about it, and none restart.
+    fn push_plugin_settings(&mut self, cx: &mut Context<Self>) {
+        let mut problems = Vec::new();
+        for info in crate::plugins::list() {
+            let (settings, p) = plugin_settings_for(&info.manifest, cx);
+            problems.extend(p);
+            crate::plugins::update_settings(&info.manifest.name, settings);
+        }
+        if problems != self.plugin_setting_problems {
+            self.plugin_setting_problems = problems;
+            cx.notify();
+        }
     }
 
     fn reload_plugins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1052,10 +1076,11 @@ impl Workspace {
         let choice = |allow: bool, m: crate::plugins::Manifest, ws: gpui::WeakEntity<Workspace>| -> PaletteFn {
             Rc::new(move |window, cx| {
                 crate::plugins::record_decision(&m, allow);
+                let (settings, _) = plugin_settings_for(&m, cx);
                 if allow {
-                    crate::plugins::start(m.clone());
+                    crate::plugins::start(m.clone(), settings);
                 } else {
-                    crate::plugins::add_stopped(m.clone(), "not allowed");
+                    crate::plugins::add_stopped(m.clone(), "not allowed", settings);
                 }
                 let _ = ws.update(cx, |ws, cx| ws.ask_next_approval(window, cx));
             })
@@ -1651,6 +1676,16 @@ impl Workspace {
 }
 
 /// Problems in the config file, shown at the bottom of the window until fixed.
+/// A plugin's settings from its `[plugin.NAME]` table, defaults filled in,
+/// and what's wrong with the table.
+fn plugin_settings_for(
+    m: &crate::plugins::Manifest,
+    cx: &App,
+) -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
+    let given = Settings::get(cx).plugin_settings.get(&m.name).map(|t| &t.0);
+    crate::plugin_settings::resolve(&m.name, &m.settings, given)
+}
+
 fn problem_banner(problems: &[String], plugin_problems: &[String], theme: &Theme) -> impl IntoElement {
     let path = settings::config_path()
         .map(|p| p.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~"))
@@ -2606,7 +2641,8 @@ impl Render for Workspace {
             Axis::Column => CursorStyle::ResizeUpDown,
         });
 
-        let problems = Settings::get(cx).problems.clone();
+        let mut problems = Settings::get(cx).problems.clone();
+        problems.extend(self.plugin_setting_problems.iter().cloned());
         let plugin_problems = self.plugin_problems.clone();
         let content = self.tabs.get(self.active_tab).map(|tab| {
             let multi = tab.leaves().len() > 1;
