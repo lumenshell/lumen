@@ -40,7 +40,7 @@ window-width = 1100            # size of a new window when there's no saved one,
 window-height = 720
 restore-session = true         # bring back windows, tabs and splits next launch; false saves nothing
 working-directory = "inherit"  # where new tabs, splits and windows start: "inherit", "home" or a folder
-unfocused-dim = 0.35           # dim panes you're not in, 0 to 0.5; unset follows the theme (0.25 on light ones)
+# unfocused-dim = 0.35         # dim panes you're not in, 0 to 0.5; unset follows the theme (0.25 on light ones)
 pane-gap = 8                   # pixels between split panes (0 to 24)
 ui-font-family = "Inter"       # font for tabs, the palette and banners; Inter is built in
 plugins = ["recent-dirs"]      # built-in plugins to run; the Plugin Gallery edits this
@@ -110,9 +110,12 @@ formats work:
 - [Ghostty](https://ghostty.org) theme files, unchanged (no extension, or
   `.conf`): `background`, `foreground`, `cursor-color`,
   `selection-background` and `palette = N=#rrggbb` lines. Ghostty ships
-  hundreds of them.
+  hundreds of them. A file with no extension is named in full, dots and all:
+  `Catppuccin.Mocha` is "Catppuccin.Mocha".
 
 A file with a mistake is named in the banner, and the other themes still load.
+Notes like a `README` are left alone, and if two files give the same theme
+name, the first (by file name) is used and the other is named in the banner.
 
 `accent-color = "#rrggbb"` replaces the accent (the focused pane's border,
 highlights in the palette) of whichever theme is in use.

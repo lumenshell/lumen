@@ -179,8 +179,6 @@ pub fn forget(window: u64) {
     }
 }
 
-/// Write every window atomically; with none left, remove the file so the
-/// next launch starts fresh.
 /// Whether the session file is written (`restore-session`), set at launch.
 static SAVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
@@ -189,6 +187,8 @@ pub fn set_saving(on: bool) {
     SAVING.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Write every window atomically; with none left, remove the file so the
+/// next launch starts fresh.
 fn write(open: &[(u64, Option<Session>)]) {
     write_to(path(), open, SAVING.load(std::sync::atomic::Ordering::Relaxed));
 }

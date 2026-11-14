@@ -15,6 +15,18 @@ pub fn parse(name: &str, text: &str) -> Result<Theme, String> {
     }
 }
 
+/// A theme from a `.toml` file: Lumen's format only, so a typo is reported
+/// as bad TOML rather than as a Ghostty line it isn't.
+pub fn parse_toml(name: &str, text: &str) -> Result<Theme, String> {
+    match text.parse::<toml_edit::DocumentMut>() {
+        Ok(doc) => parse_lumen(name, &doc),
+        Err(e) => {
+            let line = e.span().map_or(1, |span| text[..span.start.min(text.len())].lines().count().max(1));
+            Err(format!("isn't valid TOML: {} (line {line})", e.message().trim()))
+        }
+    }
+}
+
 /// `#rrggbb` or `rrggbb`.
 pub fn color(text: &str) -> Option<Hsla> {
     let hex = text.trim().trim_start_matches('#');
