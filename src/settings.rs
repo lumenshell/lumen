@@ -46,9 +46,6 @@ const PARSE_ERROR: &str = "Couldn't read the file at";
 #[derive(Clone, PartialEq)]
 pub struct Settings {
     pub themes: Vec<Theme>,
-    /// The chosen theme (for a light/dark pair, the dark one): what the
-    /// palette marks as current and what cycling moves on from.
-    pub theme_index: usize,
     /// One theme, or a pair that follows the system's light or dark.
     pub theme_choice: ThemeChoice,
     /// Replaces the theme's accent colour (`accent-color`).
@@ -187,7 +184,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             themes: themes(),
-            theme_index: 0,
             theme_choice: ThemeChoice::One(0),
             accent_color: None,
             dark: true,
@@ -290,6 +286,26 @@ impl Settings {
 
     pub fn theme_for(&self, dark: bool) -> &Theme {
         if dark { &self.resolved_dark } else { &self.resolved_light }
+    }
+
+    /// Where the theme in use now sits in `themes`: what the palette marks as
+    /// current and what cycling moves on from.
+    pub fn shown_index(&self) -> usize {
+        let i = match self.theme_choice {
+            ThemeChoice::One(i) => i,
+            ThemeChoice::Pair { light, dark } => if self.dark { dark } else { light },
+        };
+        i.min(self.themes.len() - 1)
+    }
+
+    /// Use one theme, whatever the system's appearance.
+    pub fn choose_theme(&mut self, i: usize) {
+        self.theme_choice = ThemeChoice::One(i);
+    }
+
+    /// The theme after the one in use now.
+    pub fn next_theme(&mut self) {
+        self.choose_theme((self.shown_index() + 1) % self.themes.len());
     }
 
     /// Work out the light and dark themes from the choice and accent.
@@ -597,33 +613,40 @@ impl Settings {
     }
 
     /// `theme = "Name"` or `theme = "light:A, dark:B"`; the problem, if any.
+    /// Names may contain commas: a part not starting with `light:` or `dark:`
+    /// belongs to the name before it.
     fn parse_theme(&mut self, text: &str) -> Option<String> {
-        let find = |name: &str| self.themes.iter().position(|t| t.name.eq_ignore_ascii_case(name.trim()));
+        let find = |name: &str| self.themes.iter().position(|t| crate::theme::same_name(&t.name, name.trim()));
         let unknown = |name: &str| {
             let names: Vec<_> = self.themes.iter().map(|t| format!("\"{}\"", t.name)).collect();
             format!("unknown theme \"{}\"; choose one of {}", name.trim(), names.join(", "))
         };
-        if !text.contains("light:") && !text.contains("dark:") {
-            return match find(text) {
-                Some(i) => {
-                    self.theme_index = i;
-                    self.theme_choice = ThemeChoice::One(i);
-                    None
+        let text = text.trim();
+        fn side(part: &str) -> Option<(bool, &str)> {
+            part.strip_prefix("light:").map(|n| (false, n)).or_else(|| part.strip_prefix("dark:").map(|n| (true, n)))
+        }
+        // A whole name wins, so a theme called "dark: x" still works alone.
+        if let Some(i) = find(text) {
+            self.theme_choice = ThemeChoice::One(i);
+            return None;
+        }
+        if side(text).is_none() {
+            return Some(unknown(text));
+        }
+        let mut sides: Vec<(bool, String)> = Vec::new();
+        for part in text.split(',') {
+            match (side(part.trim_start()), sides.last_mut()) {
+                (Some((dark, name)), _) => sides.push((dark, name.to_string())),
+                (None, Some((_, name))) => {
+                    name.push(',');
+                    name.push_str(part);
                 }
-                None => Some(unknown(text)),
-            };
+                (None, None) => unreachable!("the text starts with light: or dark:"),
+            }
         }
         let (mut light, mut dark, mut problems) = (None, None, Vec::new());
-        for part in text.split(',') {
-            let part = part.trim();
-            let (slot, name) = if let Some(n) = part.strip_prefix("light:") {
-                (&mut light, n)
-            } else if let Some(n) = part.strip_prefix("dark:") {
-                (&mut dark, n)
-            } else {
-                problems.push(format!("`theme`: \"{part}\" should start with light: or dark:"));
-                continue;
-            };
+        for (is_dark, name) in &sides {
+            let slot = if *is_dark { &mut dark } else { &mut light };
             match find(name) {
                 Some(i) => *slot = Some(i),
                 None => problems.push(unknown(name)),
@@ -631,7 +654,6 @@ impl Settings {
         }
         // One side missing or unknown: use the other for both.
         if let (Some(light), Some(dark)) = (light.or(dark), dark.or(light)) {
-            self.theme_index = dark;
             self.theme_choice = ThemeChoice::Pair { light, dark };
         }
         (!problems.is_empty()).then(|| problems.join("; "))
@@ -944,11 +966,8 @@ impl Settings {
     /// Mutate settings from inside Lumen, persist them, and redraw.
     pub fn update(cx: &mut App, f: impl FnOnce(&mut Settings)) {
         let settings = cx.global_mut::<Settings>();
-        let (before, choice_before) = (settings.theme_index, settings.theme_choice);
+        let choice_before = settings.theme_choice;
         f(settings);
-        if settings.theme_index != before {
-            settings.theme_choice = ThemeChoice::One(settings.theme_index);
-        }
         let theme_chosen = settings.theme_choice != choice_before;
         settings.resolve();
         settings.font_size = settings.font_size.clamp(6.0, 72.0);
@@ -1027,27 +1046,85 @@ fn all_themes() -> (Vec<Theme>, Vec<String>) {
     (crate::theme::merge(crate::theme::themes(), files), problems)
 }
 
-/// Whether a file in the themes folder can be a theme: `.toml`, `.conf` or
-/// no extension (Ghostty's themes have none), and not hidden.
-fn theme_file(path: &std::path::Path) -> bool {
-    let hidden = path.file_name().and_then(|n| n.to_str()).is_none_or(|n| n.starts_with('.'));
-    let ext = path.extension().and_then(|e| e.to_str());
-    !hidden && path.is_file() && matches!(ext, None | Some("toml") | Some("conf"))
+/// How a file in the themes folder is read.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ThemeKind {
+    /// `.toml`: Lumen's format, so a typo is reported as bad TOML.
+    Toml,
+    /// `.conf`: either format.
+    Any,
+    /// No known extension: Ghostty's theme files have none, and their names
+    /// can have dots ("Catppuccin.Mocha"). So can a README, so a file that
+    /// doesn't read as a theme and doesn't look like one is skipped quietly.
+    Maybe,
 }
 
-/// Every theme file in `dir`, sorted by name, and a problem for each that
-/// couldn't be read.
+/// Extensions that are never themes: notes, images, editor leftovers.
+const NOT_THEMES: &[&str] =
+    &["md", "txt", "json", "png", "jpg", "jpeg", "gif", "svg", "swp", "swo", "swx", "tmp", "bak", "orig", "rej"];
+
+/// A file in the themes folder that can be a theme: its theme name and how to
+/// read it. Hidden files, backups (`name~`) and folders aren't themes.
+fn theme_file(path: &std::path::Path) -> Option<(String, ThemeKind)> {
+    let file = path.file_name()?.to_string_lossy();
+    if file.starts_with('.') || file.ends_with('~') || !path.is_file() {
+        return None;
+    }
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+    let stem = || path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    match ext.as_deref() {
+        Some("toml") => Some((stem(), ThemeKind::Toml)),
+        Some("conf") => Some((stem(), ThemeKind::Any)),
+        Some(e) if NOT_THEMES.contains(&e) => None,
+        _ => Some((file.to_string(), ThemeKind::Maybe)),
+    }
+}
+
+/// Whether text sets a theme's colours, so a file that fails to read as a
+/// theme was meant to be one.
+fn looks_like_theme(text: &str) -> bool {
+    text.lines().any(|line| {
+        let key = line.split('=').next().unwrap_or_default().trim();
+        line.contains('=') && matches!(key, "background" | "foreground" | "palette")
+    })
+}
+
+/// Every theme file in `dir`, sorted by file name, and a problem for each
+/// that couldn't be read. When two files make themes with the same name, the
+/// first is used.
 pub fn load_theme_files(dir: &std::path::Path) -> (Vec<Theme>, Vec<String>) {
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| theme_file(p)).collect())
+    let mut paths: Vec<(PathBuf, String, ThemeKind)> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter_map(|p| theme_file(&p).map(|(name, kind)| (p, name, kind)))
+                .collect()
+        })
         .unwrap_or_default();
-    paths.sort();
-    let (mut themes, mut problems) = (Vec::new(), Vec::new());
-    for path in paths {
+    paths.sort_by(|a, b| a.0.cmp(&b.0));
+    let (mut themes, mut problems): (Vec<Theme>, Vec<String>) = (Vec::new(), Vec::new());
+    for (path, name, kind) in paths {
         let file = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let name = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-        match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| crate::theme_file::parse(&name, &t)) {
-            Ok(theme) => themes.push(theme),
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(_) if kind == ThemeKind::Maybe => continue,
+            Err(e) => {
+                problems.push(format!("`themes/{file}`: {e}"));
+                continue;
+            }
+        };
+        let theme = match kind {
+            ThemeKind::Toml => crate::theme_file::parse_toml(&name, &text),
+            ThemeKind::Any | ThemeKind::Maybe => crate::theme_file::parse(&name, &text),
+        };
+        match theme {
+            Ok(theme) => match themes.iter().find(|t| crate::theme::same_name(&t.name, &theme.name)) {
+                Some(first) => problems.push(format!(
+                    "`themes/{file}`: skipped, because another file is already the theme \"{}\"; rename one",
+                    first.name
+                )),
+                None => themes.push(theme),
+            },
+            Err(_) if kind == ThemeKind::Maybe && !looks_like_theme(&text) => {}
             Err(e) => problems.push(format!("`themes/{file}`: {e}")),
         }
     }
@@ -1060,7 +1137,7 @@ fn folder_stamp(dir: &std::path::Path) -> Vec<(PathBuf, Option<SystemTime>)> {
         .map(|rd| {
             // Only theme files: an editor's swap file isn't a reason to reload.
             rd.filter_map(|e| e.ok())
-                .filter(|e| theme_file(&e.path()))
+                .filter(|e| theme_file(&e.path()).is_some())
                 .map(|e| (e.path(), e.metadata().ok().and_then(|m| m.modified().ok())))
                 .collect()
         })
@@ -1183,11 +1260,80 @@ mod tests {
     #[test]
     fn missing_theme_falls_back() {
         let s = Settings::parse_with("theme = \"Gone\"", crate::theme::themes(), Vec::new());
-        assert_eq!(s.theme_index, 0);
+        assert_eq!(s.theme_choice, ThemeChoice::One(0));
         assert_eq!(s.problems.len(), 1, "{:?}", s.problems);
-        let mut shrunk = Settings { theme_index: 40, theme_choice: ThemeChoice::One(40), ..Settings::default() };
+        let mut shrunk = Settings { theme_choice: ThemeChoice::One(40), ..Settings::default() };
         shrunk.resolve();
         assert_eq!(shrunk.theme().name, shrunk.themes.last().unwrap().name);
+    }
+
+    #[test]
+    fn theme_folder_edge_cases() {
+        let dir = std::env::temp_dir().join(format!("lumen-themes-edge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lumen = "background = \"#101010\"\nforeground = \"#eeeeee\"\n";
+        let ghostty = "background = #fafafa\nforeground = #202020\n";
+        std::fs::write(dir.join("Upper.TOML"), lumen).unwrap();
+        std::fs::write(dir.join("Catppuccin.Mocha"), ghostty).unwrap();
+        std::fs::write(dir.join("README"), "Put your themes in this folder.\n").unwrap();
+        std::fs::write(dir.join("README.md"), "# Themes\n").unwrap();
+        std::fs::write(dir.join("Midnight"), ghostty).unwrap();
+        std::fs::write(dir.join("Midnight.toml"), lumen).unwrap();
+        std::fs::write(dir.join("Typo.toml"), "background = \"#101010\nforeground = \"#eeeeee\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"Caf\xe9")), ghostty).unwrap();
+        }
+        let (themes, problems) = load_theme_files(&dir);
+        let names: Vec<&str> = themes.iter().map(|t| t.name.as_ref()).collect();
+        assert!(names.contains(&"Upper"), "an upper-case extension still loads: {names:?}");
+        assert!(names.contains(&"Catppuccin.Mocha"), "a dot in the name isn't an extension: {names:?}");
+        assert_eq!(names.iter().filter(|n| **n == "Midnight").count(), 1, "one Midnight: {names:?}");
+        #[cfg(unix)]
+        assert!(names.iter().any(|n| n.starts_with("Caf")), "a non-UTF-8 name still loads: {names:?}");
+        assert!(!problems.iter().any(|p| p.contains("README")), "a README isn't a broken theme: {problems:?}");
+        let dup = problems.iter().find(|p| p.contains("themes/Midnight.toml")).expect("the duplicate is reported");
+        assert!(dup.contains("Midnight"), "{dup}");
+        let typo = problems.iter().find(|p| p.contains("themes/Typo.toml")).expect("the typo is reported");
+        assert!(typo.contains("TOML") && !typo.contains("key = value"), "says it's bad TOML: {typo}");
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn theme_names_match_ignoring_case_beyond_ascii() {
+        let s = Settings::parse("theme = \"ROSÉ PINE DAWN\"");
+        assert!(s.problems.is_empty(), "{:?}", s.problems);
+        assert_eq!(s.theme().name.as_ref(), "Rosé Pine Dawn");
+        let file = crate::theme_file::parse("ROSÉ PINE", "background = #000000\nforeground = #ffffff\n").unwrap();
+        let merged = crate::theme::merge(crate::theme::themes(), vec![file]);
+        assert_eq!(merged.len(), crate::theme::themes().len(), "the file replaces Rosé Pine");
+    }
+
+    #[test]
+    fn pair_names_may_contain_commas() {
+        let mut themes = crate::theme::themes();
+        themes.push(crate::theme_file::parse("Paper, Warm", "background = #fafafa\nforeground = #202020\n").unwrap());
+        let s = Settings::parse_with("theme = \"light:Paper, Warm, dark:Rosé Pine\"", themes, Vec::new());
+        assert!(s.problems.is_empty(), "{:?}", s.problems);
+        assert_eq!(s.theme_for(false).name.as_ref(), "Paper, Warm");
+        assert_eq!(s.theme_for(true).name.as_ref(), "Rosé Pine");
+    }
+
+    #[test]
+    fn current_theme_follows_the_appearance() {
+        let mut s = Settings::parse("theme = \"light:Rosé Pine Dawn, dark:Rosé Pine\"");
+        let index = |s: &Settings, name: &str| s.themes.iter().position(|t| t.name.as_ref() == name).unwrap();
+        s.dark = false;
+        assert_eq!(s.shown_index(), index(&s, "Rosé Pine Dawn"), "the palette marks the light theme in light mode");
+        s.dark = true;
+        assert_eq!(s.shown_index(), index(&s, "Rosé Pine"));
+        s.dark = false;
+        s.next_theme();
+        assert_eq!(s.theme_choice, ThemeChoice::One(index(&s, "Rosé Pine Dawn") + 1), "next goes on from what's shown");
+        s.choose_theme(index(&s, "Rosé Pine"));
+        assert_eq!(s.theme_choice, ThemeChoice::One(index(&s, "Rosé Pine")));
     }
 
     #[test]

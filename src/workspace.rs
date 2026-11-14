@@ -19,7 +19,7 @@ use crate::api::{self, ApiError, ApiResult};
 use crate::keymap;
 use crate::palette::{CommandPalette, Dot, PaletteEvent, PaletteFn, PaletteItem};
 use crate::session::{self, Axis, NodeState, Session, TabState, WindowState};
-use crate::settings::{MONO_FONT, Settings, ThemeChoice, WorkingDirectory, ui_font};
+use crate::settings::{MONO_FONT, Settings, WorkingDirectory, ui_font};
 use crate::pty::{GridSize, Owner};
 use std::path::PathBuf;
 use crate::terminal_view::{TerminalEvent, TerminalView};
@@ -2547,12 +2547,9 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
     for (i, theme) in settings.themes.iter().enumerate() {
         let item = PaletteItem::new(
             format!("Theme: {}", theme.name),
-            Rc::new(move |_, cx| Settings::update(cx, |s| {
-                s.theme_index = i;
-                s.theme_choice = ThemeChoice::One(i);
-            })),
+            Rc::new(move |_, cx| Settings::update(cx, |s| s.choose_theme(i))),
         );
-        items.push(if i == settings.theme_index { item.note("current") } else { item });
+        items.push(if i == settings.shown_index() { item.note("current") } else { item });
     }
     items
 }

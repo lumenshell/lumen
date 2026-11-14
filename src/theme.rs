@@ -539,12 +539,18 @@ pub fn contrast(a: Hsla, b: Hsla) -> f32 {
     (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
+/// Whether two theme names are the same, ignoring case ("ROSÉ PINE" is
+/// "Rosé Pine").
+pub fn same_name(a: &str, b: &str) -> bool {
+    a == b || a.to_lowercase() == b.to_lowercase()
+}
+
 /// The built-in themes with those from files: a file whose name matches a
 /// built-in (ignoring case) replaces it in place, and the rest follow, in the
 /// order given.
 pub fn merge(mut builtins: Vec<Theme>, files: Vec<Theme>) -> Vec<Theme> {
     for file in files {
-        match builtins.iter().position(|t| t.name.eq_ignore_ascii_case(&file.name)) {
+        match builtins.iter().position(|t| same_name(&t.name, &file.name)) {
             Some(i) => builtins[i] = file,
             None => builtins.push(file),
         }

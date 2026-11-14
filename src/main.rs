@@ -141,7 +141,7 @@ fn main() {
 
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &NextTheme, cx| {
-            Settings::update(cx, |s| s.theme_index = (s.theme_index + 1) % s.themes.len())
+            Settings::update(cx, Settings::next_theme)
         });
         cx.on_action(|_: &IncreaseFont, cx| Settings::update(cx, |s| s.font_size += 1.0));
         cx.on_action(|_: &DecreaseFont, cx| Settings::update(cx, |s| s.font_size -= 1.0));
