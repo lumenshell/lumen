@@ -23,6 +23,13 @@ pub fn valid_name(name: &str) -> bool {
     matches!(name.split_once('/'), Some((owner, rest)) if part(owner) && part(rest))
 }
 
+/// Whether `v` is a version as the registry accepts them: three dot-separated
+/// numbers, like `1.2.3`. Versions become folder names, so nothing else gets in.
+fn valid_version(v: &str) -> bool {
+    let parts: Vec<&str> = v.split('.').collect();
+    parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
@@ -487,6 +494,9 @@ fn put_in_place(p: &Paths, entry: &Entry, release: &Release, approve: &Approve) 
     if !valid_name(name) {
         return Err(format!("\"{name}\" isn't a registry name"));
     }
+    if !valid_version(&release.version) {
+        return Err(format!("{name}: \"{}\" isn't a version", release.version));
+    }
     std::fs::create_dir_all(&p.root).map_err(|e| format!("{}: {e}", p.root.display()))?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let scratch = Scratch(p.root.join(format!(".download-{}-{stamp}", std::process::id())));
@@ -778,6 +788,21 @@ mod tests {
 
     fn config(p: &Paths) -> String {
         std::fs::read_to_string(&p.config).unwrap_or_default()
+    }
+
+    #[test]
+    fn versions_from_the_index_must_be_plain() {
+        let (dir, p) = paths("badversion");
+        let victim = p.root.join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("keep"), "x").unwrap();
+        for v in ["../../victim", "1.0.0/../../../victim", "", "1.0", "1.0.0-x"] {
+            let idx = index_with(vec![release(v, vec![], archive(&dir, "1.0.0", ""))]);
+            let err = install_in(&p, &idx, "mira/x", &Approve::Yes).unwrap_err();
+            assert!(err.contains("isn't a version"), "{v}: {err}");
+        }
+        assert!(victim.join("keep").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
