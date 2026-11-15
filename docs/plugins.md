@@ -8,6 +8,10 @@ this guide covers `lumen_plugin`, the Python package that comes with Lumen.
 The [built-in plugins](../plugins/) are written with it and make good
 examples, from 40 lines (`git-branch`) to 200 (`command-history`).
 
+This guide is about writing plugins. To install other people's, use
+`lumen plugins install owner/name` (see `lumen plugins help`); to share yours,
+see [publishing](publishing.md).
+
 - [Your first plugin](#your-first-plugin)
 - [Commands](#commands)
 - [Events](#events)

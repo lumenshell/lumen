@@ -43,7 +43,7 @@ working-directory = "inherit"  # where new tabs, splits and windows start: "inhe
 # unfocused-dim = 0.35         # dim panes you're not in, 0 to 0.5; unset follows the theme (0.25 on light ones)
 pane-gap = 8                   # pixels between split panes (0 to 24)
 ui-font-family = "Inter"       # font for tabs, the palette and banners; Inter is built in
-plugins = ["recent-dirs"]      # built-in plugins to run; the Plugin Gallery edits this
+plugins = ["recent-dirs"]      # plugins to run: built-in names, and installed ones as "owner/name"
 ```
 
 Delete a line to go back to its default.

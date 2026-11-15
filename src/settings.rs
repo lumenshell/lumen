@@ -264,6 +264,26 @@ pub fn config_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("config.toml"))
 }
 
+/// Change the config file at `path` from outside the app (`lumen plugins`):
+/// read it, apply `f`, and write it back all at once, keeping your comments.
+/// A file that doesn't parse is left alone. A running Lumen picks the change
+/// up.
+pub(crate) fn edit_config_at(path: &std::path::Path, f: impl FnOnce(&mut DocumentMut)) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let mut doc: DocumentMut =
+        text.parse().map_err(|e: toml_edit::TomlError| format!("{}: {}", path.display(), e.message().trim()))?;
+    f(&mut doc);
+    let dir = path.parent().ok_or("no folder")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let tmp = path.with_extension(format!("toml.tmp{}", std::process::id()));
+    std::fs::write(&tmp, doc.to_string()).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The `key = value` file used before config.toml.
 fn legacy_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("config"))
@@ -534,7 +554,7 @@ impl Settings {
                         let mut bad_names = Vec::new();
                         for v in list {
                             match v.as_str() {
-                                Some(n) if crate::plugins::builtin(n).is_some() => {
+                                Some(n) if crate::plugins::builtin(n).is_some() || crate::registry::valid_name(n) => {
                                     if !s.plugins.iter().any(|p| p == n) {
                                         s.plugins.push(n.to_string());
                                     }
@@ -544,7 +564,11 @@ impl Settings {
                         }
                         (!bad_names.is_empty()).then(|| {
                             let names: Vec<_> = crate::plugins::BUILTINS.iter().map(|b| format!("\"{}\"", b.name)).collect();
-                            format!("unknown built-in plugin {}; they are {}", bad_names.join(", "), names.join(", "))
+                            format!(
+                                "unknown plugin {}: use a built-in one ({}) or an installed one as \"owner/name\"",
+                                bad_names.join(", "),
+                                names.join(", ")
+                            )
                         })
                     }
                     None => Some(bad("a list of built-in plugin names, like [\"recent-dirs\"]")),
@@ -1056,15 +1080,31 @@ impl Settings {
             let config = config_path().and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());
             (config, themes_dir().map(|d| folder_stamp(&d)).unwrap_or_default())
         }
+        // What `lumen plugins` changes: installs and approvals.
+        fn plugin_files() -> [Option<SystemTime>; 2] {
+            let time = |p: Option<PathBuf>| p.and_then(|p| std::fs::metadata(p).ok()).and_then(|m| m.modified().ok());
+            [time(crate::registry::installed_path()), time(crate::plugins::approvals_path())]
+        }
         let mut last = modified();
+        let mut last_plugins = plugin_files();
         cx.spawn(async move |cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(500)).await;
                 // Off the main thread, so drawing never waits on the disk.
-                let now = cx.background_executor().spawn(async { modified() }).await;
+                let (now, plugins_now) = cx.background_executor().spawn(async { (modified(), plugin_files()) }).await;
                 if now != last {
                     last = now;
                     if cx.update(Self::reload).is_err() {
+                        break;
+                    }
+                }
+                if plugins_now != last_plugins {
+                    last_plugins = plugins_now;
+                    let bumped = cx.update(|cx| {
+                        let n = cx.try_global::<crate::plugins::PluginFiles>().map_or(0, |p| p.0);
+                        cx.set_global(crate::plugins::PluginFiles(n + 1));
+                    });
+                    if bumped.is_err() {
                         break;
                     }
                 }
@@ -1376,6 +1416,32 @@ mod tests {
     }
 
     #[test]
+    fn edit_config_keeps_the_rest() {
+        let dir = std::env::temp_dir().join(format!("lumen-edit-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "# mine\nfont-size = 14\n").unwrap();
+        edit_config_at(&path, |doc| doc["plugins"] = toml_edit::value(toml_edit::Array::from_iter(["mira/x"]))).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine\nfont-size = 14\n"), "{text}");
+        assert!(text.contains("plugins = [\"mira/x\"]"), "{text}");
+        edit_config_at(&dir.join("new.toml"), |doc| doc["x"] = toml_edit::value(1)).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("new.toml")).unwrap(), "x = 1\n");
+        std::fs::write(&path, "font-size = [").unwrap();
+        assert!(edit_config_at(&path, |_| {}).is_err(), "a broken file isn't overwritten");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "font-size = [");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn plugins_accepts_registry_names() {
+        let s = Settings::parse("plugins = [\"recent-dirs\", \"mira/docker-panes\", \"Nope/x\"]\n");
+        assert_eq!(s.plugins, ["recent-dirs", "mira/docker-panes"]);
+        assert_eq!(s.problems.len(), 1, "{:?}", s.problems);
+        assert!(s.problems[0].contains("Nope/x"), "{:?}", s.problems);
+    }
+
+    #[test]
     fn plugin_tables_are_kept() {
         let s = Settings::parse("[plugin.recent-dirs]\nmax-shown = 50\n[plugin.\"mira/docker-panes\"]\nengine = \"podman\"\n");
         assert!(s.problems.is_empty(), "{:?}", s.problems);
@@ -1490,7 +1556,7 @@ mod tests {
         assert_eq!(s.plugins, ["recent-dirs", "command-history"]);
         assert!(s.problems.is_empty(), "{:?}", s.problems);
         let s = Settings::parse("plugins = [\"recent-dir\"]");
-        assert!(s.problems[0].contains("unknown built-in plugin \"recent-dir\""), "{:?}", s.problems);
+        assert!(s.problems[0].contains("unknown plugin \"recent-dir\""), "{:?}", s.problems);
         assert!(s.problems[0].contains("\"recent-dirs\""));
         assert!(!Settings::parse("plugins = \"recent-dirs\"").problems.is_empty());
     }

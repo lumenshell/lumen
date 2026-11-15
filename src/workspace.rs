@@ -468,9 +468,13 @@ impl Workspace {
             Settings::set_appearance(cx, window.appearance());
         }));
         // Built-in plugins turned on or off (in the gallery or config.toml).
+        // A plugin installed, updated or approved by `lumen plugins`.
+        this._subs.push(cx.observe_global_in::<crate::plugins::PluginFiles>(window, |this, window, cx| {
+            this.sync_plugins(window, cx);
+        }));
         this._subs.push(cx.observe_global_in::<Settings>(window, |this, window, cx| {
             if Settings::get(cx).plugins != crate::plugins::builtins_running() {
-                this.reload_plugins(window, cx);
+                this.sync_plugins(window, cx);
             } else {
                 this.push_plugin_settings(cx);
             }
@@ -919,25 +923,70 @@ impl Workspace {
 
     /// Load the plugins folder: start what's allowed, and ask about the rest.
     pub fn start_plugins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::plugins;
+        let enabled = Settings::get(cx).plugins.clone();
+        plugins::set_builtins_running(enabled.clone());
+        let (manifests, problems) = plugins::discover(&enabled);
+        self.plugin_problems = problems;
+        self.pending_approvals.clear();
+        for m in manifests {
+            let decision = plugins::decision(&m);
+            self.load_plugin(m, decision, cx);
+        }
+        self.push_plugin_settings(cx);
+        self.ask_next_approval(window, cx);
+        cx.notify();
+    }
+
+    /// Start a plugin, or note why it isn't running.
+    fn load_plugin(&mut self, m: crate::plugins::Manifest, decision: crate::plugins::Decision, cx: &mut Context<Self>) {
+        use crate::plugins::{self, Decision};
+        let (settings, _) = plugin_settings_for(&m, cx);
+        match decision {
+            Decision::Allowed => plugins::start(m, settings),
+            Decision::Refused => {
+                let status = plugins::refused_status(&m);
+                plugins::add_stopped(m, &status, settings)
+            }
+            Decision::Ask => {
+                plugins::add_stopped(m.clone(), "waiting for your approval", settings);
+                if !self.pending_approvals.iter().any(|p| p.name == m.name) {
+                    self.pending_approvals.push(m);
+                }
+            }
+        }
+    }
+
+    /// Bring the running plugins in line with config.toml and what's
+    /// installed, restarting only those that changed: turning one plugin
+    /// on, or updating it, leaves the others running.
+    pub fn sync_plugins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::plugins::{self, Decision};
         let enabled = Settings::get(cx).plugins.clone();
         plugins::set_builtins_running(enabled.clone());
         let (manifests, problems) = plugins::discover(&enabled);
         self.plugin_problems = problems;
-        self.plugin_setting_problems.clear();
-        self.pending_approvals.clear();
-        for m in manifests {
-            let (settings, problems) = plugin_settings_for(&m, cx);
-            self.plugin_setting_problems.extend(problems);
-            match plugins::decision(&m) {
-                Decision::Allowed => plugins::start(m, settings),
-                Decision::Refused => plugins::add_stopped(m, "not allowed", settings),
-                Decision::Ask => {
-                    plugins::add_stopped(m.clone(), "waiting for your approval", settings);
-                    self.pending_approvals.push(m);
-                }
+        let wanted: Vec<_> = manifests.into_iter().map(|m| (plugins::decision(&m), m)).collect();
+        // Waiting for approval isn't running either: compare it as refused.
+        let compare: Vec<_> = wanted
+            .iter()
+            .map(|(d, m)| (m.clone(), if *d == Decision::Allowed { Decision::Allowed } else { Decision::Refused }))
+            .collect();
+        let running: Vec<_> = plugins::list()
+            .into_iter()
+            .map(|i| (i.manifest, if i.started { Decision::Allowed } else { Decision::Refused }))
+            .collect();
+        let reload = plugins::plan_reload(&running, &compare);
+        for name in &reload.stop {
+            plugins::stop(name);
+        }
+        for (decision, m) in wanted {
+            if reload.start.contains(&m.name) {
+                self.load_plugin(m, decision, cx);
             }
         }
+        keymap::apply(cx);
+        self.push_plugin_settings(cx);
         self.ask_next_approval(window, cx);
         cx.notify();
     }

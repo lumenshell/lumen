@@ -136,6 +136,18 @@ JSON-RPC protocol. [`examples/`](examples/) has ready-made scripts.
 Turn on the built-in plugins from **Plugin Gallery** in the palette. Each one
 shows what it does and what it's allowed to do before you approve it.
 
+Install other people's plugins from the
+[registry](https://github.com/lumenshell/plugins) with `lumen plugins`:
+
+```sh
+lumen plugins search git
+lumen plugins install owner/name
+```
+
+Installing shows what a plugin may do and asks first. `lumen plugins help`
+lists `update`, `remove`, `list`, `on` and `off`, and
+[publishing](docs/publishing.md) explains how to share your own.
+
 To write your own in Python, use `lumen_plugin`. It comes with Lumen, so
 there's nothing to install:
 

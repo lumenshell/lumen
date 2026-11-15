@@ -76,15 +76,31 @@ pub struct Manifest {
     pub dir: PathBuf,
     /// One of Lumen's built-in plugins, turned on in the Plugin Gallery.
     pub builtin: bool,
+    /// Installed from the registry: named `owner/name`, approved at install.
+    pub registry: bool,
 }
 
 impl Manifest {
     /// Its entry in the approvals file. Built-in plugins have their own, so
     /// turning one on never approves a folder of yours with the same name.
     fn approval_key(&self) -> String {
-        if self.builtin { format!("builtin:{}", self.name) } else { self.name.clone() }
+        if self.builtin {
+            format!("builtin:{}", self.name)
+        } else if self.registry {
+            format!("registry:{}", self.name)
+        } else {
+            self.name.clone()
+        }
     }
 }
+
+/// Bumped when `installed.json` or `plugin-approvals.json` changes on disk
+/// (`lumen plugins` installed, updated or approved something), so windows
+/// bring their plugins in line.
+#[derive(Default)]
+pub struct PluginFiles(pub u64);
+
+impl gpui::Global for PluginFiles {}
 
 /// Where plugins are installed.
 /// The built-in plugins last started, to notice when config.toml changes them
@@ -193,6 +209,7 @@ pub fn parse_manifest(dir: &Path, text: &str) -> Result<Manifest, String> {
         settings: crate::plugin_settings::parse_schema(&doc)?,
         dir: dir.to_path_buf(),
         builtin: false,
+        registry: false,
     })
 }
 
@@ -303,7 +320,50 @@ pub fn discover(enabled: &[String]) -> (Vec<Manifest>, Vec<String>) {
             Err(e) => problems.push(format!("built-in plugin `{name}`: {e}")),
         }
     }
+    let (registry, more) = discover_registry(enabled, &crate::registry::load_installed());
+    found.extend(registry);
+    problems.extend(more);
     (found, problems)
+}
+
+/// The registry plugins in `enabled`, from where they're installed, and a
+/// problem for each that isn't installed or can't be read.
+fn discover_registry(
+    enabled: &[String],
+    installed: &BTreeMap<String, crate::registry::Installed>,
+) -> (Vec<Manifest>, Vec<String>) {
+    let (mut found, mut problems) = (Vec::new(), Vec::new());
+    for name in enabled.iter().filter(|n| crate::registry::valid_name(n)) {
+        let Some(i) = installed.get(name) else {
+            problems.push(format!("plugin `{name}` isn't installed: run `lumen plugins install {name}`"));
+            continue;
+        };
+        let read = std::fs::read_to_string(i.dir.join("plugin.toml"))
+            .map_err(|e| e.to_string())
+            .and_then(|text| parse_manifest(&i.dir, &text));
+        match read {
+            Ok(mut m) => {
+                m.name = name.clone();
+                m.registry = true;
+                found.push(m);
+            }
+            Err(e) => problems.push(format!("plugin `{name}`: {e}")),
+        }
+    }
+    (found, problems)
+}
+
+/// Your own plugins (folders in the plugins folder), by name, with their
+/// versions.
+pub fn local_plugins() -> Vec<(String, String)> {
+    discover_folders().0.into_iter().map(|m| (m.name, m.version)).collect()
+}
+
+/// Read and check `dir/plugin.toml`, for `lumen plugins check`.
+pub fn check_folder(dir: &Path) -> Result<Manifest, String> {
+    let text = std::fs::read_to_string(dir.join("plugin.toml"))
+        .map_err(|e| format!("{}: {e}", dir.join("plugin.toml").display()))?;
+    parse_manifest(dir, &text)
 }
 
 fn discover_folders() -> (Vec<Manifest>, Vec<String>) {
@@ -338,15 +398,16 @@ struct Approval {
     allowed: bool,
 }
 
-fn approvals_path() -> Option<PathBuf> {
+pub fn approvals_path() -> Option<PathBuf> {
     state_dir().map(|d| d.join("plugin-approvals.json"))
 }
 
 fn load_approvals() -> BTreeMap<String, Approval> {
-    approvals_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+    approvals_path().map(|p| load_approvals_from(&p)).unwrap_or_default()
+}
+
+fn load_approvals_from(path: &Path) -> BTreeMap<String, Approval> {
+    std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -358,10 +419,21 @@ pub enum Decision {
 }
 
 pub fn decision(m: &Manifest) -> Decision {
+    decide(m, &load_approvals())
+}
+
+fn decide(m: &Manifest, approvals: &BTreeMap<String, Approval>) -> Decision {
     if m.permissions.is_empty() {
         return Decision::Allowed;
     }
-    match load_approvals().get(&m.approval_key()) {
+    if m.registry {
+        // Approved when installed; Lumen never asks about these itself.
+        let covered = approvals
+            .get(&m.approval_key())
+            .is_some_and(|a| a.allowed && m.permissions.iter().all(|p| a.permissions.contains(p)));
+        return if covered { Decision::Allowed } else { Decision::Refused };
+    }
+    match approvals.get(&m.approval_key()) {
         Some(a) if a.command == m.command && m.permissions.iter().all(|p| a.permissions.contains(p)) => {
             if a.allowed { Decision::Allowed } else { Decision::Refused }
         }
@@ -369,17 +441,63 @@ pub fn decision(m: &Manifest) -> Decision {
     }
 }
 
+/// What a plugin that isn't allowed to run says in the plugin list.
+pub fn refused_status(m: &Manifest) -> String {
+    if m.registry {
+        format!("not approved: run `lumen plugins install {}`", m.name)
+    } else {
+        "not allowed".into()
+    }
+}
+
+/// Approve a registry plugin's permissions (in the approvals file at
+/// `path`), when it's installed or updated.
+pub fn approve_registry_in(path: &Path, name: &str, permissions: &[Permission]) {
+    store_approval_at(
+        path,
+        format!("registry:{name}"),
+        Approval { command: Vec::new(), permissions: permissions.to_vec(), allowed: true },
+    );
+}
+
+/// The permissions a registry plugin has been allowed.
+pub fn registry_approval_in(path: &Path, name: &str) -> Vec<Permission> {
+    match load_approvals_from(path).remove(&format!("registry:{name}")) {
+        Some(a) if a.allowed => a.permissions,
+        _ => Vec::new(),
+    }
+}
+
+/// Forget a registry plugin's approval, when it's removed: installing it
+/// again asks again.
+pub fn forget_registry_in(path: &Path, name: &str) {
+    let _lock = lock_approvals(path);
+    let mut all = load_approvals_from(path);
+    if all.remove(&format!("registry:{name}")).is_some() {
+        let _ = crate::registry::write_private(path, &serde_json::to_string_pretty(&all).unwrap_or_default());
+    }
+}
+
 pub fn record_decision(m: &Manifest, allowed: bool) {
-    let Some(path) = approvals_path() else { return };
-    let mut all = load_approvals();
-    all.insert(m.approval_key(), Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed });
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+    store_approval(m.approval_key(), Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed });
+}
+
+fn store_approval(key: String, approval: Approval) {
+    if let Some(path) = approvals_path() {
+        store_approval_at(&path, key, approval);
     }
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, serde_json::to_string_pretty(&all).unwrap_or_default()).is_ok() {
-        let _ = std::fs::rename(tmp, path);
-    }
+}
+
+/// The approvals file's lock: Lumen and `lumen plugins` both change it.
+fn lock_approvals(path: &Path) -> Option<crate::registry::Lock> {
+    crate::registry::Lock::take(&path.with_file_name("approvals.lock")).ok()
+}
+
+fn store_approval_at(path: &Path, key: String, approval: Approval) {
+    let _lock = lock_approvals(path);
+    let mut all = load_approvals_from(path);
+    all.insert(key, approval);
+    let _ = crate::registry::write_private(path, &serde_json::to_string_pretty(&all).unwrap_or_default());
 }
 
 // ---- running -----------------------------------------------------------
@@ -425,6 +543,9 @@ pub struct Info {
     pub manifest: Manifest,
     pub status: String,
     pub commands: Vec<PluginCommand>,
+    /// Started (running, or restarting after a crash), rather than noted as
+    /// refused or waiting for approval.
+    pub started: bool,
 }
 
 pub fn list() -> Vec<Info> {
@@ -432,7 +553,12 @@ pub fn list() -> Vec<Info> {
         .lock()
         .unwrap()
         .iter()
-        .map(|r| Info { manifest: r.manifest.clone(), status: r.status.clone(), commands: r.commands.clone() })
+        .map(|r| Info {
+            manifest: r.manifest.clone(),
+            status: r.status.clone(),
+            commands: r.commands.clone(),
+            started: r.generation != 0,
+        })
         .collect()
 }
 
@@ -444,6 +570,7 @@ fn with_plugin<R>(name: &str, f: impl FnOnce(&mut Running) -> R) -> Option<R> {
 /// it still shows in the palette.
 pub fn add_stopped(m: Manifest, status: &str, settings: serde_json::Map<String, Value>) {
     let mut all = PLUGINS.lock().unwrap();
+    all.iter().filter(|r| r.manifest.name == m.name).for_each(end);
     all.retain(|r| r.manifest.name != m.name);
     all.push(Running {
         manifest: m,
@@ -491,9 +618,8 @@ pub fn start(m: Manifest, settings: serde_json::Map<String, Value>) {
     let generation = GENERATION.fetch_add(1, Ordering::SeqCst);
     {
         let mut all = PLUGINS.lock().unwrap();
-        if let Some(old) = all.iter().find(|r| r.manifest.name == m.name) {
-            old.stop.store(true, Ordering::SeqCst);
-        }
+        // A new version, or new permissions: the old process goes.
+        all.iter().filter(|r| r.manifest.name == m.name).for_each(end);
         all.retain(|r| r.manifest.name != m.name);
         all.push(Running {
             manifest: m.clone(),
@@ -603,17 +729,53 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
     with_run(&name, generation, |r| r.status = "stopped".into());
 }
 
-/// Stop every plugin: they're asked to exit (SIGTERM) and not restarted.
-pub fn stop_all() {
-    let all = PLUGINS.lock().unwrap();
-    for r in all.iter() {
-        r.stop.store(true, Ordering::SeqCst);
-        if let Some(pid) = r.pid {
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
+/// Ask a plugin's process to exit (SIGTERM), and don't restart it.
+fn end(r: &Running) {
+    r.stop.store(true, Ordering::SeqCst);
+    if let Some(pid) = r.pid {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
         }
     }
+}
+
+/// Stop every plugin: they're asked to exit (SIGTERM) and not restarted.
+pub fn stop_all() {
+    PLUGINS.lock().unwrap().iter().for_each(end);
+}
+
+/// Stop one plugin and forget it: it's asked to exit (SIGTERM) and not
+/// restarted.
+pub fn stop(name: &str) {
+    let mut all = PLUGINS.lock().unwrap();
+    all.iter().filter(|r| r.manifest.name == name).for_each(end);
+    all.retain(|r| r.manifest.name != name);
+}
+
+/// Which plugins to (re)start, stop and leave alone, by name.
+#[derive(Debug, PartialEq, Default)]
+pub struct Reload {
+    pub start: Vec<String>,
+    pub stop: Vec<String>,
+    pub keep: Vec<String>,
+}
+
+/// Compare what's loaded with what should be. A plugin whose manifest
+/// (folder, command, permissions, version, settings) or decision changed is
+/// started again; one no longer wanted is stopped; the rest keep running,
+/// so turning one plugin on doesn't restart the others.
+pub fn plan_reload(running: &[(Manifest, Decision)], wanted: &[(Manifest, Decision)]) -> Reload {
+    let mut r = Reload::default();
+    for (m, d) in wanted {
+        let same = running.iter().any(|(rm, rd)| rm == m && rd == d);
+        if same { &mut r.keep } else { &mut r.start }.push(m.name.clone());
+    }
+    for (m, _) in running {
+        if !wanted.iter().any(|(w, _)| w.name == m.name) {
+            r.stop.push(m.name.clone());
+        }
+    }
+    r
 }
 
 /// Forget every plugin (after [`stop_all`]), before loading them again.
@@ -778,6 +940,110 @@ mod tests {
         assert_eq!(msg["params"]["settings"], json!({"n": 2}));
         attach("t-starting", 7, tx, 1, &map(json!({"n": 2})));
         assert!(rx.try_recv().is_err(), "nothing when it started with them");
+    }
+
+    fn installed_at(dir: &Path, perms: Vec<Permission>) -> crate::registry::Installed {
+        crate::registry::Installed { version: "1.0.0".into(), commit: "c".repeat(40), permissions: perms, dir: dir.to_path_buf() }
+    }
+
+    #[test]
+    fn registry_plugins_are_discovered() {
+        let dir = std::env::temp_dir().join(format!("lumen-reg-discover-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.toml"), "version = \"1.0.0\"\ncommand = \"python3 main.py\"\npermissions = [\"panes\"]").unwrap();
+        let mut installed = BTreeMap::new();
+        installed.insert("mira/x".to_string(), installed_at(&dir, vec![Permission::Panes]));
+        let (found, problems) = discover_registry(&["recent-dirs".into(), "mira/x".into()], &installed);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "mira/x");
+        assert!(found[0].registry && !found[0].builtin);
+        assert_eq!(found[0].approval_key(), "registry:mira/x");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_registry_plugins_are_reported() {
+        let (found, problems) = discover_registry(&["mira/y".into()], &BTreeMap::new());
+        assert!(found.is_empty());
+        assert_eq!(problems, ["plugin `mira/y` isn't installed: run `lumen plugins install mira/y`"]);
+    }
+
+    #[test]
+    fn registry_approval_is_permissions_only() {
+        let dir = std::env::temp_dir();
+        let manifest = |perms: &str, command: &str| {
+            let mut m = parse_manifest(&dir, &format!("command = \"{command}\"\npermissions = [{perms}]")).unwrap();
+            m.name = "mira/x".into();
+            m.registry = true;
+            m
+        };
+        let mut approvals = BTreeMap::new();
+        approvals.insert(
+            "registry:mira/x".to_string(),
+            Approval { command: Vec::new(), permissions: vec![Permission::Panes], allowed: true },
+        );
+        assert_eq!(decide(&manifest("\"panes\"", "a"), &approvals), Decision::Allowed);
+        assert_eq!(decide(&manifest("\"panes\"", "something else"), &approvals), Decision::Allowed);
+        assert_eq!(decide(&manifest("", "a"), &approvals), Decision::Allowed);
+        assert_eq!(decide(&manifest("\"panes\", \"input\"", "a"), &approvals), Decision::Refused);
+        assert_eq!(decide(&manifest("\"panes\"", "a"), &BTreeMap::new()), Decision::Refused, "never Ask");
+        assert!(refused_status(&manifest("\"panes\"", "a")).contains("lumen plugins install mira/x"));
+    }
+
+    fn plugin(name: &str, dir: &str) -> Manifest {
+        let mut m = parse_manifest(Path::new(dir), "command = \"x\"").unwrap();
+        m.name = name.into();
+        m
+    }
+
+    #[test]
+    fn unchanged_plugins_keep_running() {
+        let list = vec![(plugin("a", "/p/a"), Decision::Allowed), (plugin("b", "/p/b"), Decision::Refused)];
+        let r = plan_reload(&list, &list);
+        assert_eq!(r, Reload { start: vec![], stop: vec![], keep: vec!["a".into(), "b".into()] });
+    }
+
+    #[test]
+    fn changed_plugins_restart() {
+        let running = vec![
+            (plugin("mira/x", "/i/mira/x/1.0.0"), Decision::Allowed),
+            (plugin("gone", "/p/gone"), Decision::Allowed),
+            (plugin("approved", "/p/approved"), Decision::Refused),
+            (plugin("same", "/p/same"), Decision::Allowed),
+        ];
+        let wanted = vec![
+            (plugin("mira/x", "/i/mira/x/1.1.0"), Decision::Allowed),
+            (plugin("approved", "/p/approved"), Decision::Allowed),
+            (plugin("same", "/p/same"), Decision::Allowed),
+            (plugin("new", "/p/new"), Decision::Allowed),
+        ];
+        let r = plan_reload(&running, &wanted);
+        assert_eq!(r.start, ["mira/x", "approved", "new"]);
+        assert_eq!(r.stop, ["gone"]);
+        assert_eq!(r.keep, ["same"]);
+    }
+
+    #[test]
+    fn replacing_a_plugin_stops_its_process() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let m = parse_manifest(Path::new("t-replace"), "command = \"x\"").unwrap();
+        PLUGINS.lock().unwrap().push(Running {
+            manifest: m.clone(),
+            status: "running".into(),
+            out: None,
+            commands: Vec::new(),
+            stop: Arc::new(AtomicBool::new(false)),
+            pid: Some(child.id()),
+            generation: 9,
+            settings: serde_json::Map::new(),
+        });
+        add_stopped(m, "not allowed", serde_json::Map::new());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the old process is still running");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]

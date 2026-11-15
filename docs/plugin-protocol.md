@@ -1,7 +1,11 @@
 # The plugin protocol
 
-A plugin is a program in its own folder under `~/.config/lumen/plugins/`
-(`$XDG_CONFIG_HOME/lumen/plugins`), written in any language.
+A plugin is a program in its own folder, written in any language. Your own
+plugins live under `~/.config/lumen/plugins/` (`$XDG_CONFIG_HOME/lumen/plugins`)
+and are named after their folder. Plugins installed with `lumen plugins` live
+under `~/.local/share/lumen/installed-plugins/` (`$XDG_DATA_HOME`;
+`~/Library/Application Support` on macOS) and are named `owner/name`, which is
+also their `LUMEN_PLUGIN` and the name in `plugin:owner/name:id` key bindings.
 
 For Python, use `lumen_plugin`, which comes with Lumen. The
 [plugin guide](plugins.md) covers it. This page is the protocol underneath,
@@ -111,9 +115,12 @@ Everything in the socket API, plus:
 Without any permissions, a plugin can list panes, subscribe to events, show
 notifications, add commands and show pickers and prompts.
 
-Anything more is declared in `plugin.toml` and needs your approval. Lumen asks
-once in the palette, the first time it sees the plugin, and again if the
-plugin's permissions or command change.
+Anything more is declared in `plugin.toml` and needs your approval. For your
+own plugins, Lumen asks once in the palette, the first time it sees the
+plugin, and again if its permissions or command change. For plugins installed
+with `lumen plugins`, you approve them when installing, and again only when an
+update asks for a permission it didn't have; Lumen never asks about them as it
+starts.
 
 | Permission | Allows |
 |---|---|
