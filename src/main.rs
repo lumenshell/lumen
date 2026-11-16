@@ -10,6 +10,7 @@ mod hotkey;
 mod info;
 mod input;
 mod keymap;
+mod manager;
 mod links;
 mod marks;
 mod mouse;
@@ -142,6 +143,7 @@ fn main() {
         settings::publish_ui_font(Settings::get(cx));
         Settings::set_appearance(cx, cx.window_appearance());
         Settings::watch(cx);
+        plugins::watch_updates(cx);
         keymap::apply(cx);
         let listener = api::listen(cx);
 

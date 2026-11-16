@@ -371,7 +371,7 @@ fn list_text(result: &Value) -> String {
     out
 }
 
-struct Client {
+pub(crate) struct Client {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     next_id: u64,
@@ -379,7 +379,7 @@ struct Client {
 
 impl Client {
     /// Connect to `$LUMEN_SOCKET`, or else the newest running Lumen.
-    fn connect() -> Result<Self, String> {
+    pub(crate) fn connect() -> Result<Self, String> {
         let stream = match std::env::var_os("LUMEN_SOCKET").filter(|s| !s.is_empty()) {
             Some(path) => UnixStream::connect(&path).map_err(|e| {
                 format!("can't reach Lumen at {} ({e}); was it closed?", PathBuf::from(&path).display())
@@ -399,7 +399,7 @@ impl Client {
         }
     }
 
-    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+    pub(crate) fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
         let req = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });

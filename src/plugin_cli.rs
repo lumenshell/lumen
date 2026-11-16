@@ -47,6 +47,10 @@ enum Cmd {
 
 /// Run `lumen plugins` with `args` (after `plugins`); the exit code.
 pub fn run(args: &[String]) -> i32 {
+    // No arguments, in a terminal: the manager. Scripts get the help.
+    if args.is_empty() && unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 } {
+        return crate::manager::run();
+    }
     let result = parse(args).and_then(|cmd| match cmd {
         Cmd::Help => {
             print!("{HELP}");

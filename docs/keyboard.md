@@ -66,7 +66,7 @@ has:
 - one **Theme:** entry per theme
 - the commands plugins add
 - **Plugin Logs…**, and **Allow Plugin:** for each plugin waiting for approval
-- **Plugin Gallery** and **Reload Plugins**
+- **Plugins** (with the number of updates waiting) and **Reload Plugins**
 
 | Key | Does |
 |---|---|

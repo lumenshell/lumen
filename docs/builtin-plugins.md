@@ -2,12 +2,14 @@
 
 Lumen comes with seven plugins. They're off until you turn them on.
 
-1. Choose **Plugin Gallery** in the palette.
-2. Pick one to see what it does and what it's allowed to do.
-3. Choose **Turn on**.
+1. Choose **Plugins** in the palette. It opens the plugin manager in a new
+   tab.
+2. Move to one to see what it does and what it's allowed to do.
+3. Press Space to turn it on. If it needs permissions, the manager lists them
+   and asks first.
 
-Choosing it there is your approval. It starts at once, and again whenever
-Lumen opens.
+Allowing it there is your approval. It starts at once, and again whenever
+Lumen opens. Space turns it off again, and `s` changes its settings.
 
 Turned-on plugins are listed under `plugins` in `config.toml`, so they travel
 with your dotfiles. A name you add there by hand still asks for approval the

@@ -44,6 +44,7 @@ working-directory = "inherit"  # where new tabs, splits and windows start: "inhe
 pane-gap = 8                   # pixels between split panes (0 to 24)
 ui-font-family = "Inter"       # font for tabs, the palette and banners; Inter is built in
 plugins = ["recent-dirs"]      # plugins to run: built-in names, and installed ones as "owner/name"
+plugin-update-check = true     # say in the palette when installed plugins have updates (checks once a day)
 ```
 
 Delete a line to go back to its default.
@@ -145,8 +146,9 @@ max-entries = 50000
 
 A value of the wrong kind, or out of range, is named in the banner and the
 plugin uses its default instead; so is a setting the plugin doesn't have.
-Changes apply when you save, without restarting the plugin. The built-in
-plugins' settings are listed in [built-in plugins](builtin-plugins.md).
+Changes apply when you save, without restarting the plugin. You can also
+change them in **Plugins** (press `s` on a plugin). The built-in plugins'
+settings are listed in [built-in plugins](builtin-plugins.md).
 
 ## When settings apply
 

@@ -42,10 +42,6 @@ pub enum Hint {
 /// A state shown as a dot before an item's label.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Dot {
-    /// Turned on, or current.
-    On,
-    /// Turned off: an empty ring.
-    Off,
     /// Running fine.
     Good,
     /// Starting, restarting or waiting.
@@ -339,8 +335,6 @@ fn row_element(
     let dot = item.dot.map(|dot| {
         let d = div().size(px(7.0)).rounded(px(4.0));
         match dot {
-            Dot::Off => d.border_1().border_color(theme.muted),
-            Dot::On => d.bg(theme.accent),
             Dot::Good => d.bg(theme.ansi[2]),
             Dot::Busy => d.bg(theme.ansi[3]),
             Dot::Bad => d.bg(theme.ansi[1]),

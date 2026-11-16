@@ -131,12 +131,13 @@ impl PaneNode {
     }
 
     /// What the session file keeps. Plugin panes aren't kept (their plugin
-    /// opens them again if it wants), so a split may lose some sides, or all.
+    /// opens them again if it wants), nor is the plugin manager, so a split
+    /// may lose some sides, or all.
     fn to_state(&self, cx: &App) -> Option<NodeState> {
         match self {
             PaneNode::Leaf(term) => {
                 let view = term.read(cx);
-                (!view.is_plugin_pane()).then(|| NodeState::Pane { cwd: view.cwd() })
+                view.kept_in_session().then(|| NodeState::Pane { cwd: view.cwd() })
             }
             PaneNode::Split { axis, children, ratios } => {
                 let (children, ratios): (Vec<_>, Vec<_>) = children
@@ -283,13 +284,18 @@ struct Tab {
 pub enum NewPane {
     Shell(Option<std::path::PathBuf>),
     Plugin(Owner),
+    /// A program run directly, without a shell (`argv`).
+    Program(Vec<String>),
 }
 
+type PaneParts = (Option<std::path::PathBuf>, Option<Owner>, Option<Vec<String>>);
+
 impl NewPane {
-    fn into_parts(self) -> (Option<std::path::PathBuf>, Option<Owner>) {
+    fn into_parts(self) -> PaneParts {
         match self {
-            NewPane::Shell(cwd) => (cwd, None),
-            NewPane::Plugin(owner) => (None, Some(owner)),
+            NewPane::Shell(cwd) => (cwd, None, None),
+            NewPane::Plugin(owner) => (None, Some(owner), None),
+            NewPane::Program(argv) => (None, None, Some(argv)),
         }
     }
 }
@@ -467,7 +473,7 @@ impl Workspace {
         this._subs.push(cx.observe_window_appearance(window, |_, window, cx| {
             Settings::set_appearance(cx, window.appearance());
         }));
-        // Built-in plugins turned on or off (in the gallery or config.toml).
+        // Built-in plugins turned on or off (in Plugins or config.toml).
         // A plugin installed, updated or approved by `lumen plugins`.
         this._subs.push(cx.observe_global_in::<crate::plugins::PluginFiles>(window, |this, window, cx| {
             this.sync_plugins(window, cx);
@@ -581,7 +587,7 @@ impl Workspace {
             if i <= self.active_tab {
                 active_tab = tabs.len();
             }
-            let kept: Vec<_> = tab.leaves().into_iter().filter(|l| !l.read(cx).is_plugin_pane()).collect();
+            let kept: Vec<_> = tab.leaves().into_iter().filter(|l| l.read(cx).kept_in_session()).collect();
             tabs.push(TabState {
                 root,
                 active: kept.iter().position(|l| *l == tab.active).unwrap_or(0),
@@ -602,8 +608,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TerminalView> {
-        let (cwd, owner) = what.into_parts();
-        let term = TerminalView::open(cwd, owner, window, cx);
+        let (cwd, owner, program) = what.into_parts();
+        let term = TerminalView::open(cwd, owner, program, window, cx);
         api::emit("pane-opened", json!({ "pane": term.entity_id().as_u64() }));
         let sub = cx.subscribe_in(&term, window, |this, term, event, window, cx| match event {
             TerminalEvent::Attention => cx.notify(),
@@ -1013,95 +1019,19 @@ impl Workspace {
         self.start_plugins(window, cx);
     }
 
-    /// The Plugin Gallery: Lumen's built-in plugins, to turn on and off.
-    fn open_gallery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let enabled = Settings::get(cx).plugins.clone();
-        let ws = cx.entity().downgrade();
-        let items = crate::plugins::BUILTINS
-            .iter()
-            .map(|b| {
-                let on = enabled.iter().any(|n| n == b.name);
-                let note = if b.overridden() { "your own copy runs instead".to_string() } else { b.summary() };
-                let ws = ws.clone();
-                let name = b.name;
-                PaletteItem::new(
-                    b.title,
-                    Rc::new(move |window, cx| {
-                        let _ = ws.update(cx, |ws, cx| ws.open_gallery_item(name, window, cx));
-                    }),
-                )
-                .dot(if on { Dot::On } else { Dot::Off })
-                .note(note)
-            })
-            .collect();
-        let palette = cx.new(|cx| {
-            CommandPalette::picker(items, "Plugin Gallery: choose one to turn it on or off".into(), None, cx)
-                .with_message("Built-in plugins. Each runs as its own program, once you turn it on.")
-        });
-        self.open_palette(palette, window, cx);
-    }
-
-    /// One built-in plugin: what it does and needs, and turning it on or off.
-    fn open_gallery_item(&mut self, name: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(b) = crate::plugins::builtin(name) else { return };
-        let m = match b.manifest() {
-            Ok(m) => m,
-            Err(e) => {
-                self.plugin_problems.push(format!("built-in plugin `{name}`: {e}"));
+    /// Plugins: the manager (`lumen plugins`), in a new tab after this one.
+    /// Quitting it closes the tab and brings this one back.
+    fn open_plugin_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe.display().to_string(),
+            Err(_) => {
+                self.plugin_problems.push("couldn't find Lumen's own program to open Plugins".into());
                 cx.notify();
                 return;
             }
         };
-        let on = Settings::get(cx).plugins.iter().any(|n| n == name);
-        let needs = if m.permissions.is_empty() {
-            "It needs no permissions.".to_string()
-        } else {
-            let wants: Vec<String> = m.permissions.iter().map(|p| p.describe().to_string()).collect();
-            format!("Turning it on lets it {}.", join_and(&wants))
-        };
-        let note = if b.overridden() {
-            format!(" You have your own \"{name}\" in the plugins folder, which runs instead.")
-        } else {
-            String::new()
-        };
-        let message = format!("{}. {needs}{note}", m.description.trim_end_matches('.'));
-        let ws = cx.entity().downgrade();
-        let toggle: PaletteFn = {
-            let ws = ws.clone();
-            Rc::new(move |_window, cx| {
-                if !on {
-                    // Choosing it here, with its permissions shown, approves it.
-                    crate::plugins::record_decision(&m, true);
-                }
-                Settings::update(cx, |s| {
-                    s.plugins.retain(|n| n != name);
-                    if !on {
-                        s.plugins.push(name.to_string());
-                    }
-                });
-                let _ = ws.update(cx, |_, cx| cx.notify());
-            })
-        };
-        let back: PaletteFn = Rc::new(move |window, cx| {
-            let _ = ws.update(cx, |ws, cx| ws.open_gallery(window, cx));
-        });
-        let mut items = vec![PaletteItem::new(if on { "Turn off" } else { "Turn on" }, toggle).note(if on {
-            "stop it and forget the setting"
-        } else {
-            "start it now and whenever Lumen opens"
-        })];
-        if on {
-            let ws = cx.entity().downgrade();
-            items.push(PaletteItem::new(
-                "Open its log",
-                Rc::new(move |window, cx| {
-                    let _ = ws.update(cx, |ws, cx| ws.open_plugin_log(name, window, cx));
-                }),
-            ));
-        }
-        items.push(PaletteItem::new("Back to the gallery", back));
-        let palette = cx.new(|cx| CommandPalette::picker(items, b.title.into(), None, cx).with_message(message));
-        self.open_palette(palette, window, cx);
+        self.open_tab(NewPane::Program(vec![exe, "plugins".into()]), window, cx);
+        self.tabs[self.active_tab].title = Some("Plugins".into());
     }
 
     /// Ask about the next plugin waiting for approval, in the palette.
@@ -2072,6 +2002,28 @@ fn window_controls(theme: &Theme) -> impl IntoElement {
 }
 
 /// A plugin's status (from `plugins::list`) as a palette dot.
+/// The palette's entry for the plugin manager, with updates waiting.
+fn plugins_entry_label(updates: usize) -> String {
+    match updates {
+        0 => "Plugins".into(),
+        1 => "Plugins (1 update)".into(),
+        n => format!("Plugins ({n} updates)"),
+    }
+}
+
+/// Every plugin's status, for `plugin-status` (what the manager shows).
+/// A plugin that keeps exiting is trouble even while Lumen restarts it.
+fn plugin_status_json(list: &[crate::plugins::Info]) -> Value {
+    let plugins: Vec<Value> = list
+        .iter()
+        .map(|p| {
+            let trouble = plugin_dot(&p.status) == Dot::Bad || p.status.starts_with("exited");
+            json!({"name": p.manifest.name, "status": p.status, "trouble": trouble})
+        })
+        .collect();
+    json!({ "plugins": plugins })
+}
+
 fn plugin_dot(status: &str) -> Dot {
     match status {
         "running" => Dot::Good,
@@ -2254,6 +2206,7 @@ impl Workspace {
                 "actions": keymap::ACTIONS,
             })),
             "list" => Ok(self.api_list(cx)),
+            "plugin-status" => Ok(plugin_status_json(&crate::plugins::list())),
             "new-tab" => {
                 let what = match owner()? {
                     Some(owner) => NewPane::Plugin(owner),
@@ -2608,12 +2561,12 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
     if let Some(ws) = ws.clone() {
         items.push(
             PaletteItem::new(
-                "Plugin Gallery",
+                plugins_entry_label(cx.try_global::<crate::plugins::PluginUpdates>().map_or(0, |u| u.0)),
                 Rc::new(move |window, cx| {
-                    let _ = ws.update(cx, |ws, cx| ws.open_gallery(window, cx));
+                    let _ = ws.update(cx, |ws, cx| ws.open_plugin_manager(window, cx));
                 }),
             )
-            .note("turn on the plugins that come with Lumen"),
+            .note("install, update and turn plugins on and off"),
         );
     }
     if let Some(ws) = ws.clone() {
@@ -2940,6 +2893,42 @@ fn layout_panes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_status_lists_every_plugin() {
+        let info = |name: &str, status: &str| crate::plugins::Info {
+            manifest: {
+                let mut m = crate::plugins::parse_manifest(std::path::Path::new(name), "command = \"x\"").unwrap();
+                m.name = name.into();
+                m
+            },
+            status: status.into(),
+            commands: Vec::new(),
+            started: true,
+        };
+        let v = plugin_status_json(&[
+            info("mira/x", "exited with status 1"),
+            info("recent-dirs", "running"),
+            info("loop", "exited (exit status: 1), restarting in 5s"),
+            info("new", "starting"),
+        ]);
+        assert_eq!(
+            v,
+            json!({"plugins": [
+                {"name": "mira/x", "status": "exited with status 1", "trouble": true},
+                {"name": "recent-dirs", "status": "running", "trouble": false},
+                {"name": "loop", "status": "exited (exit status: 1), restarting in 5s", "trouble": true},
+                {"name": "new", "status": "starting", "trouble": false},
+            ]})
+        );
+    }
+
+    #[test]
+    fn the_palette_has_plugins_not_the_gallery() {
+        assert_eq!(plugins_entry_label(0), "Plugins");
+        assert_eq!(plugins_entry_label(1), "Plugins (1 update)");
+        assert_eq!(plugins_entry_label(3), "Plugins (3 updates)");
+    }
 
     #[test]
     fn start_dir_follows_setting() {

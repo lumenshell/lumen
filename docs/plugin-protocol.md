@@ -97,6 +97,9 @@ Everything in the socket API, plus:
   doesn't need to subscribe: this goes only to the plugin concerned, and
   only when its values changed. A plugin restarted later gets the new values
   in `LUMEN_PLUGIN_SETTINGS`.
+- **See how plugins are doing.** `plugin-status` lists every plugin with its
+  `status` and whether it's in `trouble`. It needs no permission; the plugin
+  manager uses it.
 - **Ask you to choose.** `show-picker` opens the palette with the plugin's
   items, and answers with the one you pick (or `null` for Esc).
 - **Ask you to type.** `show-prompt` opens the palette as a text input, and

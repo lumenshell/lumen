@@ -128,6 +128,9 @@ pub struct TerminalView {
     window_active: bool,
     /// The command now running, read off the screen once it started.
     running_command: Option<String>,
+    /// Runs a program of Lumen's own (the plugin manager) rather than a
+    /// shell: not kept in the session.
+    program: bool,
     /// A long command finished while you weren't here: whether it succeeded.
     /// Shown as a dot on the tab until the pane is focused.
     pub attention: Option<bool>,
@@ -211,7 +214,18 @@ impl TerminalView {
     /// A pane running your shell in `cwd`, or, with an `owner`, a plugin
     /// pane that the plugin draws. Uses a shell from [`prespawn`] if one is
     /// waiting for `cwd`.
-    pub fn open<T>(cwd: Option<PathBuf>, owner: Option<Owner>, window: &mut Window, cx: &mut Context<T>) -> Entity<Self> {
+    /// A pane running your shell in `cwd`, a plugin's (`owner`), or
+    /// `program` (its argv) instead of a shell.
+    pub fn open<T>(
+        cwd: Option<PathBuf>,
+        owner: Option<Owner>,
+        program: Option<Vec<String>>,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) -> Entity<Self> {
+        if let Some(argv) = program {
+            return cx.new(|cx| Self::program(argv, window, cx));
+        }
         let waiting = owner.is_none().then(|| {
             PRESPAWNED.with_borrow_mut(|p| p.iter().position(|s| s.cwd == cwd).map(|i| p.remove(i)))
         });
@@ -232,6 +246,24 @@ impl TerminalView {
                 .expect("failed to spawn shell"),
         };
         Self::with_pty(pty, rx, base_title, window, cx)
+    }
+
+    /// A pane running `argv` directly: no shell, no shell integration.
+    fn program(argv: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let settings = Settings::get(cx);
+        let config = term_config(settings);
+        let pane = cx.entity_id().as_u64();
+        let (spawned, program) = match Pty::spawn(None, Some(&argv), false, pane, config.clone(), GridSize::DEFAULT) {
+            Ok(p) => (p, true),
+            Err(_) => (
+                Pty::spawn(None, settings.shell.as_deref(), settings.shell_integration, pane, config, GridSize::DEFAULT)
+                    .expect("failed to spawn shell"),
+                false,
+            ),
+        };
+        let mut this = Self::with_pty(spawned.0, spawned.1, default_title(), window, cx);
+        this.program = program;
+        this
     }
 
     fn with_pty(
@@ -326,6 +358,7 @@ impl TerminalView {
             focused: false,
             window_active: window.is_window_active(),
             running_command: None,
+            program: false,
             attention: None,
             rang: false,
             bell_at: None,
@@ -348,6 +381,12 @@ impl TerminalView {
     /// Drawn by a plugin rather than running a program.
     pub fn is_plugin_pane(&self) -> bool {
         self.pty.owner().is_some()
+    }
+
+    /// Whether the session file keeps this pane: not a plugin's, and not
+    /// one of Lumen's own programs, which would come back as a shell.
+    pub fn kept_in_session(&self) -> bool {
+        !self.is_plugin_pane() && !self.program
     }
 
     /// The connection drawing this pane, if it's a plugin pane.

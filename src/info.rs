@@ -693,7 +693,7 @@ fn plugins(settings: &Settings) -> Option<String> {
         own.sort();
         names.extend(own);
     }
-    Some(if names.is_empty() { "none (Plugin Gallery in the palette)".into() } else { names.join(", ") })
+    Some(if names.is_empty() { "none (Plugins in the palette)".into() } else { names.join(", ") })
 }
 
 #[cfg(test)]
