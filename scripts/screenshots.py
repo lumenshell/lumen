@@ -163,6 +163,8 @@ def make_demo(base: Path) -> dict:
     todo_data = state / "lumen" / "plugin-data" / "todo"
     todo_data.mkdir(parents=True)
     (todo_data / "todo.json").write_text(json.dumps(TODOS, indent=1))
+    index = base / "index.json"
+    index.write_text('{"version": 1, "plugins": []}\n')
 
     return {
         "HOME": str(home),
@@ -172,6 +174,9 @@ def make_demo(base: Path) -> dict:
         "XDG_CONFIG_HOME": str(config),
         "XDG_STATE_HOME": str(state),
         "XDG_DATA_HOME": str(data),
+        "XDG_CACHE_HOME": str(base / "cache"),
+        # The plugin list, kept here so no scene reaches the network.
+        "LUMEN_PLUGIN_INDEX": str(index),
         "LANG": "C.UTF-8",
     }
 
@@ -468,11 +473,11 @@ def scene_todo(l, out):
 
 
 def scene_gallery(l, out):
-    pane = l.first
-    l.run(pane, "cd ~/shop && clear && git log --oneline -12", 0.8)
     l.keys("ctrl+shift+p", 0.6)
-    l.type("plugin gallery")
-    l.keys("Return", 1.0)
+    l.type("plugins")
+    l.keys("Return", 2.5)  # the plugin manager opens in a tab of its own
+    for _ in range(6):    # down to Pomodoro Timer, which is on
+        l.keys("Down", 0.1)
     l.shoot(out / "gallery.png")
 
 
@@ -504,7 +509,7 @@ SCENES = {
     "select": ("keyboard select mode", FEATURE, "Rosé Pine", scene_select),
     "pomodoro": ("the Pomodoro Timer plugin", FEATURE, "Rosé Pine", scene_pomodoro),
     "todo": ("a todo list in a plugin pane", (960, 600), "Rosé Pine", scene_todo),
-    "gallery": ("the Plugin Gallery", FEATURE, "Rosé Pine", scene_gallery),
+    "gallery": ("the plugin manager", (960, 600), "Rosé Pine", scene_gallery),
     "watch": ("watch_pane.py, an example script", FEATURE, "Rosé Pine", scene_watch),
     "campfire": ("lumen campfire beside a shell", FEATURE, "Rosé Pine", scene_campfire),
     "light": ("the main layout in Rosé Pine Dawn, the light theme", MAIN, "Rosé Pine Dawn", scene_light),

@@ -75,7 +75,7 @@ countdown, a staging server, what's left to do.
 </tr>
 <tr>
 <td><b>Plugin panes</b>: a todo list drawn by a plugin, beside your shell, with what's left on the tab.<br><br><img src="assets/screenshots/todo.png" alt="A git log beside a todo list pane: one item ticked off and three left, with 3 to do on the tab"></td>
-<td><b>Plugins</b>: the built-in plugins, off until you turn them on.<br><br><img src="assets/screenshots/gallery.png" alt="The built-in plugins listed in the palette: Recent Directories, Command History, Switch Git Branch, SSH to Host, Projects &amp; Tasks, Build Status and Pomodoro Timer, which is on"></td>
+<td><b>Plugins</b>: turn plugins on and off, install and update them, and change their settings, all from one tab.<br><br><img src="assets/screenshots/gallery.png" alt="The plugin manager in a tab of its own: installed plugins on the left, Pomodoro Timer selected and on, its description, permissions and settings on the right"></td>
 </tr>
 <tr>
 <td><b><code>watch_pane.py</code></b>, an example script: <code>watch</code> in a pane of its own, with changes highlighted.<br><br><img src="assets/screenshots/watch.png" alt="A shell above a watch pane rerunning a status script every second, with the changed time highlighted"></td>

@@ -1706,7 +1706,7 @@ fn problem_banner(problems: &[String], plugin_problems: &[String], theme: &Theme
                     .children(problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone())))
                 })
                 .when(!plugin_problems.is_empty(), |d| {
-                    d.child(div().text_color(theme.ansi[1]).child("Plugins that couldn't be loaded (fix, then Reload Plugins)"))
+                    d.child(div().text_color(theme.ansi[1]).child("Plugins that couldn't be loaded"))
                         .children(plugin_problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone())))
                 }),
         )
