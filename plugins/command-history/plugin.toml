@@ -3,3 +3,10 @@ version = "1.0.0"
 command = "python3 main.py"
 # screen: to see the commands you run; input: to type one back.
 permissions = ["screen", "input"]
+
+[settings.max-entries]
+type = "integer"
+default = 10000
+min = 100
+max = 1000000
+description = "How many commands to keep"

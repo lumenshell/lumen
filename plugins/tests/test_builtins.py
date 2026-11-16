@@ -47,6 +47,16 @@ class RecentDirsTests(unittest.TestCase):
         self.assertEqual(ranked(now=now), [self.a, self.b])
         self.assertEqual(ranked(exclude=self.a, now=now), [self.b])
 
+    def test_recent_dirs_list_follows_the_setting(self):
+        folders = [tempfile.mkdtemp() for _ in range(5)]
+        for f in folders:
+            self.p["visit"](f)
+        self.p["app"].settings["max-shown"] = 3
+        items = self.p["picker_items"](self.p["ranked"](now=2_000_000_000), now=2_000_000_000)
+        self.assertEqual(len(items), 3)
+        self.p["app"].settings.clear()
+        self.assertEqual(len(self.p["picker_items"](self.p["ranked"](), now=2_000_000_000)), 5, "default 200")
+
     def test_folders_that_are_gone_or_relative_are_skipped(self):
         self.p["visit"]("relative/path")
         self.p["visit"](self.a)
@@ -108,8 +118,7 @@ class CommandHistoryTests(unittest.TestCase):
         self.assertFalse(typeable("ls #\u202e~ fr- mr"))
 
     def test_history_is_capped(self):
-        self.p["KEEP"] = 10
-        self.p["append"].__globals__["KEEP"] = 10
+        self.p["app"].settings["max-entries"] = 10
         for i in range(30):
             self.p["finished"](self.event(f"echo {i}"))
         history = self.p["append"].__globals__["history"]
@@ -117,6 +126,14 @@ class CommandHistoryTests(unittest.TestCase):
         self.assertEqual(history[-1]["command"], "echo 29")
         self.p["load"]()
         self.assertLessEqual(len(self.p["load"].__globals__["history"]), 10)
+
+    def test_history_cap_follows_the_setting(self):
+        self.p["app"].settings["max-entries"] = 10
+        for i in range(15):
+            self.p["finished"](self.event(f"echo {i}"))
+        self.p["load"]()
+        history = self.p["load"].__globals__["history"]
+        self.assertEqual([e["command"] for e in history], [f"echo {i}" for i in range(5, 15)])
 
     def test_descriptions(self):
         d = self.p["describe"]({"command": "x", "exit": 1, "ms": 2300, "cwd": os.path.expanduser("~/src"), "at": 100}, 160)
@@ -402,6 +419,15 @@ class PomodoroTests(unittest.TestCase):
             timer.finish()
             phases.append(timer.phase)
         self.assertEqual(phases, ["break", "break", "break", "long"])
+
+    def test_long_break_follows_the_setting(self):
+        self.p["app"].settings["long-break-every"] = 2
+        phases = []
+        for _ in range(4):
+            self.timer.start("focus")
+            self.timer.finish()
+            phases.append(self.timer.phase)
+        self.assertEqual(phases, ["break", "long", "break", "long"])
 
     def test_narrow_tabs_get_whole_minutes(self):
         timer = self.timer

@@ -22,9 +22,11 @@ PACKAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 class FakeLumen:
     """Runs `source` as a plugin and talks to it like Lumen does."""
 
-    def __init__(self, source: str):
-        env = dict(os.environ, LUMEN_PLUGIN="test", LUMEN_PLUGIN_DIR="/tmp", PYTHONPATH=PACKAGE_DIR)
+    def __init__(self, source: str, env: dict | None = None):
+        env = dict(os.environ, LUMEN_PLUGIN="test", LUMEN_PLUGIN_DIR="/tmp", PYTHONPATH=PACKAGE_DIR, **(env or {}))
         env.pop("LUMEN_SOCKET", None)
+        if env.get("LUMEN_PLUGIN_SETTINGS") is None:
+            env.pop("LUMEN_PLUGIN_SETTINGS", None)
         self.proc = subprocess.Popen(
             [sys.executable, "-c", textwrap.dedent(source)],
             stdin=subprocess.PIPE,
@@ -270,6 +272,41 @@ class PluginModeTests(unittest.TestCase):
         log = lumen.stderr()
         self.assertIn("ValueError: kaboom", log)
         self.assertIn('refused -32001 needs the "input" permission', log)
+
+    def test_settings_come_from_lumen_and_follow_changes(self):
+        lumen = FakeLumen("""
+            from lumen_plugin import Plugin
+            app = Plugin()
+            first = sorted(app.settings.items())
+
+            @app.on_start
+            def started():
+                print("start", first)
+
+            @app.on("settings-changed")
+            def changed(event):
+                print("event", sorted(event["settings"].items()), "app", sorted(app.settings.items()))
+
+            app.run()
+        """, env={"LUMEN_PLUGIN_SETTINGS": '{"n": 1}'})
+        lumen.expect("subscribe", {"events": ["settings-changed"]})
+        lumen.send({"jsonrpc": "2.0", "method": "event", "params": {"event": "settings-changed", "settings": {"n": 2}}})
+        self.assertEqual(lumen.close(), 0)
+        log = lumen.stderr()
+        self.assertIn("start [('n', 1)]", log)
+        self.assertIn("event [('n', 2)] app [('n', 2)]", log)
+
+    def test_settings_are_empty_without_good_json(self):
+        for value in (None, "not json", "[1, 2]"):
+            lumen = FakeLumen("""
+                import sys
+                from lumen_plugin import Plugin
+                print("settings", Plugin().settings, file=sys.stderr)
+            """, env={"LUMEN_PLUGIN_SETTINGS": value})
+            lumen.proc.stdin.close()
+            lumen.proc.wait(timeout=5)
+            lumen.proc.stdout.close()
+            self.assertIn("settings {}", lumen.stderr(), value)
 
     def test_unknown_events_are_caught_early(self):
         lumen2 = FakeLumen("""

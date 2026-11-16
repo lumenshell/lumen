@@ -43,7 +43,7 @@ working-directory = "inherit"  # where new tabs, splits and windows start: "inhe
 # unfocused-dim = 0.35         # dim panes you're not in, 0 to 0.5; unset follows the theme (0.25 on light ones)
 pane-gap = 8                   # pixels between split panes (0 to 24)
 ui-font-family = "Inter"       # font for tabs, the palette and banners; Inter is built in
-plugins = ["recent-dirs"]      # built-in plugins to run; the Plugin Gallery edits this
+plugins = ["recent-dirs"]      # plugins to run: built-in names, and installed ones as "owner/name"
 ```
 
 Delete a line to go back to its default.
@@ -132,6 +132,21 @@ the MIT licence: [Rosé Pine](https://rosepinetheme.com),
 [Solarized](https://ethanschoonover.com/solarized),
 [Dracula](https://draculatheme.com) and
 [One Dark](https://github.com/atom/atom/tree/master/packages/one-dark-syntax).
+
+## Plugin settings
+
+A plugin can have settings of its own. Set them in a table named after the
+plugin:
+
+```toml
+[plugin.command-history]
+max-entries = 50000
+```
+
+A value of the wrong kind, or out of range, is named in the banner and the
+plugin uses its default instead; so is a setting the plugin doesn't have.
+Changes apply when you save, without restarting the plugin. The built-in
+plugins' settings are listed in [built-in plugins](builtin-plugins.md).
 
 ## When settings apply
 

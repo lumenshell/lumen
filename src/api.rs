@@ -41,6 +41,8 @@ pub const EVENTS: &[&str] = &[
     "bell",
     "command-started",
     "command-finished",
+    // Sent only to the plugin whose settings changed, never broadcast.
+    "settings-changed",
 ];
 
 /// A JSON-RPC error: code and message.

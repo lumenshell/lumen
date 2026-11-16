@@ -116,6 +116,15 @@ def stopped(event):
     busy.discard(event.pane.id)
 
 
+def picker_items(paths, now):
+    """The first max-shown folders, as (value, label, detail) picker items."""
+    items = []
+    for p in paths[:app.settings.get("max-shown", 200)]:
+        visits = round(dirs[p]["rank"])
+        items.append((p, tilde(p), f"{visits} visit{'s' if visits != 1 else ''} · {ago(now - dirs[p]['last'])}"))
+    return items
+
+
 @app.command("Go to Recent Directory", keys=KEYS)
 async def jump(pane):
     here = await pane.cwd() if pane else None
@@ -124,11 +133,7 @@ async def jump(pane):
     if not paths:
         await app.notify("Recent Directories", "No folders yet: they're remembered as your shells visit them.")
         return
-    items = []
-    for p in paths[:200]:
-        visits = round(dirs[p]["rank"])
-        items.append((p, tilde(p), f"{visits} visit{'s' if visits != 1 else ''} · {ago(now - dirs[p]['last'])}"))
-    chosen = await app.pick(items, placeholder="Go to folder…")
+    chosen = await app.pick(picker_items(paths, now), placeholder="Go to folder…")
     if not chosen:
         return
     if pane is None or pane.id in busy:

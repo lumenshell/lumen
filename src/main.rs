@@ -14,9 +14,12 @@ mod links;
 mod marks;
 mod mouse;
 mod palette;
+mod plugin_cli;
+mod plugin_settings;
 mod plugins;
 mod pty;
 mod quick;
+mod registry;
 mod scrollbar;
 mod search;
 mod session;
@@ -104,6 +107,9 @@ fn main() {
     if args.first().map(String::as_str) == Some("msg") {
         std::process::exit(cli::run(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("plugins") {
+        std::process::exit(plugin_cli::run(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("info") {
         std::process::exit(info::run(&args[1..]));
     }
@@ -127,7 +133,7 @@ fn main() {
     }
     if let Some(arg) = args.first() {
         let help = matches!(arg.as_str(), "-h" | "--help" | "help");
-        eprintln!("Usage: lumen              open a window\n       lumen msg ...      control a running Lumen (lumen msg help)\n       lumen info         system facts and this Lumen's settings, beside a flame\n       lumen campfire     a fire that fills the pane, for cold coding sessions\n       lumen python-path  where the lumen_plugin Python package is\n       lumen --version    which version this is");
+        eprintln!("Usage: lumen              open a window\n       lumen msg ...      control a running Lumen (lumen msg help)\n       lumen plugins ...  install, update and remove plugins (lumen plugins help)\n       lumen info         system facts and this Lumen's settings, beside a flame\n       lumen campfire     a fire that fills the pane, for cold coding sessions\n       lumen python-path  where the lumen_plugin Python package is\n       lumen --version    which version this is");
         std::process::exit(if help { 0 } else { 2 });
     }
     Application::new().run(|cx: &mut App| {
