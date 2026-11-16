@@ -8,10 +8,11 @@ this guide covers `lumen_plugin`, the Python package that comes with Lumen.
 The [built-in plugins](../plugins/) are written with it and make good
 examples, from 40 lines (`git-branch`) to 200 (`command-history`).
 
-This guide is about writing plugins. To install other people's, use
-`lumen plugins install owner/name` (see `lumen plugins help`); to share yours,
-see [publishing](publishing.md).
+This guide is about writing plugins. To install other people's, see
+[managing plugins](#managing-plugins); to share yours, see
+[publishing](publishing.md).
 
+- [Managing plugins](#managing-plugins)
 - [Your first plugin](#your-first-plugin)
 - [Commands](#commands)
 - [Events](#events)
@@ -21,6 +22,44 @@ see [publishing](publishing.md).
 - [Scripts outside Lumen](#scripts-outside-lumen)
 - [Debugging](#debugging)
 - [Reference](#reference)
+
+## Managing plugins
+
+Choose **Plugins** in the palette, or run `lumen plugins` in a terminal. It
+opens the plugin manager, full screen, with three tabs:
+
+- **Installed**: every plugin you have, built in, your own (marked "local")
+  and installed ones. ● is on, ○ is off, and ! needs you: not installed yet,
+  not approved, failed to start, or a setting that isn't valid. The details
+  beside the list say why.
+- **Browse**: the [registry](https://github.com/lumenshell/plugins), most
+  stars first.
+- **Updates**: installed plugins with a newer version. An update that needs a
+  new permission is marked, and asks before it installs.
+
+| Key | Does |
+|---|---|
+| Tab, Shift+Tab, 1 2 3 | Switch tabs |
+| ↑ ↓, j k, PgUp PgDn, Home End | Move |
+| / | Filter by name, description or category; Esc clears it |
+| Enter | Details (full screen in a narrow window) |
+| Space | Turn the plugin on or off |
+| i | Install |
+| u, U | Update this one, or all of them |
+| x | Remove (asks whether to delete its data too; the default keeps it) |
+| s | Change its settings, one at a time; d puts one back to its default |
+| r | Download the registry's list again |
+| ? | Show the keys |
+| q, Esc | Quit (in Lumen, the tab closes) |
+
+Installing asks before a plugin may use what it needs, unless it needs
+nothing. Every change is saved to `config.toml`, keeping your comments, and
+running Lumens pick it up within a second. When installed plugins have
+updates, the palette's entry says so: **Plugins (2 updates)**. It checks once
+a day; `plugin-update-check = false` turns that off.
+
+The same things work from scripts: `lumen plugins list`, `search`,
+`install`, `update`, `remove`, `on` and `off` (see `lumen plugins help`).
 
 ## Your first plugin
 

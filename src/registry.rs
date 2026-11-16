@@ -78,7 +78,7 @@ pub fn load_installed() -> BTreeMap<String, Installed> {
     installed_path().map(|p| load_installed_from(&p)).unwrap_or_default()
 }
 
-fn load_installed_from(path: &Path) -> BTreeMap<String, Installed> {
+pub(crate) fn load_installed_from(path: &Path) -> BTreeMap<String, Installed> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<InstalledFile>(&t).ok())
@@ -205,6 +205,21 @@ pub fn search<'a>(index: &'a Index, text: &str) -> Vec<&'a Entry> {
     found
 }
 
+/// How many of `installed` have a newer version this Lumen can run.
+pub fn count_updates(installed: &BTreeMap<String, Installed>, index: &Index) -> usize {
+    installed
+        .iter()
+        .filter(|(name, i)| {
+            index
+                .plugins
+                .iter()
+                .find(|e| &e.name == *name)
+                .and_then(|e| best(e, LUMEN_VERSION))
+                .is_some_and(|r| newer(&r.version, &i.version))
+        })
+        .count()
+}
+
 /// Download `url` to `dest` with curl. An absolute path is copied instead
 /// (for testing an index or archive before it's published).
 pub fn fetch(url: &str, dest: &Path) -> Result<(), String> {
@@ -231,9 +246,13 @@ pub fn fetch(url: &str, dest: &Path) -> Result<(), String> {
 /// `refresh`, else a fresh one. `LUMEN_PLUGIN_INDEX` (a URL or a file path)
 /// replaces the published one.
 pub fn index(refresh: bool) -> Result<Index, String> {
-    let url = std::env::var("LUMEN_PLUGIN_INDEX").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| INDEX_URL.into());
     let cache = cache_dir().ok_or("no home folder")?.join("plugin-index.json");
-    index_from(&url, &cache, refresh)
+    index_from(&index_url(), &cache, refresh)
+}
+
+/// Where the index comes from: `LUMEN_PLUGIN_INDEX`, else the published one.
+pub(crate) fn index_url() -> String {
+    std::env::var("LUMEN_PLUGIN_INDEX").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| INDEX_URL.into())
 }
 
 /// The index kept from the last download, however old, without the network
@@ -243,7 +262,7 @@ pub fn cached_index() -> Option<Index> {
     parse_index(&text).ok()
 }
 
-fn parse_index(text: &str) -> Result<Index, String> {
+pub(crate) fn parse_index(text: &str) -> Result<Index, String> {
     let version = serde_json::from_str::<serde_json::Value>(text)
         .map_err(|e| format!("the plugin index isn't valid JSON: {e}"))?
         .get("version")
@@ -254,11 +273,16 @@ fn parse_index(text: &str) -> Result<Index, String> {
     serde_json::from_str(text).map_err(|e| format!("the plugin index isn't valid: {e}"))
 }
 
-fn index_from(url: &str, cache: &Path, refresh: bool) -> Result<Index, String> {
+pub(crate) fn index_from(url: &str, cache: &Path, refresh: bool) -> Result<Index, String> {
+    index_within(url, cache, if refresh { std::time::Duration::ZERO } else { INDEX_FRESH })
+}
+
+/// The index: the cached copy if it's younger than `max_age`, else fetched.
+pub(crate) fn index_within(url: &str, cache: &Path, max_age: std::time::Duration) -> Result<Index, String> {
     let fresh = std::fs::metadata(cache)
         .and_then(|m| m.modified())
-        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age < INDEX_FRESH));
-    if fresh && !refresh
+        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age < max_age));
+    if fresh
         && let Some(index) = std::fs::read_to_string(cache).ok().and_then(|t| parse_index(&t).ok())
     {
         return Ok(index);
@@ -392,7 +416,7 @@ pub fn set_enabled(name: &str, on: bool) -> Result<(), String> {
 }
 
 /// Install the newest compatible version of `name`, and turn it on.
-fn install_in(p: &Paths, index: &Index, name: &str, approve: &Approve) -> Result<String, String> {
+pub(crate) fn install_in(p: &Paths, index: &Index, name: &str, approve: &Approve) -> Result<String, String> {
     let _lock = p.lock()?;
     let entry = find(index, name)?;
     let release = newest(entry)?;
@@ -407,7 +431,7 @@ fn install_in(p: &Paths, index: &Index, name: &str, approve: &Approve) -> Result
 }
 
 /// Move `name` to its newest compatible version; `None` when it has it.
-fn update_in(p: &Paths, index: &Index, name: &str, approve: &Approve) -> Result<Option<String>, String> {
+pub(crate) fn update_in(p: &Paths, index: &Index, name: &str, approve: &Approve) -> Result<Option<String>, String> {
     let _lock = p.lock()?;
     let current = load_installed_from(&p.installed).remove(name).ok_or_else(|| format!("{name} isn't installed"))?;
     let entry = find(index, name)?;
@@ -421,7 +445,7 @@ fn update_in(p: &Paths, index: &Index, name: &str, approve: &Approve) -> Result<
 
 /// Remove `name`'s files, its record, its approval and its lines in
 /// config.toml; its data too if `delete_data`.
-fn remove_in(p: &Paths, name: &str, delete_data: bool) -> Result<String, String> {
+pub(crate) fn remove_in(p: &Paths, name: &str, delete_data: bool) -> Result<String, String> {
     let _lock = p.lock()?;
     let mut all = load_installed_from(&p.installed);
     if all.remove(name).is_none() {
@@ -459,7 +483,7 @@ fn remove_from_list(doc: &mut toml_edit::DocumentMut, name: &str) {
 }
 
 /// Turn a plugin on or off: add it to, or take it out of, `plugins`.
-fn set_enabled_in(p: &Paths, name: &str, on: bool) -> Result<(), String> {
+pub(crate) fn set_enabled_in(p: &Paths, name: &str, on: bool) -> Result<(), String> {
     let _lock = p.lock()?;
     set_enabled_locked(p, name, on)
 }
@@ -562,8 +586,7 @@ fn put_in_place(p: &Paths, entry: &Entry, release: &Release, approve: &Approve) 
 /// Whether `permissions` are allowed for `name`: those not approved already
 /// are approved now (`approve` says how), or it's an error.
 fn check_approval(p: &Paths, name: &str, permissions: &[Permission], approve: &Approve) -> Result<(), String> {
-    let allowed = crate::plugins::registry_approval_in(&p.approvals, name);
-    let new: Vec<Permission> = permissions.iter().copied().filter(|x| !allowed.contains(x)).collect();
+    let new = new_permissions_in(p, name, permissions);
     if new.is_empty() {
         return Ok(());
     }
@@ -576,6 +599,13 @@ fn check_approval(p: &Paths, name: &str, permissions: &[Permission], approve: &A
             Err(format!("{name} needs your approval to use: {}; add --yes to approve", names.join(", ")))
         }
     }
+}
+
+/// Which of `permissions` aren't approved yet for `name`: what installing
+/// or updating would ask about.
+pub(crate) fn new_permissions_in(p: &Paths, name: &str, permissions: &[Permission]) -> Vec<Permission> {
+    let allowed = crate::plugins::registry_approval_in(&p.approvals, name);
+    permissions.iter().copied().filter(|x| !allowed.contains(x)).collect()
 }
 
 /// Approve what an installed plugin uses, asking for anything not approved.
@@ -646,17 +676,17 @@ fn unpack(archive: &Path, into: &Path) -> Result<PathBuf, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod testing {
     use super::*;
 
-    fn temp(name: &str) -> PathBuf {
+    pub(crate) fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("lumen-registry-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn entry(name: &str, stars: u64, versions: &[(&str, &str)]) -> Entry {
+    pub(crate) fn entry(name: &str, stars: u64, versions: &[(&str, &str)]) -> Entry {
         Entry {
             name: name.into(),
             repo: format!("https://github.com/{name}"),
@@ -677,6 +707,87 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    pub(crate) fn paths(name: &str) -> (PathBuf, Paths) {
+        let dir = temp(name);
+        let p = Paths {
+            root: dir.join("installed-plugins"),
+            installed: dir.join("state/installed.json"),
+            approvals: dir.join("state/plugin-approvals.json"),
+            config: dir.join("config/config.toml"),
+            data: dir.join("state/plugin-data"),
+        };
+        (dir, p)
+    }
+
+    /// A tarball of a plugin, as GitHub would serve it: one top folder.
+    pub(crate) fn archive(dir: &Path, version: &str, perms: &str) -> String {
+        let top = dir.join(format!("src-{version}/x-{version}"));
+        std::fs::create_dir_all(&top).unwrap();
+        std::fs::write(
+            top.join("plugin.toml"),
+            format!("version = \"{version}\"\ncommand = \"python3 main.py\"\npermissions = [{perms}]\n"),
+        )
+        .unwrap();
+        std::fs::write(top.join("main.py"), "print('hi')\n").unwrap();
+        let out = dir.join(format!("x-{version}.tar.gz"));
+        let ok = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&out)
+            .arg("-C")
+            .arg(top.parent().unwrap())
+            .arg(format!("x-{version}"))
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        out.to_str().unwrap().to_string()
+    }
+
+    pub(crate) fn release(version: &str, perms: Vec<Permission>, archive: String) -> Release {
+        Release { version: version.into(), commit: "c".repeat(40), permissions: perms, lumen: "1.0.0".into(), archive }
+    }
+
+    pub(crate) fn index_with(releases: Vec<Release>) -> Index {
+        let mut e = entry("mira/x", 1, &[]);
+        e.versions = releases;
+        Index { version: 1, plugins: vec![e] }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn updates_are_counted() {
+        let installed = |v: &str| Installed { version: v.into(), commit: "c".repeat(40), permissions: vec![], dir: PathBuf::new() };
+        let all = BTreeMap::from([("mira/x".to_string(), installed("1.0.0")), ("mira/y".to_string(), installed("1.0.0"))]);
+        let index = Index {
+            version: 1,
+            plugins: vec![
+                entry("mira/x", 1, &[("1.0.0", "1.0.0"), ("1.1.0", "1.0.0")]),
+                entry("mira/y", 1, &[("1.0.0", "1.0.0"), ("2.0.0", "99.0.0")]),
+                entry("mira/z", 1, &[("5.0.0", "1.0.0")]),
+            ],
+        };
+        assert_eq!(count_updates(&all, &index), 1);
+    }
+
+    #[test]
+    fn the_index_is_kept_for_a_day() {
+        let dir = temp("index-day");
+        let cache = dir.join("cache.json");
+        std::fs::write(&cache, r#"{"version": 1, "plugins": []}"#).unwrap();
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 3600);
+        std::fs::File::options().write(true).open(&cache).unwrap().set_modified(two_hours_ago).unwrap();
+        let nowhere = dir.join("missing.json").display().to_string();
+        assert!(index_within(&nowhere, &cache, Duration::from_secs(24 * 3600)).is_ok(), "read from the cache");
+        assert!(index_within(&nowhere, &cache, Duration::from_secs(3600)).is_err(), "too old: fetched, and that fails");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -740,52 +851,6 @@ mod tests {
     }
 
     /// A home for one test: every path under `dir`.
-    fn paths(name: &str) -> (PathBuf, Paths) {
-        let dir = temp(name);
-        let p = Paths {
-            root: dir.join("installed-plugins"),
-            installed: dir.join("state/installed.json"),
-            approvals: dir.join("state/plugin-approvals.json"),
-            config: dir.join("config/config.toml"),
-            data: dir.join("state/plugin-data"),
-        };
-        (dir, p)
-    }
-
-    /// A tarball of a plugin, as GitHub would serve it: one top folder.
-    fn archive(dir: &Path, version: &str, perms: &str) -> String {
-        let top = dir.join(format!("src-{version}/x-{version}"));
-        std::fs::create_dir_all(&top).unwrap();
-        std::fs::write(
-            top.join("plugin.toml"),
-            format!("version = \"{version}\"\ncommand = \"python3 main.py\"\npermissions = [{perms}]\n"),
-        )
-        .unwrap();
-        std::fs::write(top.join("main.py"), "print('hi')\n").unwrap();
-        let out = dir.join(format!("x-{version}.tar.gz"));
-        let ok = std::process::Command::new("tar")
-            .arg("-czf")
-            .arg(&out)
-            .arg("-C")
-            .arg(top.parent().unwrap())
-            .arg(format!("x-{version}"))
-            .status()
-            .unwrap()
-            .success();
-        assert!(ok);
-        out.to_str().unwrap().to_string()
-    }
-
-    fn release(version: &str, perms: Vec<Permission>, archive: String) -> Release {
-        Release { version: version.into(), commit: "c".repeat(40), permissions: perms, lumen: "1.0.0".into(), archive }
-    }
-
-    fn index_with(releases: Vec<Release>) -> Index {
-        let mut e = entry("mira/x", 1, &[]);
-        e.versions = releases;
-        Index { version: 1, plugins: vec![e] }
-    }
-
     fn config(p: &Paths) -> String {
         std::fs::read_to_string(&p.config).unwrap_or_default()
     }

@@ -536,6 +536,11 @@ pub fn notify(title: &str, body: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn plugin_status_needs_no_permission() {
+        assert_eq!(required("plugin-status"), None);
+    }
+
     fn line(text: &str) -> (Option<Value>, mpsc::Receiver<String>) {
         let (jobs, _rx) = fmpsc::unbounded();
         let (out, events) = mpsc::channel();

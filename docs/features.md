@@ -103,7 +103,7 @@ For bash, zsh and fish. See [Shell integration](shell-integration.md).
 
 ## Plugins
 
-- [Built-in plugins](builtin-plugins.md) you turn on from the Plugin Gallery:
+- [Built-in plugins](builtin-plugins.md) you turn on from **Plugins** in the palette:
   jump to recent folders, search every command you've run (and rerun the last
   failure), switch git branches, SSH to a host, open project layouts, see
   build status in the tab title, and a pomodoro timer.

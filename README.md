@@ -75,7 +75,7 @@ countdown, a staging server, what's left to do.
 </tr>
 <tr>
 <td><b>Plugin panes</b>: a todo list drawn by a plugin, beside your shell, with what's left on the tab.<br><br><img src="assets/screenshots/todo.png" alt="A git log beside a todo list pane: one item ticked off and three left, with 3 to do on the tab"></td>
-<td><b>Plugin Gallery</b>: the built-in plugins, off until you turn them on.<br><br><img src="assets/screenshots/gallery.png" alt="The Plugin Gallery listing Recent Directories, Command History, Switch Git Branch, SSH to Host, Projects &amp; Tasks, Build Status and Pomodoro Timer, which is on"></td>
+<td><b>Plugins</b>: turn plugins on and off, install and update them, and change their settings, all from one tab.<br><br><img src="assets/screenshots/gallery.png" alt="The plugin manager in a tab of its own: installed plugins on the left, Pomodoro Timer selected and on, its description, permissions and settings on the right"></td>
 </tr>
 <tr>
 <td><b><code>watch_pane.py</code></b>, an example script: <code>watch</code> in a pane of its own, with changes highlighted.<br><br><img src="assets/screenshots/watch.png" alt="A shell above a watch pane rerunning a status script every second, with the changed time highlighted"></td>
@@ -133,11 +133,11 @@ JSON-RPC protocol. [`examples/`](examples/) has ready-made scripts.
 
 ## Plugins
 
-Turn on the built-in plugins from **Plugin Gallery** in the palette. Each one
-shows what it does and what it's allowed to do before you approve it.
-
-Install other people's plugins from the
-[registry](https://github.com/lumenshell/plugins) with `lumen plugins`:
+Choose **Plugins** in the palette to turn on the built-in plugins, and to
+find, install, update and configure other people's from the
+[registry](https://github.com/lumenshell/plugins). Each one shows what it does
+and what it's allowed to do before you approve it. The same works from a
+terminal with `lumen plugins`:
 
 ```sh
 lumen plugins search git
@@ -187,7 +187,7 @@ sessions. See [Commands](docs/commands.md).
 | [Shell integration](docs/shell-integration.md) | What it adds, how it loads, using it over SSH |
 | [Commands](docs/commands.md) | `lumen info` and `lumen campfire` |
 | [Scripting](docs/scripting.md) | `lumen msg`, events and the socket protocol |
-| [Built-in plugins](docs/builtin-plugins.md) | The seven plugins in the Plugin Gallery |
+| [Built-in plugins](docs/builtin-plugins.md) | The seven plugins that come with Lumen |
 | [Plugin guide](docs/plugins.md) | Writing plugins in Python |
 | [Plugin protocol](docs/plugin-protocol.md) | Writing plugins in any language, and permissions |
 | [Files and session](docs/files.md) | Where Lumen keeps things, and its environment variables |

@@ -71,7 +71,7 @@ python3 -m unittest discover -s plugins/tests  # the built-in plugins
 | `.github/workflows/release.yml` | Builds Linux and macOS releases when a `v*` tag is pushed ([how to release](#releasing)) |
 | `examples/`            | Scripts using `lumen msg` and the socket API, and example plugins |
 | `python/`              | `lumen_plugin`, the Python package for plugins (built into Lumen), and its tests |
-| `plugins/`             | The built-in plugins (built into Lumen; turned on in the Plugin Gallery), and tests |
+| `plugins/`             | The built-in plugins (built into Lumen; turned on in Plugins), and tests |
 | `docs/`                | User guides and reference, linked from the README         |
 | `vendor/xim-ctext/`    | A patched copy of the decoder GPUI's X11 input-method client uses, so input methods can't crash Lumen ([why](../vendor/xim-ctext/README-lumen.md)) |
 | `vendor/gpui/`         | A patched copy of GPUI that draws on X11 as soon as output arrives instead of waiting for the next frame, sets up the GPU in the background, and gives out a window's X11 id ([why](../vendor/gpui/README-lumen.md)) |

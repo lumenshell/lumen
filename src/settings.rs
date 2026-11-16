@@ -110,7 +110,7 @@ pub struct Settings {
     /// Shortcuts from `[keys]`: normalized keys and the action they run
     /// (`None` frees the key), in file order.
     pub keys: Vec<(String, Option<String>)>,
-    /// Built-in plugins to run, by name (the Plugin Gallery edits this).
+    /// Plugins to run: built-in by name, installed as `owner/name` (Plugins edits this).
     pub plugins: Vec<String>,
     /// Each `[plugin.NAME]` table as written, by plugin name. Checked against
     /// the plugin's own settings when it starts (see `plugin_settings`).
@@ -123,6 +123,9 @@ pub struct Settings {
     pub cursor_blink_interval: Duration,
     /// Selecting also copies to the clipboard.
     pub copy_on_select: bool,
+    /// Check once a day whether installed plugins have updates, and say so
+    /// in the palette.
+    pub plugin_update_check: bool,
     /// Characters that end a word for double-click; `None` keeps alacritty's.
     pub word_separators: Option<String>,
     /// Lines the mouse wheel scrolls per notch.
@@ -234,6 +237,7 @@ impl Default for Settings {
             ligatures: true,
             cursor_blink_interval: Duration::from_millis(530),
             copy_on_select: false,
+            plugin_update_check: true,
             word_separators: None,
             scroll_speed: 3.0,
             right_click: RightClick::None,
@@ -599,6 +603,7 @@ impl Settings {
                 "bold-is-bright" => flag(item, &mut s.bold_is_bright, bad),
                 "ligatures" => flag(item, &mut s.ligatures, bad),
                 "copy-on-select" => flag(item, &mut s.copy_on_select, bad),
+                "plugin-update-check" => flag(item, &mut s.plugin_update_check, bad),
                 "option-as-alt" => flag(item, &mut s.option_as_alt, bad),
                 "kitty-keyboard" => flag(item, &mut s.kitty_keyboard, bad),
                 "restore-session" => flag(item, &mut s.restore_session, bad),
@@ -880,9 +885,12 @@ impl Settings {
              # can open). Turning it on takes a restart; turning it off applies at once.\n\
              socket-api = {socket_api}\n\
              \n\
-             # Built-in plugins to run; turn them on and off with Plugin Gallery in the\n\
-             # palette. Your own plugins go in the plugins folder next to this file.\n\
+             # Plugins to run: built-in ones by name, installed ones as \"owner/name\".\n\
+             # Choose Plugins in the palette to find, install and turn them on and off.\n\
+             # Your own plugins go in the plugins folder next to this file.\n\
              plugins = {plugins}\n\
+             # Say in the palette when installed plugins have updates (checks once a day).\n\
+             plugin-update-check = {plugin_update_check}\n\
              \n\
              # Keyboard shortcuts. Each line binds a key to an action, replacing what that\n\
              # key did before; \"none\" frees a key so programs in the terminal get it.\n\
@@ -920,6 +928,7 @@ impl Settings {
             ligatures = self.ligatures,
             blink_ms = self.cursor_blink_interval.as_millis(),
             copy_on_select = self.copy_on_select,
+            plugin_update_check = self.plugin_update_check,
             word_separators = match &self.word_separators {
                 Some(w) => format!("word-separators = {}", toml_edit::Value::from(w.as_str())),
                 None => format!(
@@ -1475,7 +1484,7 @@ mod tests {
          word-separators = \" ,│\"\nscroll-speed = 5\nright-click = \"copy-or-paste\"\nlink-modifier = \"none\"\n\
          option-as-alt = true\nkitty-keyboard = false\nwindow-width = 1400\nwindow-height = 900\n\
          restore-session = false\nworking-directory = \"~/src\"\nunfocused-dim = 0.25\npane-gap = 0\n\
-         ui-font-family = \"IBM Plex Sans\"\nbell = \"flash\"\n"
+         ui-font-family = \"IBM Plex Sans\"\nbell = \"flash\"\nplugin-update-check = false\n"
     }
 
     #[test]
@@ -1484,6 +1493,7 @@ mod tests {
         assert!(s.problems.is_empty(), "{:?}", s.problems);
         assert!(s.bold_is_bright && s.ligatures && s.kitty_keyboard && s.restore_session);
         assert!(!s.copy_on_select && !s.option_as_alt);
+        assert!(s.plugin_update_check);
         assert_eq!(s.cursor_blink_interval, Duration::from_millis(530));
         assert_eq!(s.word_separators, None);
         assert_eq!(s.scroll_speed, 3.0);
@@ -1504,6 +1514,9 @@ mod tests {
         assert!(s.problems.is_empty(), "{:?}", s.problems);
         assert!(!s.bold_is_bright && !s.ligatures && !s.kitty_keyboard && !s.restore_session);
         assert!(s.copy_on_select && s.option_as_alt);
+        assert!(!s.plugin_update_check);
+        let bad = Settings::parse("plugin-update-check = \"no\"\n");
+        assert!(bad.plugin_update_check && bad.problems.iter().any(|p| p.contains("plugin-update-check")), "{:?}", bad.problems);
         assert_eq!(s.cursor_blink_interval, Duration::from_millis(800));
         assert_eq!(s.word_separators.as_deref(), Some(" ,│"));
         assert_eq!(s.scroll_speed, 5.0);

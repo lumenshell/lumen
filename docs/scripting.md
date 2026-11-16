@@ -48,6 +48,7 @@ lumen msg watch command-finished        # events as JSON lines, until Ctrl+C
 | `action NAME [--pane ID]` | Run an action such as `split-right` or `find` (see [Actions](config.md#actions)) |
 | `watch [EVENT...]` | Stream events: all of them, or the ones named |
 | `call METHOD [JSON]` | Send any request and print the raw result |
+| `call plugin-status` | Every plugin Lumen runs: `name`, `status` (such as `running`) and `trouble` (it failed, or keeps exiting) |
 
 `--run` types the command into the new pane's shell, so the shell stays open
 after it finishes.

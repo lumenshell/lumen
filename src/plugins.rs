@@ -74,7 +74,7 @@ pub struct Manifest {
     /// What `[plugin.NAME]` in config.toml may set.
     pub settings: Vec<crate::plugin_settings::Spec>,
     pub dir: PathBuf,
-    /// One of Lumen's built-in plugins, turned on in the Plugin Gallery.
+    /// One of Lumen's built-in plugins, turned on from Plugins in the palette.
     pub builtin: bool,
     /// Installed from the registry: named `owner/name`, approved at install.
     pub registry: bool,
@@ -101,6 +101,126 @@ impl Manifest {
 pub struct PluginFiles(pub u64);
 
 impl gpui::Global for PluginFiles {}
+
+/// How many installed registry plugins have updates, for the palette's
+/// **Plugins** entry. Kept by [`watch_updates`].
+#[derive(Default)]
+pub struct PluginUpdates(pub usize);
+
+impl gpui::Global for PluginUpdates {}
+
+/// What the update check does now.
+#[derive(Debug, PartialEq)]
+pub enum UpdateCheck {
+    /// The setting is off: no updates are shown.
+    Off,
+    Nothing,
+    /// Something was installed or updated: count again from the cached index.
+    Recount,
+    /// Look at the index (downloading it if the copy is a day old).
+    Fetch,
+}
+
+/// The update check's next step: `last_fetch` is when it last looked at
+/// the index, `installs_changed` whether `lumen plugins` changed anything.
+pub fn update_check(
+    on: bool,
+    last_fetch: Option<std::time::Instant>,
+    installs_changed: bool,
+    now: std::time::Instant,
+) -> UpdateCheck {
+    const HOURLY: std::time::Duration = std::time::Duration::from_secs(3600);
+    match last_fetch {
+        _ if !on => UpdateCheck::Off,
+        None => UpdateCheck::Fetch,
+        Some(t) if now.duration_since(t) > HOURLY => UpdateCheck::Fetch,
+        Some(_) if installs_changed => UpdateCheck::Recount,
+        Some(_) => UpdateCheck::Nothing,
+    }
+}
+
+/// When the update check runs: [`update_check`] with what it remembers.
+pub struct UpdateTimer {
+    last_fetch: Option<std::time::Instant>,
+    last_files: Option<u64>,
+    was_on: bool,
+}
+
+impl UpdateTimer {
+    /// As Lumen opens: count from the cached index first, and look at the
+    /// index itself an hour later, so starting never touches the network.
+    pub fn new(now: std::time::Instant) -> UpdateTimer {
+        UpdateTimer { last_fetch: Some(now), last_files: None, was_on: true }
+    }
+
+    /// The next step, given the setting and [`PluginFiles`]' count.
+    pub fn step(&mut self, on: bool, files: u64, now: std::time::Instant) -> UpdateCheck {
+        let changed = self.last_files.replace(files) != Some(files);
+        let turned_on = on && !self.was_on;
+        self.was_on = on;
+        let step = update_check(on, if turned_on { None } else { self.last_fetch }, changed, now);
+        if step == UpdateCheck::Fetch {
+            self.last_fetch = Some(now);
+        }
+        step
+    }
+}
+
+/// Keep [`PluginUpdates`] current, off the main thread: the index is
+/// looked at hourly and downloaded at most once a day, and only while
+/// registry plugins are installed and `plugin-update-check` is on.
+pub fn watch_updates(cx: &mut gpui::App) {
+    cx.spawn(async move |cx| {
+        let mut timer = UpdateTimer::new(std::time::Instant::now());
+        loop {
+            let Ok((on, files)) = cx.update(|cx| {
+                let on = crate::settings::Settings::get(cx).plugin_update_check;
+                (on, cx.try_global::<PluginFiles>().map_or(0, |p| p.0))
+            }) else {
+                break;
+            };
+            let step = timer.step(on, files, std::time::Instant::now());
+            let count = match step {
+                UpdateCheck::Nothing => None,
+                UpdateCheck::Off => Some(0),
+                UpdateCheck::Recount | UpdateCheck::Fetch => {
+                    let fetch = step == UpdateCheck::Fetch;
+                    Some(cx.background_executor().spawn(async move { count_updates(fetch) }).await)
+                }
+            };
+            if let Some(n) = count {
+                let set = cx.update(|cx| {
+                    if cx.try_global::<PluginUpdates>().map_or(0, |u| u.0) != n {
+                        cx.set_global(PluginUpdates(n));
+                    }
+                });
+                if set.is_err() {
+                    break;
+                }
+            }
+            cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+        }
+    })
+    .detach();
+}
+
+/// Updates for installed registry plugins, from the index downloaded
+/// within a day (`fetch`) or whatever copy is cached. 0 with nothing installed.
+fn count_updates(fetch: bool) -> usize {
+    let installed = crate::registry::load_installed();
+    if installed.is_empty() {
+        return 0;
+    }
+    let index = if fetch {
+        crate::registry::cache_dir().and_then(|d| {
+            let day = std::time::Duration::from_secs(24 * 3600);
+            crate::registry::index_within(&crate::registry::index_url(), &d.join("plugin-index.json"), day).ok()
+        })
+    } else {
+        crate::registry::cached_index()
+    };
+    index.map_or(0, |i| crate::registry::count_updates(&installed, &i))
+}
 
 /// Where plugins are installed.
 /// The built-in plugins last started, to notice when config.toml changes them
@@ -215,8 +335,8 @@ pub fn parse_manifest(dir: &Path, text: &str) -> Result<Manifest, String> {
 
 // ---- built-in plugins ----------------------------------------------------
 
-/// A plugin that comes with Lumen, off until you turn it on in the Plugin
-/// Gallery (or list it under `plugins` in config.toml).
+/// A plugin that comes with Lumen, off until you turn it on in Plugins
+/// (or list it under `plugins` in config.toml).
 pub struct Builtin {
     pub name: &'static str,
     pub title: &'static str,
@@ -266,28 +386,16 @@ impl Builtin {
         Ok(m)
     }
 
-    /// Your own plugin folder with the same name, which runs instead.
-    /// Its one-line description, without the shortcuts in brackets at the
-    /// end, for the Plugin Gallery's list.
-    pub fn summary(&self) -> String {
+    /// Its manifest as written, without writing its files anywhere: what it
+    /// does, needs and can be set to, for showing.
+    pub fn parsed(&self) -> Result<Manifest, String> {
         let toml = self.files.iter().find(|(f, _)| *f == "plugin.toml").map_or("", |(_, t)| *t);
-        let description = parse_manifest(Path::new(self.name), toml).map(|m| m.description).unwrap_or_default();
-        // Drop each " (…)" that holds a shortcut.
-        let mut out = String::new();
-        let mut rest = description.as_str();
-        while let Some(i) = rest.find(" (") {
-            let Some(j) = rest[i..].find(')') else { break };
-            let inside = &rest[i + 2..i + j];
-            out.push_str(&rest[..i]);
-            if !(inside.contains("Ctrl") || inside.contains("Alt") || inside.contains('⌘')) {
-                out.push_str(&rest[i..=i + j]);
-            }
-            rest = &rest[i + j + 1..];
-        }
-        out.push_str(rest);
-        out
+        let mut m = parse_manifest(Path::new(self.name), toml)?;
+        m.builtin = true;
+        Ok(m)
     }
 
+    /// Your own plugin folder with the same name, which runs instead.
     pub fn overridden(&self) -> bool {
         plugins_dir().is_some_and(|d| d.join(self.name).join("plugin.toml").is_file())
     }
@@ -326,16 +434,26 @@ pub fn discover(enabled: &[String]) -> (Vec<Manifest>, Vec<String>) {
     (found, problems)
 }
 
-/// The registry plugins in `enabled`, from where they're installed, and a
-/// problem for each that isn't installed or can't be read.
+/// The banner line for registry plugins config.toml names that aren't
+/// installed (a new machine): nothing is downloaded until you ask.
+pub fn missing_message(names: &[String]) -> Option<String> {
+    match names.len() {
+        0 => None,
+        1 => Some("1 plugin in config.toml isn't installed: open Plugins to install it".into()),
+        n => Some(format!("{n} plugins in config.toml aren't installed: open Plugins to install them")),
+    }
+}
+
+/// The registry plugins in `enabled`, from where they're installed, a
+/// problem for each that can't be read, and one for those not installed.
 fn discover_registry(
     enabled: &[String],
     installed: &BTreeMap<String, crate::registry::Installed>,
 ) -> (Vec<Manifest>, Vec<String>) {
-    let (mut found, mut problems) = (Vec::new(), Vec::new());
+    let (mut found, mut problems, mut missing) = (Vec::new(), Vec::new(), Vec::new());
     for name in enabled.iter().filter(|n| crate::registry::valid_name(n)) {
         let Some(i) = installed.get(name) else {
-            problems.push(format!("plugin `{name}` isn't installed: run `lumen plugins install {name}`"));
+            missing.push(name.clone());
             continue;
         };
         let read = std::fs::read_to_string(i.dir.join("plugin.toml"))
@@ -350,6 +468,7 @@ fn discover_registry(
             Err(e) => problems.push(format!("plugin `{name}`: {e}")),
         }
     }
+    problems.extend(missing_message(&missing));
     (found, problems)
 }
 
@@ -422,6 +541,11 @@ pub fn decision(m: &Manifest) -> Decision {
     decide(m, &load_approvals())
 }
 
+/// [`decision`], with the approvals file at `path`.
+pub fn decision_at(path: &Path, m: &Manifest) -> Decision {
+    decide(m, &load_approvals_from(path))
+}
+
 fn decide(m: &Manifest, approvals: &BTreeMap<String, Approval>) -> Decision {
     if m.permissions.is_empty() {
         return Decision::Allowed;
@@ -480,6 +604,11 @@ pub fn forget_registry_in(path: &Path, name: &str) {
 
 pub fn record_decision(m: &Manifest, allowed: bool) {
     store_approval(m.approval_key(), Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed });
+}
+
+/// [`record_decision`], in the approvals file at `path`.
+pub fn record_decision_at(path: &Path, m: &Manifest, allowed: bool) {
+    store_approval_at(path, m.approval_key(), Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed });
 }
 
 fn store_approval(key: String, approval: Approval) {
@@ -966,7 +1095,47 @@ mod tests {
     fn missing_registry_plugins_are_reported() {
         let (found, problems) = discover_registry(&["mira/y".into()], &BTreeMap::new());
         assert!(found.is_empty());
-        assert_eq!(problems, ["plugin `mira/y` isn't installed: run `lumen plugins install mira/y`"]);
+        assert_eq!(problems, ["1 plugin in config.toml isn't installed: open Plugins to install it"]);
+        let (_, problems) = discover_registry(&["mira/y".into(), "mira/z".into()], &BTreeMap::new());
+        assert_eq!(problems, ["2 plugins in config.toml aren't installed: open Plugins to install them"]);
+    }
+
+    #[test]
+    fn update_checks_are_daily_and_follow_installs() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let hour = Duration::from_secs(3600);
+        assert_eq!(update_check(false, None, true, now), UpdateCheck::Off);
+        assert_eq!(update_check(true, None, false, now), UpdateCheck::Fetch, "first check");
+        assert_eq!(update_check(true, Some(now - hour / 2), false, now), UpdateCheck::Nothing);
+        assert_eq!(update_check(true, Some(now - hour / 2), true, now), UpdateCheck::Recount, "an install: no network");
+        assert_eq!(update_check(true, Some(now - hour - Duration::from_secs(1)), false, now), UpdateCheck::Fetch);
+    }
+
+    #[test]
+    fn lumen_starting_counts_from_the_cache() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut t = UpdateTimer::new(start);
+        assert_eq!(t.step(true, 0, start), UpdateCheck::Recount, "no network as Lumen opens");
+        assert_eq!(t.step(true, 0, start + Duration::from_secs(60)), UpdateCheck::Nothing);
+        assert_eq!(t.step(true, 1, start + Duration::from_secs(70)), UpdateCheck::Recount);
+        assert_eq!(t.step(true, 1, start + Duration::from_secs(3700)), UpdateCheck::Fetch, "hourly");
+        assert_eq!(t.step(false, 1, start + Duration::from_secs(3800)), UpdateCheck::Off);
+        assert_eq!(t.step(true, 1, start + Duration::from_secs(3900)), UpdateCheck::Fetch, "turned on: at once");
+    }
+
+    #[test]
+    fn missing_plugins_are_one_banner_line() {
+        assert_eq!(missing_message(&[]), None);
+        assert_eq!(
+            missing_message(&["a/b".into()]).as_deref(),
+            Some("1 plugin in config.toml isn't installed: open Plugins to install it")
+        );
+        assert_eq!(
+            missing_message(&["a/b".into(), "c/d".into(), "e/f".into()]).as_deref(),
+            Some("3 plugins in config.toml aren't installed: open Plugins to install them")
+        );
     }
 
     #[test]
@@ -1089,14 +1258,6 @@ mod tests {
             m.builtin = true;
             assert_eq!(m.approval_key(), format!("builtin:{}", b.name));
         }
-    }
-
-    #[test]
-    fn gallery_summaries_leave_out_shortcuts() {
-        let summary = |name| builtin(name).unwrap().summary();
-        assert_eq!(summary("command-history"), "Search commands from every pane with how they went, and rerun the last failure");
-        assert_eq!(summary("recent-dirs"), "Jump to folders you've visited, most used first");
-        assert_eq!(summary("build-status"), "Show how the last build or test went in the tab title, like ✓ cargo test · 12s");
     }
 
     #[test]
