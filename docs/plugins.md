@@ -46,7 +46,7 @@ opens the plugin manager, full screen, with three tabs:
 | Space | Turn the plugin on or off |
 | i | Install |
 | u, U | Update this one, or all of them |
-| x | Remove (asks whether to delete its data too; the default keeps it) |
+| x | Remove (asks whether to delete its data too; the default keeps it). Built-in plugins can't be removed, so x turns them off |
 | s | Change its settings, one at a time; d puts one back to its default |
 | r | Download the registry's list again |
 | ? | Show the keys |
