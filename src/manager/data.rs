@@ -269,10 +269,10 @@ mod tests {
         s.local = vec![local];
         let items = installed(&s);
         let titles: Vec<&str> = items.iter().map(|i| i.title.as_str()).collect();
-        assert_eq!(&titles[..7], ["Recent Directories", "Command History", "Switch Git Branch", "SSH to Host", "Projects & Tasks", "Build Status", "Pomodoro Timer"]);
-        assert_eq!(&titles[7..], ["where", "mira/x", "mira/y"]);
+        assert_eq!(&titles[..4], ["Recent Directories", "Command History", "Switch Git Branch", "SSH to Host"]);
+        assert_eq!(&titles[4..], ["where", "mira/x", "mira/y"]);
         let by = |n: &str| items.iter().find(|i| i.name == n).unwrap();
-        assert!(by("recent-dirs").on && !by("pomodoro").on);
+        assert!(by("recent-dirs").on && !by("ssh-hosts").on);
         assert_eq!(by("where").kind, Kind::Local);
         assert!(by("mira/x").on && by("mira/x").attention.is_none(), "{:?}", by("mira/x").attention);
         assert_eq!(by("mira/x").version.as_deref(), Some("1.0.0"));

@@ -898,6 +898,25 @@ impl Workspace {
         self.open_palette(palette, window, cx);
     }
 
+    /// Pick a theme, each one shown as you move to it; Esc puts back the one
+    /// you had.
+    fn open_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = Settings::get(cx);
+        let original = settings.theme_choice;
+        let current = settings.shown_index();
+        let names: Vec<SharedString> = settings.themes.iter().map(|t| t.name.clone()).collect();
+        let items = theme_picker_items(&names, current, original);
+        let cancel: PaletteFn = Rc::new(move |_, cx| Settings::finish_preview(cx, original, None));
+        let highlight: crate::palette::HighlightFn =
+            Rc::new(|i, _, cx| Settings::preview_theme(cx, crate::settings::ThemeChoice::One(i)));
+        let palette = cx.new(|cx| {
+            CommandPalette::picker(items, "Pick a theme…".into(), Some(cancel), cx)
+                .with_selected(current)
+                .with_highlight(highlight)
+        });
+        self.open_palette(palette, window, cx);
+    }
+
     /// Show `palette`, replacing (and cancelling) any open one.
     fn open_palette(&mut self, palette: Entity<CommandPalette>, window: &mut Window, cx: &mut Context<Self>) {
         self.dismiss_palette(window, cx);
@@ -2461,6 +2480,10 @@ impl Workspace {
     }
 }
 
+/// The command palette's headings: Lumen's own commands, then those plugins add.
+const LUMEN: &str = "Lumen";
+const PLUGINS: &str = "Plugins";
+
 fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
     fn action<A: gpui::Action + Clone + Default>(label: &str) -> (SharedString, Box<dyn gpui::Action>) {
         (label.to_string().into(), Box::new(A::default()))
@@ -2497,13 +2520,15 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
             let act: Rc<dyn gpui::Action> = act.into();
             PaletteItem::new(label, Rc::new(move |window, cx| window.dispatch_action(act.boxed_clone(), cx)))
                 .keys(detail)
+                .section(LUMEN)
         })
         .collect();
     if let Some(path) = settings::config_path() {
         let shown = path.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~");
         items.push(
             PaletteItem::new("Open Config File", Rc::new(move |_, cx| cx.open_url(&format!("file://{}", path.display()))))
-                .note(shown),
+                .note(shown)
+                .section(LUMEN),
         );
     }
     // Plugin commands, then a way to allow each plugin waiting for it.
@@ -2516,7 +2541,8 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
                 Rc::new(move |window, cx| window.dispatch_action(Box::new(act.clone()), cx)),
             );
             // Its shortcut if it has one, else which plugin it's from.
-            items.push(if shortcut.is_empty() { item.note(info.manifest.name.clone()) } else { item.keys(shortcut) });
+            let item = if shortcut.is_empty() { item.note(info.manifest.name.clone()) } else { item.keys(shortcut) };
+            items.push(item.section(PLUGINS));
         }
     }
     let ws = window.root::<Workspace>().flatten().map(|w| w.downgrade());
@@ -2538,7 +2564,8 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
                     }),
                 )
                 .dot(Dot::Busy)
-                .note(info.status.clone()),
+                .note(info.status.clone())
+                .section(LUMEN),
             );
         }
     }
@@ -2552,6 +2579,7 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
                 let _ = ws.update(cx, |ws, cx| ws.open_plugin_logs(window, cx));
             }),
         );
+        let item = item.section(LUMEN);
         items.push(match troubled {
             0 => item.note("see what a plugin printed"),
             1 => item.dot(Dot::Bad).note("1 plugin has a problem"),
@@ -2566,7 +2594,8 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
                     let _ = ws.update(cx, |ws, cx| ws.open_plugin_manager(window, cx));
                 }),
             )
-            .note("install, update and turn plugins on and off"),
+            .note("install, update and turn plugins on and off")
+            .section(LUMEN),
         );
     }
     if let Some(ws) = ws.clone() {
@@ -2577,18 +2606,38 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
                     let _ = ws.update(cx, |ws, cx| ws.reload_plugins(window, cx));
                 }),
             )
-            .note("restart every plugin and re-read plugin.toml files"),
+            .note("restart every plugin and re-read plugin.toml files")
+            .section(LUMEN),
         );
     }
-    let settings = Settings::get(cx);
-    for (i, theme) in settings.themes.iter().enumerate() {
-        let item = PaletteItem::new(
-            format!("Theme: {}", theme.name),
-            Rc::new(move |_, cx| Settings::update(cx, |s| s.choose_theme(i))),
+    if let Some(ws) = ws.clone() {
+        items.push(
+            PaletteItem::new(
+                "Theme…",
+                Rc::new(move |window, cx| {
+                    let _ = ws.update(cx, |ws, cx| ws.open_theme_picker(window, cx));
+                }),
+            )
+            .note(Settings::get(cx).theme().name.clone())
+            .section(LUMEN),
         );
-        items.push(if i == settings.shown_index() { item.note("current") } else { item });
     }
     items
+}
+
+/// The theme picker's items: every theme, the one shown marked.
+fn theme_picker_items(names: &[SharedString], current: usize, original: crate::settings::ThemeChoice) -> Vec<PaletteItem> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let item = PaletteItem::new(
+                name.clone(),
+                Rc::new(move |_, cx| Settings::finish_preview(cx, original, Some(i))),
+            );
+            if i == current { item.note("current") } else { item }
+        })
+        .collect()
 }
 
 fn resize_edge(pos: Point<Pixels>, inset: Pixels, size: Size<Pixels>) -> Option<ResizeEdge> {

@@ -486,8 +486,8 @@ mod tests {
         let mut m = Model::new(snapshot);
         m.items = vec![
             item("recent-dirs", Kind::BuiltIn, true, vec![]),
-            item("pomodoro", Kind::BuiltIn, false, vec![]),
-            item("build-status", Kind::BuiltIn, false, vec![Permission::Panes]),
+            item("git-branch", Kind::BuiltIn, false, vec![]),
+            item("ssh-hosts", Kind::BuiltIn, false, vec![Permission::Panes]),
             item("where", Kind::Local, true, vec![]),
             item("mira/on", Kind::Registry, true, vec![]),
         ];
@@ -639,14 +639,14 @@ mod tests {
     #[test]
     fn space_toggles_and_local_explains() {
         let mut m = model();
-        select(&mut m, "pomodoro");
-        assert_eq!(ch(&mut m, ' '), [Effect::SetEnabled { name: "pomodoro".into(), on: true, approve: None }]);
+        select(&mut m, "git-branch");
+        assert_eq!(ch(&mut m, ' '), [Effect::SetEnabled { name: "git-branch".into(), on: true, approve: None }]);
         m.busy = None;
-        select(&mut m, "build-status");
+        select(&mut m, "ssh-hosts");
         assert!(ch(&mut m, ' ').is_empty());
         assert!(matches!(m.dialog, Some(Dialog::Approve { .. })));
-        let manifest = m.items.iter().find(|i| i.name == "build-status").unwrap().manifest.clone();
-        assert_eq!(ch(&mut m, 'y'), [Effect::SetEnabled { name: "build-status".into(), on: true, approve: manifest }]);
+        let manifest = m.items.iter().find(|i| i.name == "ssh-hosts").unwrap().manifest.clone();
+        assert_eq!(ch(&mut m, 'y'), [Effect::SetEnabled { name: "ssh-hosts".into(), on: true, approve: manifest }]);
         m.busy = None;
         select(&mut m, "mira/on");
         assert_eq!(ch(&mut m, ' '), [Effect::SetEnabled { name: "mira/on".into(), on: false, approve: None }]);
@@ -675,7 +675,7 @@ mod tests {
     fn keys_are_ignored_while_busy() {
         let mut m = model();
         m.busy = Some("Installing mira/x…".into());
-        select(&mut m, "pomodoro");
+        select(&mut m, "git-branch");
         for c in ['i', 'u', 'x', ' ', 'r', 'U'] {
             assert!(ch(&mut m, c).is_empty(), "{c}");
         }
@@ -686,10 +686,10 @@ mod tests {
     #[test]
     fn s_edits_settings_and_saves_them() {
         let mut m = model();
-        select(&mut m, "pomodoro");
+        select(&mut m, "git-branch");
         assert!(ch(&mut m, 's').is_empty());
-        assert_eq!(m.status.as_deref(), Some("pomodoro has no settings"));
-        let i = m.items.iter_mut().find(|i| i.name == "pomodoro").unwrap();
+        assert_eq!(m.status.as_deref(), Some("git-branch has no settings"));
+        let i = m.items.iter_mut().find(|i| i.name == "git-branch").unwrap();
         i.settings = vec![crate::plugin_settings::Spec {
             key: "sound".into(),
             kind: crate::plugin_settings::Kind::Boolean,
@@ -700,7 +700,7 @@ mod tests {
         assert!(m.editing.is_some());
         assert_eq!(
             ch(&mut m, ' '),
-            [Effect::SaveSetting { plugin: "pomodoro".into(), key: "sound".into(), value: Some(serde_json::json!(false)) }]
+            [Effect::SaveSetting { plugin: "git-branch".into(), key: "sound".into(), value: Some(serde_json::json!(false)) }]
         );
         m.busy = None;
         assert!(ch(&mut m, 'q').is_empty(), "q leaves the editor, not the manager");
@@ -726,25 +726,25 @@ mod tests {
         let mut m = model();
         let dir = crate::registry::testing::temp("model-approved");
         m.snapshot.approvals = dir.join("approvals.json");
-        let manifest = m.items.iter().find(|i| i.name == "build-status").unwrap().manifest.clone().unwrap();
+        let manifest = m.items.iter().find(|i| i.name == "ssh-hosts").unwrap().manifest.clone().unwrap();
         crate::plugins::record_decision_at(&m.snapshot.approvals, &manifest, true);
-        select(&mut m, "build-status");
-        assert_eq!(ch(&mut m, ' '), [Effect::SetEnabled { name: "build-status".into(), on: true, approve: None }]);
+        select(&mut m, "ssh-hosts");
+        assert_eq!(ch(&mut m, ' '), [Effect::SetEnabled { name: "ssh-hosts".into(), on: true, approve: None }]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn done_keeps_the_selection_by_name() {
         let mut m = model();
-        select(&mut m, "pomodoro");
+        select(&mut m, "git-branch");
         assert_eq!(m.selected, 1);
         m.busy = Some("x".into());
         let mut snapshot = m.snapshot.clone();
-        snapshot.enabled = vec!["pomodoro".into()];
+        snapshot.enabled = vec!["git-branch".into()];
         m.done(Err("no network".into()), snapshot);
         assert_eq!(m.busy, None);
         assert_eq!(m.status.as_deref(), Some("no network"));
-        assert_eq!(m.rows()[m.selected].name(), "pomodoro");
-        assert_eq!(m.selected, 6, "the built-ins are all listed now, Pomodoro last");
+        assert_eq!(m.rows()[m.selected].name(), "git-branch");
+        assert_eq!(m.selected, 2, "the built-ins are all listed now, Switch Git Branch third");
     }
 }

@@ -372,6 +372,7 @@ fn facts(settings: &Settings) -> Vec<(&'static str, String)> {
     add("Uptime", uptime().map(|d| format_uptime(d.as_secs())));
     add("Shell", shell());
     add("CPU", cpu());
+    add("Load", load());
     add("GPU", gpu());
     add("Memory", memory());
     add("Terminal", Some(terminal()));
@@ -643,6 +644,28 @@ fn memory() -> Option<String> {
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
+/// The 1, 5 and 15 minute load averages, with how much of the machine the
+/// last minute's is.
+fn load() -> Option<String> {
+    let text = if cfg!(target_os = "macos") { output("sysctl", &["-n", "vm.loadavg"])? } else { read("/proc/loadavg")? };
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    Some(format_load(parse_load(&text)?, threads))
+}
+
+/// The first three numbers of /proc/loadavg ("2.31 1.98 1.75 2/1234 5678")
+/// or macOS's vm.loadavg ("{ 2.31 1.98 1.75 }").
+fn parse_load(text: &str) -> Option<[f64; 3]> {
+    let mut n = text.split_whitespace().filter(|w| *w != "{").map(|w| w.parse::<f64>().ok());
+    Some([n.next()??, n.next()??, n.next()??])
+}
+
+fn format_load(l: [f64; 3], threads: usize) -> String {
+    let threads = threads.max(1);
+    let share = (l[0] / threads as f64 * 100.0).round() as u64;
+    let unit = if threads == 1 { "thread" } else { "threads" };
+    format!("{:.2}, {:.2}, {:.2} ({share}% of {threads} {unit})", l[0], l[1], l[2])
+}
+
 /// Used and total bytes from /proc/meminfo (used = total - available).
 fn meminfo(text: &str) -> Option<(u64, u64)> {
     let kb = |key: &str| -> Option<u64> {
@@ -736,6 +759,32 @@ mod tests {
         assert_eq!(format_uptime(61), "1 min");
         assert_eq!(format_uptime(90061), "1 day, 1 hour, 1 min");
         assert_eq!(format_uptime(7200), "2 hours");
+    }
+
+    #[test]
+    fn load_reads_both_formats() {
+        assert_eq!(parse_load("2.31 1.98 1.75 2/1234 5678\n"), Some([2.31, 1.98, 1.75]));
+        assert_eq!(parse_load("{ 2.31 1.98 1.75 }\n"), Some([2.31, 1.98, 1.75]));
+        assert_eq!(parse_load("2.31 1.98"), None);
+        assert_eq!(parse_load(""), None);
+    }
+
+    #[test]
+    fn load_is_formatted_with_a_share_of_threads() {
+        assert_eq!(format_load([2.31, 1.98, 1.75], 32), "2.31, 1.98, 1.75 (7% of 32 threads)");
+        assert_eq!(format_load([0.0, 0.0, 0.0], 1), "0.00, 0.00, 0.00 (0% of 1 thread)");
+        assert!(format_load([40.0, 1.0, 1.0], 32).contains("(125% of 32 threads)"));
+    }
+
+    #[test]
+    fn load_comes_right_after_the_cpu() {
+        let facts = facts(&Settings::default());
+        let at = |label: &str| facts.iter().position(|(l, _)| *l == label);
+        if let (Some(cpu), Some(load)) = (at("CPU"), at("Load")) {
+            assert_eq!(load, cpu + 1);
+        } else if cfg!(target_os = "linux") {
+            panic!("no CPU or Load line: {facts:?}");
+        }
     }
 
     #[test]

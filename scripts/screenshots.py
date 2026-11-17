@@ -154,8 +154,7 @@ def make_demo(base: Path) -> dict:
     for name in ("todo",):
         shutil.copytree(ROOT / "examples" / "plugins" / name, config / "lumen" / "plugins" / name)
     approvals = {}
-    for key, folder in [("builtin:pomodoro", ROOT / "plugins" / "pomodoro"),
-                        ("todo", ROOT / "examples" / "plugins" / "todo")]:
+    for key, folder in [("todo", ROOT / "examples" / "plugins" / "todo")]:
         m = tomllib.loads((folder / "plugin.toml").read_text())
         cmd = m["command"].split() if isinstance(m["command"], str) else m["command"]
         approvals[key] = {"command": cmd, "permissions": m.get("permissions", []), "allowed": True}
@@ -181,7 +180,7 @@ def make_demo(base: Path) -> dict:
     }
 
 
-def write_config(env: dict, theme: str = "Rosé Pine", plugins=("pomodoro",)):
+def write_config(env: dict, theme: str = "Rosé Pine", plugins=()):
     cfg = Path(env["XDG_CONFIG_HOME"]) / "lumen" / "config.toml"
     cfg.write_text(
         f'theme = "{theme}"\n'
@@ -455,16 +454,6 @@ def scene_select(l, out):
     l.shoot(out / "select.png")
 
 
-def scene_pomodoro(l, out):
-    pane = l.first
-    l.run(pane, "cd ~/shop && clear && git log --oneline -12", 0.8)
-    l.keys("ctrl+shift+p", 0.6)
-    l.type("start pomodoro")
-    l.keys("Return", 1.2)  # the plugin asks how long: 25 minutes is first
-    l.keys("Return", 2.5)
-    l.shoot(out / "pomodoro.png")
-
-
 def scene_todo(l, out):
     pane = l.first
     l.run(pane, "cd ~/shop && clear && git log --oneline -12", 0.8)
@@ -476,7 +465,7 @@ def scene_gallery(l, out):
     l.keys("ctrl+shift+p", 0.6)
     l.type("plugins")
     l.keys("Return", 2.5)  # the plugin manager opens in a tab of its own
-    for _ in range(6):    # down to Pomodoro Timer, which is on
+    for _ in range(4):    # down to the todo plugin, which is on
         l.keys("Down", 0.1)
     l.shoot(out / "gallery.png")
 
@@ -507,7 +496,6 @@ SCENES = {
     "palette": ("the command palette", FEATURE, "Rosé Pine", scene_palette),
     "find": ("find in scrollback", FEATURE, "Rosé Pine", scene_find),
     "select": ("keyboard select mode", FEATURE, "Rosé Pine", scene_select),
-    "pomodoro": ("the Pomodoro Timer plugin", FEATURE, "Rosé Pine", scene_pomodoro),
     "todo": ("a todo list in a plugin pane", (960, 600), "Rosé Pine", scene_todo),
     "gallery": ("the plugin manager", (960, 600), "Rosé Pine", scene_gallery),
     "watch": ("watch_pane.py, an example script", FEATURE, "Rosé Pine", scene_watch),

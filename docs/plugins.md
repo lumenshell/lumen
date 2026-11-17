@@ -294,7 +294,7 @@ first, then the badge: give a `short_badge` such as `"24m"` to show instead,
 or it's cut with "…". They're removed when your plugin stops, so a
 plugin that crashes or is reloaded leaves no stale badge behind.
 
-The built-in [Pomodoro Timer](../plugins/pomodoro/main.py) uses both, in
+The [Pomodoro Timer](https://github.com/sn/lumen-pomodoro/blob/main/main.py) uses both, in
 about 300 lines. Smaller ones are in [`examples/`](../examples/): a
 [todo list](../examples/plugins/todo/main.py) that takes typed text, a
 [snake game](../examples/plugins/snake/main.py) that animates,

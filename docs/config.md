@@ -68,7 +68,7 @@ Catppuccin Macchiato, Catppuccin Frappé, Tokyo Night, Tokyo Night Storm, Nord,
 Gruvbox Dark, Kanagawa, Everforest Dark, GitHub Dark, Flexoki Dark, Solarized
 Dark, Dracula, One Dark. Light: Rosé Pine Dawn, Catppuccin Latte, Tokyo Night
 Day, Gruvbox Light, Everforest Light, GitHub Light, Flexoki Light, Solarized
-Light. Pick one with `theme = "Name"`, from the palette (**Theme:** entries), or
+Light. Pick one with `theme = "Name"`, from the palette (**Theme…**, which shows each one as you move to it), or
 cycle with **Cycle Theme** (Ctrl+Shift+Y, ⌘⇧Y).
 
 **Follow the system's light or dark** with a pair:

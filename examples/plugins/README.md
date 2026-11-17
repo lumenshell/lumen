@@ -20,9 +20,8 @@ cp -r examples/plugins/snake ~/.config/lumen/plugins/
 ```
 
 For bigger examples, read the built-in plugins in [`plugins/`](../../plugins/):
-recent folders, command history, a git branch picker, an SSH host picker,
-project layouts, build status and a pomodoro timer. Turn them on from **Plugin Gallery** in the
-palette; to change one, copy its folder into your plugins folder (yours runs
+recent folders, command history, a git branch picker and an SSH host picker.
+Turn them on from **Plugins** in the palette; to change one, copy its folder into your plugins folder (yours runs
 instead of the built-in one).
 
 A layout for this repository, to try Project Layouts with:

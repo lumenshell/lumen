@@ -350,6 +350,36 @@ impl Settings {
         self.theme_choice = ThemeChoice::One(i);
     }
 
+    /// Show `choice` without choosing it: nothing is written until
+    /// [`Settings::end_preview`] keeps a theme.
+    pub fn preview(&mut self, choice: ThemeChoice) {
+        self.theme_choice = choice;
+        self.resolve();
+    }
+
+    /// Stop previewing: keep theme `keep`, or go back to `original`.
+    /// Whether the theme needs writing to the file.
+    pub fn end_preview(&mut self, original: ThemeChoice, keep: Option<usize>) -> bool {
+        let choice = keep.map_or(original, ThemeChoice::One);
+        self.preview(choice);
+        choice != original
+    }
+
+    /// [`Settings::preview`], shown in every window.
+    pub fn preview_theme(cx: &mut App, choice: ThemeChoice) {
+        cx.global_mut::<Settings>().preview(choice);
+        cx.refresh_windows();
+    }
+
+    /// [`Settings::end_preview`], written if a new theme was kept.
+    pub fn finish_preview(cx: &mut App, original: ThemeChoice, keep: Option<usize>) {
+        let settings = cx.global_mut::<Settings>();
+        if settings.end_preview(original, keep) {
+            settings.save(true);
+        }
+        cx.refresh_windows();
+    }
+
     /// The theme after the one in use now.
     pub fn next_theme(&mut self) {
         self.choose_theme((self.shown_index() + 1) % self.themes.len());
@@ -558,6 +588,11 @@ impl Settings {
                         let mut bad_names = Vec::new();
                         for v in list {
                             match v.as_str() {
+                                Some(n) if let Some(new) = crate::plugins::moved_to(n) => {
+                                    if !s.plugins.iter().any(|p| p == new) {
+                                        s.plugins.push(new.to_string());
+                                    }
+                                }
                                 Some(n) if crate::plugins::builtin(n).is_some() || crate::registry::valid_name(n) => {
                                     if !s.plugins.iter().any(|p| p == n) {
                                         s.plugins.push(n.to_string());
@@ -583,9 +618,16 @@ impl Settings {
                         for (name, sub) in t.iter() {
                             let table = sub.as_table().cloned().or_else(|| sub.as_inline_table().map(|i| i.clone().into_table()));
                             match table {
-                                Some(table) => {
-                                    s.plugin_settings.insert(name.to_string(), PluginTable(table));
-                                }
+                                // An old built-in name's table counts for its
+                                // registry plugin, unless that has its own.
+                                Some(table) => match crate::plugins::moved_to(name) {
+                                    Some(new) => {
+                                        s.plugin_settings.entry(new.to_string()).or_insert(PluginTable(table));
+                                    }
+                                    None => {
+                                        s.plugin_settings.insert(name.to_string(), PluginTable(table));
+                                    }
+                                },
                                 None => bad_names.push(format!("`plugin.{name}` should be a table like [plugin.{name}]")),
                             }
                         }
@@ -1410,6 +1452,32 @@ mod tests {
     }
 
     #[test]
+    fn previewing_a_theme_shows_it_without_choosing_it() {
+        let mut s = Settings::parse("theme = \"light:Rosé Pine Dawn, dark:Rosé Pine\"");
+        s.dark = true;
+        let index = |s: &Settings, name: &str| s.themes.iter().position(|t| t.name.as_ref() == name).unwrap();
+        let original = s.theme_choice;
+        let mut doc: DocumentMut = "theme = \"light:Rosé Pine Dawn, dark:Rosé Pine\"\n".parse().unwrap();
+        s.preview(ThemeChoice::One(index(&s, "Tokyo Night")));
+        assert_eq!(s.theme().name.as_ref(), "Tokyo Night");
+        // Saving while previewing (a zoom) leaves the theme in the file alone.
+        s.apply_to(&mut doc, false);
+        assert!(doc.to_string().contains("light:Rosé Pine Dawn, dark:Rosé Pine"), "{doc}");
+        // Esc: back to the pair, nothing to write.
+        assert!(!s.end_preview(original, None));
+        assert_eq!((s.theme_choice, s.theme().name.as_ref()), (original, "Rosé Pine"));
+        // Enter on another theme: chosen, and written.
+        s.preview(ThemeChoice::One(index(&s, "Tokyo Night")));
+        assert!(s.end_preview(original, Some(index(&s, "Tokyo Night"))));
+        assert_eq!(s.theme_choice, ThemeChoice::One(index(&s, "Tokyo Night")));
+        // Enter on the theme you had: nothing to write.
+        let mut t = Settings::parse("theme = \"Tokyo Night\"");
+        let had = t.theme_choice;
+        t.preview(ThemeChoice::One(0));
+        assert!(!t.end_preview(had, Some(index(&t, "Tokyo Night"))));
+    }
+
+    #[test]
     fn current_theme_follows_the_appearance() {
         let mut s = Settings::parse("theme = \"light:Rosé Pine Dawn, dark:Rosé Pine\"");
         let index = |s: &Settings, name: &str| s.themes.iter().position(|t| t.name.as_ref() == name).unwrap();
@@ -1448,6 +1516,18 @@ mod tests {
         assert_eq!(s.plugins, ["recent-dirs", "mira/docker-panes"]);
         assert_eq!(s.problems.len(), 1, "{:?}", s.problems);
         assert!(s.problems[0].contains("Nope/x"), "{:?}", s.problems);
+    }
+
+    #[test]
+    fn old_builtin_names_mean_their_registry_plugins() {
+        let s = Settings::parse("plugins = [\"pomodoro\", \"recent-dirs\", \"sn/pomodoro\"]\n[plugin.pomodoro]\nlong-break-every = 3\n");
+        assert!(s.problems.is_empty(), "{:?}", s.problems);
+        assert_eq!(s.plugins, ["sn/pomodoro", "recent-dirs"]);
+        assert_eq!(s.plugin_settings["sn/pomodoro"].get("long-break-every").and_then(|v| v.as_integer()), Some(3));
+        assert!(!s.plugin_settings.contains_key("pomodoro"));
+        // A table under the new name wins, wherever it is in the file.
+        let both = Settings::parse("[plugin.\"sn/pomodoro\"]\nlong-break-every = 5\n[plugin.pomodoro]\nlong-break-every = 3\n");
+        assert_eq!(both.plugin_settings["sn/pomodoro"].get("long-break-every").and_then(|v| v.as_integer()), Some(5));
     }
 
     #[test]

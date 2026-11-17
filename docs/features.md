@@ -105,8 +105,8 @@ For bash, zsh and fish. See [Shell integration](shell-integration.md).
 
 - [Built-in plugins](builtin-plugins.md) you turn on from **Plugins** in the palette:
   jump to recent folders, search every command you've run (and rerun the last
-  failure), switch git branches, SSH to a host, open project layouts, see
-  build status in the tab title, and a pomodoro timer.
+  failure), switch git branches and SSH to a host. More install from the
+  registry: project layouts, build status in the tab title, a pomodoro timer.
 - Plugins in any language. Lumen runs them and restarts them if they crash.
   They can add palette commands, key bindings and pickers, draw panes of their
   own, and put badges and colours on tabs, limited to the permissions you
