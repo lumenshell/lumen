@@ -96,7 +96,7 @@ folder:
 - a clean prompt, and `USER=you`;
 - a small web shop project with a fixed git history;
 - stand-ins for `npm` that print the same test run and dev server every time;
-- the Pomodoro and todo plugins approved, with a seeded todo list.
+- the todo plugin approved, with a seeded todo list.
 
 The scene lays out tabs and panes with `lumen msg`, presses keys through
 XTEST where it needs the palette or a plugin, and saves the window framed:

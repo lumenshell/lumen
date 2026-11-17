@@ -462,11 +462,19 @@ pub(crate) fn remove_in(p: &Paths, name: &str, delete_data: bool) -> Result<Stri
     crate::plugins::forget_registry_in(&p.approvals, name);
     crate::settings::edit_config_at(&p.config, |doc| {
         remove_from_list(doc, name);
+        adopt_old_table(doc, name);
         if let Some(t) = doc.get_mut("plugin").and_then(|i| i.as_table_like_mut()) {
             t.remove(name);
         }
     })?;
     if delete_data {
+        // Its data from when it was built in, if it never ran since.
+        if let Some((old, _)) = crate::plugins::MOVED.iter().find(|(_, new)| *new == name) {
+            let before = p.data.join(old);
+            if before.exists() {
+                std::fs::remove_dir_all(&before).map_err(|e| format!("{}: {e}", before.display()))?;
+            }
+        }
         let data = p.data.join(name);
         if data.exists() {
             std::fs::remove_dir_all(&data).map_err(|e| format!("{}: {e}", data.display()))?;
@@ -478,7 +486,34 @@ pub(crate) fn remove_in(p: &Paths, name: &str, delete_data: bool) -> Result<Stri
 
 fn remove_from_list(doc: &mut toml_edit::DocumentMut, name: &str) {
     if let Some(list) = doc.get_mut("plugins").and_then(|i| i.as_array_mut()) {
-        list.retain(|v| v.as_str() != Some(name));
+        // A plugin that moved to the registry may still be listed by its
+        // built-in name.
+        let gone = |v: &toml_edit::Value| v.as_str().is_some_and(|v| v == name || crate::plugins::moved_to(v) == Some(name));
+        // The first item's spacing goes to whichever comes first after.
+        let first = list.get(0).map(|v| v.decor().prefix().cloned());
+        list.retain(|v| !gone(v));
+        if let (Some(Some(prefix)), Some(v)) = (first, list.get_mut(0)) {
+            v.decor_mut().set_prefix(prefix);
+        }
+    }
+}
+
+/// A plugin that moved to the registry takes over its `[plugin.OLD]` table:
+/// renamed to `[plugin."NEW"]`, under any keys that table has already. So a
+/// later edit or reset of one setting can't bring back or drop the others.
+pub(crate) fn adopt_old_table(doc: &mut toml_edit::DocumentMut, name: &str) {
+    let Some((old, _)) = crate::plugins::MOVED.iter().find(|(_, new)| *new == name) else { return };
+    let Some(plugins) = doc.get_mut("plugin").and_then(|i| i.as_table_mut()) else { return };
+    let Some(Ok(old_table)) = plugins.remove(old).map(toml_edit::Item::into_table) else { return };
+    if !plugins.contains_key(name) {
+        plugins.insert(name, toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+    if let Some(new_table) = plugins.get_mut(name).and_then(|t| t.as_table_mut()) {
+        for (key, value) in old_table.iter() {
+            if !new_table.contains_key(key) {
+                new_table.insert(key, value.clone());
+            }
+        }
     }
 }
 
@@ -1075,6 +1110,35 @@ mod tests {
         assert_eq!(config(&p), "plugins = [\"mira/x\"]\n");
         set_enabled_in(&p, "mira/x", false).unwrap();
         assert_eq!(config(&p), "plugins = []\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn turning_off_a_moved_plugin_removes_its_old_name() {
+        let (dir, p) = paths("moved-off");
+        std::fs::create_dir_all(p.config.parent().unwrap()).unwrap();
+        std::fs::write(&p.config, "plugins = [\"pomodoro\", \"recent-dirs\"]\n").unwrap();
+        set_enabled_in(&p, "sn/pomodoro", false).unwrap();
+        assert_eq!(config(&p), "plugins = [\"recent-dirs\"]\n");
+        std::fs::write(&p.config, "plugins = [\"pomodoro\"]\n").unwrap();
+        set_enabled_in(&p, "sn/pomodoro", true).unwrap();
+        assert_eq!(config(&p), "plugins = [\"sn/pomodoro\"]\n", "listed once, by its new name");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn removing_a_moved_plugin_takes_its_old_settings_and_data() {
+        let (dir, p) = paths("moved-remove");
+        std::fs::create_dir_all(p.config.parent().unwrap()).unwrap();
+        std::fs::write(&p.config, "plugins = [\"pomodoro\"]\n[plugin.pomodoro]\nlong-break-every = 3\n").unwrap();
+        let mut all = BTreeMap::new();
+        all.insert("sn/pomodoro".to_string(), Installed { version: "1.0.0".into(), commit: "c".repeat(40), permissions: vec![], dir: p.root.join("sn/pomodoro") });
+        save_installed_to(&p.installed, &all).unwrap();
+        std::fs::create_dir_all(p.data.join("pomodoro")).unwrap();
+        remove_in(&p, "sn/pomodoro", true).unwrap();
+        let text = config(&p);
+        assert!(!text.contains("pomodoro"), "{text}");
+        assert!(!p.data.join("pomodoro").exists(), "its data from before the move goes too");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -10,7 +10,8 @@ Besides opening a window, `lumen` has two commands to run in a pane.
 `lumen info` prints a flame in your theme's colours beside a summary of your
 system:
 
-- OS, kernel, uptime, shell, CPU, GPU, memory and public IP
+- OS, kernel, uptime, shell, CPU, load (the 1, 5 and 15 minute averages, and
+  how much of the machine the last minute used), GPU, memory and public IP
 - Lumen's version and window size, theme, font, whether shell integration is
   on, and which plugins are set up
 - the terminal's 16 colours, underneath

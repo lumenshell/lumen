@@ -357,7 +357,7 @@ mod tests {
         let find = |n: &str| json["plugins"].as_array().unwrap().iter().find(|r| r["name"] == n).cloned().unwrap();
         assert_eq!(find("recent-dirs")["kind"], "built-in");
         assert_eq!(find("recent-dirs")["on"], true);
-        assert_eq!(find("pomodoro")["on"], false);
+        assert_eq!(find("ssh-hosts")["on"], false);
         assert_eq!(find("where")["kind"], "local");
         assert_eq!(find("mira/x")["version"], "1.0.0");
         assert_eq!(find("mira/x")["update"], "1.1.0");

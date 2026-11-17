@@ -26,7 +26,96 @@ pub struct PaletteItem {
     pub hint: Hint,
     /// A coloured dot before the label: on or off, running or failed.
     pub dot: Option<Dot>,
+    /// The heading it's listed under ("Lumen", "Plugins"); none for pickers.
+    pub section: Option<&'static str>,
     pub run: PaletteFn,
+}
+
+/// One row of the list: a section heading, or an item (its index and the
+/// byte ranges of its label that matched).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Row {
+    Header(&'static str),
+    Item(usize, Vec<Range<usize>>),
+}
+
+/// The rows for `query`: the matching items, best first within each section,
+/// each under its heading. Sections come in the order they first appear,
+/// except that while typing, the one with the best match comes first. Items
+/// without a section get no heading.
+pub fn arrange(items: &[PaletteItem], query: &str) -> Vec<Row> {
+    let mut order: Vec<Option<&'static str>> = Vec::new();
+    for item in items {
+        if !order.contains(&item.section) {
+            order.push(item.section);
+        }
+    }
+    let mut scored: Vec<(usize, usize, usize, Vec<Range<usize>>)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| {
+            let (score, m) = fuzzy_match(query, &item.label)?;
+            let group = order.iter().position(|s| *s == item.section).unwrap_or(0);
+            Some((group, score, i, m))
+        })
+        .collect();
+    // While typing, the section holding the best match comes first, so Enter
+    // takes it; ties (and an empty query) keep the sections' own order.
+    let mut best = vec![usize::MAX; order.len()];
+    for &(g, s, _, _) in &scored {
+        best[g] = best[g].min(s);
+    }
+    scored.sort_by_key(|&(g, s, i, _)| (best[g], g, s, i));
+    let mut rows = Vec::with_capacity(scored.len() + order.len());
+    let mut last = None;
+    for (g, _, i, m) in scored {
+        if last != Some(g) {
+            last = Some(g);
+            if let Some(name) = order[g] {
+                rows.push(Row::Header(name));
+            }
+        }
+        rows.push(Row::Item(i, m));
+    }
+    rows
+}
+
+/// The item at row `row`, unless that's a heading.
+pub fn highlighted(rows: &[Row], row: usize) -> Option<usize> {
+    match rows.get(row) {
+        Some(Row::Item(i, _)) => Some(*i),
+        _ => None,
+    }
+}
+
+/// The row showing item `item`, if it's shown.
+pub fn row_of(rows: &[Row], item: usize) -> Option<usize> {
+    rows.iter().position(|r| matches!(r, Row::Item(i, _) if *i == item))
+}
+
+/// Told the item now highlighted, as the selection moves.
+pub type HighlightFn = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
+/// The first item row, if any.
+pub fn first_item(rows: &[Row]) -> Option<usize> {
+    rows.iter().position(|r| matches!(r, Row::Item(..)))
+}
+
+/// The item row after (or before) row `from`, skipping headings and
+/// wrapping around; `from` itself if there's no other.
+pub fn step(rows: &[Row], from: usize, down: bool) -> usize {
+    let n = rows.len();
+    if n == 0 {
+        return 0;
+    }
+    let mut at = from.min(n - 1);
+    for _ in 0..n {
+        at = if down { (at + 1) % n } else { (at + n - 1) % n };
+        if matches!(rows[at], Row::Item(..)) {
+            return at;
+        }
+    }
+    from
 }
 
 #[derive(Clone, Default)]
@@ -52,7 +141,7 @@ pub enum Dot {
 
 impl PaletteItem {
     pub fn new(label: impl Into<SharedString>, run: PaletteFn) -> Self {
-        Self { label: label.into(), hint: Hint::None, dot: None, run }
+        Self { label: label.into(), hint: Hint::None, dot: None, section: None, run }
     }
 
     /// Show this shortcut on the right (none if empty).
@@ -73,6 +162,12 @@ impl PaletteItem {
         self.dot = Some(dot);
         self
     }
+
+    /// List it under this heading.
+    pub fn section(mut self, section: &'static str) -> Self {
+        self.section = Some(section);
+        self
+    }
 }
 
 pub enum PaletteEvent {
@@ -84,9 +179,8 @@ pub struct CommandPalette {
     query: String,
     selected: usize,
     items: Vec<PaletteItem>,
-    /// The items matching the query, best first, with the byte ranges of
-    /// their labels that matched.
-    filtered: Vec<(usize, Vec<Range<usize>>)>,
+    /// The items matching the query under their headings (see [`arrange`]).
+    filtered: Vec<Row>,
     /// Shown while nothing is typed.
     placeholder: SharedString,
     /// Run when the palette closes without a choice (pickers answer "none").
@@ -103,6 +197,10 @@ pub struct CommandPalette {
     /// Each item's hint, cut to the room its label leaves: measured the first
     /// time its row is drawn, since the items don't change.
     hints: Vec<Option<Option<SharedString>>>,
+    /// Told whenever a different item is highlighted (a theme previewing).
+    on_highlight: Option<HighlightFn>,
+    /// The item last reported to `on_highlight`.
+    reported: Option<usize>,
 }
 
 impl EventEmitter<PaletteEvent> for CommandPalette {}
@@ -161,13 +259,14 @@ impl CommandPalette {
         on_cancel: Option<PaletteFn>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let filtered = (0..items.len()).map(|i| (i, Vec::new())).collect();
+        let filtered = arrange(&items, "");
+        let selected = first_item(&filtered).unwrap_or(0);
         Self {
             focus: cx.focus_handle(),
             scroll: gpui::UniformListScrollHandle::new(),
             hints: Vec::new(),
             query: String::new(),
-            selected: 0,
+            selected,
             items,
             filtered,
             placeholder,
@@ -175,6 +274,36 @@ impl CommandPalette {
             done: false,
             message: None,
             submit: None,
+            on_highlight: None,
+            reported: None,
+        }
+    }
+
+    /// Start with item `item` highlighted.
+    pub fn with_selected(mut self, item: usize) -> Self {
+        if let Some(row) = row_of(&self.filtered, item) {
+            self.selected = row;
+            self.scroll.scroll_to_item(row, ScrollStrategy::Center);
+        }
+        self
+    }
+
+    /// Tell `f` each item highlighted as the selection moves.
+    pub fn with_highlight(mut self, f: HighlightFn) -> Self {
+        self.reported = highlighted(&self.filtered, self.selected);
+        self.on_highlight = Some(f);
+        self
+    }
+
+    /// Report the highlighted item if it changed.
+    fn report(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = highlighted(&self.filtered, self.selected);
+        if now == self.reported {
+            return;
+        }
+        self.reported = now;
+        if let (Some(f), Some(item)) = (self.on_highlight.clone(), now) {
+            f(item, window, cx);
         }
     }
 
@@ -204,15 +333,8 @@ impl CommandPalette {
     }
 
     fn refilter(&mut self) {
-        let mut scored: Vec<(usize, usize, Vec<Range<usize>>)> = self
-            .items
-            .iter()
-            .enumerate()
-            .filter_map(|(i, item)| fuzzy_match(&self.query, &item.label).map(|(s, m)| (s, i, m)))
-            .collect();
-        scored.sort_by_key(|&(s, i, _)| (s, i));
-        self.filtered = scored.into_iter().map(|(_, i, m)| (i, m)).collect();
-        self.selected = 0;
+        self.filtered = arrange(&self.items, &self.query);
+        self.selected = first_item(&self.filtered).unwrap_or(0);
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
     }
 
@@ -224,8 +346,8 @@ impl CommandPalette {
             window.defer(cx, move |window, cx| submit(text, window, cx));
             return;
         }
-        let Some(&(idx, _)) = self.filtered.get(self.selected) else { return };
-        let run = self.items[idx].run.clone();
+        let Some(Row::Item(idx, _)) = self.filtered.get(self.selected) else { return };
+        let run = self.items[*idx].run.clone();
         self.done = true;
         cx.emit(PaletteEvent::Dismiss);
         // Run once this palette is closed and no longer being updated: a choice
@@ -240,16 +362,25 @@ impl CommandPalette {
             "escape" => cx.emit(PaletteEvent::Dismiss),
             "enter" => self.confirm(window, cx),
             "up" => {
-                self.selected = self.selected.checked_sub(1).unwrap_or(self.filtered.len().saturating_sub(1));
-                // Up shows the row at the top, unless it wrapped to the end.
-                let wrapped = self.selected + 1 == self.filtered.len();
-                self.scroll.scroll_to_item(self.selected, if wrapped { ScrollStrategy::Bottom } else { ScrollStrategy::Top });
+                let before = self.selected;
+                self.selected = step(&self.filtered, before, false);
+                // Up shows the row at the top (with its heading, if it heads a
+                // section), unless it wrapped to the end.
+                if self.selected > before {
+                    self.scroll.scroll_to_item(self.selected, ScrollStrategy::Bottom);
+                } else {
+                    let heading = self.selected.checked_sub(1).filter(|&r| matches!(self.filtered[r], Row::Header(_)));
+                    self.scroll.scroll_to_item(heading.unwrap_or(self.selected), ScrollStrategy::Top);
+                }
             }
             "down" | "tab" => {
-                if !self.filtered.is_empty() {
-                    self.selected = (self.selected + 1) % self.filtered.len();
-                    let wrapped = self.selected == 0;
-                    self.scroll.scroll_to_item(self.selected, if wrapped { ScrollStrategy::Top } else { ScrollStrategy::Bottom });
+                let before = self.selected;
+                self.selected = step(&self.filtered, before, true);
+                // Wrapping to the top shows the first heading too.
+                if self.selected < before {
+                    self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                } else {
+                    self.scroll.scroll_to_item(self.selected, ScrollStrategy::Bottom);
                 }
             }
             "backspace" => {
@@ -270,6 +401,9 @@ impl CommandPalette {
                     self.refilter();
                 }
             }
+        }
+        if !self.done {
+            self.report(window, cx);
         }
         cx.notify();
     }
@@ -376,6 +510,22 @@ fn row_element(
     div().flex().w_full().px(px(6.0)).child(row_div).into_any_element()
 }
 
+/// A section heading: small capitals at the foot of a row's height, so it
+/// sits close to the items it heads.
+fn heading_element(name: &str, theme: &crate::theme::Theme) -> gpui::AnyElement {
+    div()
+        .flex()
+        .items_end()
+        .h(px(ROW_HEIGHT))
+        .px(px(18.0))
+        .pb(px(5.0))
+        .text_size(px(11.0))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(theme.muted)
+        .child(name.to_uppercase())
+        .into_any_element()
+}
+
 /// How far below the top of the window the palette sits.
 pub const PALETTE_TOP: f32 = 72.0;
 
@@ -394,8 +544,14 @@ impl CommandPalette {
         }
         let mut out = Vec::with_capacity(range.len());
         for row in range {
-            let Some((idx, matched)) = self.filtered.get(row) else { break };
-            let idx = *idx;
+            let Some(shown) = self.filtered.get(row) else { break };
+            let (idx, matched) = match shown {
+                Row::Header(name) => {
+                    out.push(heading_element(name, &theme));
+                    continue;
+                }
+                Row::Item(idx, matched) => (*idx, matched),
+            };
             if self.hints[idx].is_none() {
                 self.hints[idx] = Some(fit_hint(&self.items[idx], dots, window, cx));
             }
@@ -496,7 +652,7 @@ impl Render for CommandPalette {
                             .min_h_0(),
                     ),
             )
-            .when(self.filtered.is_empty() && self.submit.is_none(), |d| {
+            .when(first_item(&self.filtered).is_none() && self.submit.is_none(), |d| {
                 d.child(div().px(px(18.0)).py(px(10.0)).text_color(theme.muted).child("No matches"))
             })
     }
@@ -521,6 +677,80 @@ mod tests {
         assert_eq!(matched("pine", "Theme: Rosé Pine"), Some(vec!["Pine"]));
         assert_eq!(matched("rp", "Theme: Rosé Pine"), Some(vec!["R", "P"]));
         assert_eq!(matched("É", "rosé"), Some(vec!["é"]));
+    }
+
+    fn item(section: Option<&'static str>, label: &str) -> PaletteItem {
+        let i = PaletteItem::new(label.to_string(), Rc::new(|_, _| {}));
+        match section {
+            Some(s) => i.section(s),
+            None => i,
+        }
+    }
+
+    fn shape(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .map(|r| match r {
+                Row::Header(h) => format!("# {h}"),
+                Row::Item(i, _) => i.to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sections_group_matches_in_order_of_first_appearance() {
+        let items = [item(Some("Lumen"), "Next Pane"), item(Some("Plugins"), "Pane Log"), item(Some("Lumen"), "Pane Split")];
+        // Within a section: best match first ("Pane Split" starts with it).
+        assert_eq!(shape(&arrange(&items, "pane")), ["# Lumen", "2", "0", "# Plugins", "1"]);
+        // Nothing typed: the order given, under headings.
+        assert_eq!(shape(&arrange(&items, "")), ["# Lumen", "0", "2", "# Plugins", "1"]);
+    }
+
+    #[test]
+    fn the_section_with_the_best_match_comes_first() {
+        let items = [item(Some("Lumen"), "Reset Font Size"), item(Some("Plugins"), "RSS Reader")];
+        // "rss" is a run in RSS Reader but scattered in Reset Font Size:
+        // Enter must take RSS Reader.
+        assert_eq!(shape(&arrange(&items, "rss")), ["# Plugins", "1", "# Lumen", "0"]);
+        // Nothing typed: the sections in their own order.
+        assert_eq!(shape(&arrange(&items, "")), ["# Lumen", "0", "# Plugins", "1"]);
+    }
+
+    #[test]
+    fn a_section_without_matches_has_no_heading() {
+        let items = [item(Some("Lumen"), "New Tab"), item(Some("Plugins"), "Start Pomodoro")];
+        assert_eq!(shape(&arrange(&items, "pomo")), ["# Plugins", "1"]);
+        assert_eq!(shape(&arrange(&items, "zzz")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn items_without_sections_have_no_headings() {
+        let items = [item(None, "Yes"), item(None, "No")];
+        assert_eq!(shape(&arrange(&items, "")), ["0", "1"]);
+    }
+
+    #[test]
+    fn the_highlighted_item_is_the_selected_row_s() {
+        let items = [item(Some("Lumen"), "A"), item(Some("Plugins"), "B")];
+        let rows = arrange(&items, "");
+        assert_eq!(highlighted(&rows, 1), Some(0));
+        assert_eq!(highlighted(&rows, 3), Some(1));
+        assert_eq!(highlighted(&rows, 0), None, "a heading is no item");
+        assert_eq!(row_of(&rows, 1), Some(3));
+        assert_eq!(row_of(&rows, 7), None);
+    }
+
+    #[test]
+    fn moving_skips_headings_and_wraps() {
+        let items = [item(Some("Lumen"), "A"), item(Some("Plugins"), "B"), item(Some("Plugins"), "C")];
+        let rows = arrange(&items, "");
+        // # Lumen, A, # Plugins, B, C
+        assert_eq!(first_item(&rows), Some(1));
+        assert_eq!(step(&rows, 1, true), 3);
+        assert_eq!(step(&rows, 3, true), 4);
+        assert_eq!(step(&rows, 4, true), 1, "wraps past the first heading");
+        assert_eq!(step(&rows, 1, false), 4, "wraps up to the last item");
+        assert_eq!(step(&rows, 3, false), 1);
+        assert_eq!(first_item(&[]), None);
     }
 
     #[test]

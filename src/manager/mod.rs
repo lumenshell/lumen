@@ -272,6 +272,7 @@ pub(crate) fn apply(p: &Paths, index: Option<&Index>, effect: &Effect) -> Result
                     t.set_implicit(true);
                     doc.insert("plugin", toml_edit::Item::Table(t));
                 }
+                registry::adopt_old_table(doc, plugin);
                 let Some(plugins) = doc["plugin"].as_table_mut() else { return };
                 if !plugins.contains_key(plugin) {
                     plugins.insert(plugin, toml_edit::Item::Table(toml_edit::Table::new()));
@@ -430,12 +431,12 @@ mod tests {
     #[test]
     fn turning_a_builtin_on_records_approval_first() {
         let (dir, p) = paths("manager-builtin");
-        let m = crate::plugins::builtin("build-status").unwrap().parsed().unwrap();
+        let m = crate::plugins::builtin("ssh-hosts").unwrap().parsed().unwrap();
         assert!(!m.permissions.is_empty(), "the test needs a built-in with permissions");
         assert_ne!(crate::plugins::decision_at(&p.approvals, &m), crate::plugins::Decision::Allowed);
-        apply(&p, None, &Effect::SetEnabled { name: "build-status".into(), on: true, approve: Some(m.clone()) }).unwrap();
+        apply(&p, None, &Effect::SetEnabled { name: "ssh-hosts".into(), on: true, approve: Some(m.clone()) }).unwrap();
         assert_eq!(crate::plugins::decision_at(&p.approvals, &m), crate::plugins::Decision::Allowed);
-        assert!(config(&p).contains("\"build-status\""));
+        assert!(config(&p).contains("\"ssh-hosts\""));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -516,6 +517,29 @@ mod setting_tests {
     use super::*;
     use crate::registry::testing::paths;
     use serde_json::json;
+
+    #[test]
+    fn a_moved_plugin_s_old_settings_move_with_the_first_save() {
+        let (dir, p) = paths("manager-moved-settings");
+        std::fs::create_dir_all(p.config.parent().unwrap()).unwrap();
+        std::fs::write(&p.config, "[plugin.pomodoro]\nlong-break-every = 3 # mine\nsound = false\n").unwrap();
+        let save = |key: &str, value: Option<serde_json::Value>| {
+            apply(&p, None, &Effect::SaveSetting { plugin: "sn/pomodoro".into(), key: key.into(), value }).unwrap()
+        };
+        save("long-break-every", Some(json!(5)));
+        let text = std::fs::read_to_string(&p.config).unwrap();
+        let s = crate::settings::Settings::parse(&text);
+        let t = &s.plugin_settings["sn/pomodoro"];
+        assert_eq!(t.get("long-break-every").and_then(|v| v.as_integer()), Some(5), "{text}");
+        assert_eq!(t.get("sound").and_then(|v| v.as_bool()), Some(false), "the other setting is kept:\n{text}");
+        assert!(!text.contains("[plugin.pomodoro]"), "the old table is gone:\n{text}");
+        assert!(text.contains("# mine"), "{text}");
+        // A reset sticks: the old table can't bring the value back.
+        save("sound", None);
+        let s = crate::settings::Settings::parse(&std::fs::read_to_string(&p.config).unwrap());
+        assert!(s.plugin_settings.get("sn/pomodoro").is_none_or(|t| t.get("sound").is_none()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn setting_saves_keep_comments_and_other_keys() {

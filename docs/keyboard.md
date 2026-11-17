@@ -59,12 +59,14 @@ case-sensitive matching.
 
 ## Command palette
 
-The palette lists every action above, each with its current shortcut. It also
-has:
+The palette lists Lumen's own commands under **Lumen** and the commands
+plugins add under **Plugins**, each with its shortcut (a plugin command
+without one shows which plugin it's from). While you type, matches stay under
+their headings, best first, and the section with the best match comes first. Besides every action above, the Lumen section has:
 
 - **Open Config File**
-- one **Theme:** entry per theme
-- the commands plugins add
+- **Theme…**, a list of every theme: each one is shown as you move to it,
+  Enter keeps it and Esc goes back to the one you had
 - **Plugin Logs…**, and **Allow Plugin:** for each plugin waiting for approval
 - **Plugins** (with the number of updates waiting) and **Reload Plugins**
 

@@ -46,8 +46,9 @@ To uninstall, pick a version, or build from source, see
   with vi keys. [More](docs/keyboard.md#keyboard-select-mode)
 - **Scripts that drive it.** `lumen msg` opens tabs and splits, types into
   panes, reads their screens and streams events. [More](docs/scripting.md)
-- **Plugins in any language.** Seven come built in, from command history to a
-  pomodoro timer. [More](docs/builtin-plugins.md)
+- **Plugins in any language.** Four come built in, from command history to
+  SSH hosts, and more install from the registry, like a pomodoro timer.
+  [More](docs/builtin-plugins.md)
 - **Themes for the whole window.** 24 built in, from Rosé Pine, Catppuccin
   and Tokyo Night to Gruvbox, Nord and Solarized, 8 of them light. Each
   recolours the terminal and the chrome around it. Add your own, or use any
@@ -71,11 +72,11 @@ countdown, a staging server, what's left to do.
 </tr>
 <tr>
 <td><b>Keyboard select mode</b>: move with vi keys and select by character, line or block.<br><br><img src="assets/screenshots/select.png" alt="A failed test run with two lines selected in keyboard select mode, and a hint saying y copies and Esc cancels"></td>
-<td><b>Pomodoro Timer</b>, a built-in plugin: a big countdown in a strip under your work, with the time on the tab.<br><br><img src="assets/screenshots/pomodoro.png" alt="A git log above a pomodoro pane counting down from 25 minutes, with the countdown on the tab"></td>
+<td><b>Pomodoro Timer</b>, from the plugin registry: a big countdown in a strip under your work, with the time on the tab.<br><br><img src="assets/screenshots/pomodoro.png" alt="A git log above a pomodoro pane counting down from 25 minutes, with the countdown on the tab"></td>
 </tr>
 <tr>
 <td><b>Plugin panes</b>: a todo list drawn by a plugin, beside your shell, with what's left on the tab.<br><br><img src="assets/screenshots/todo.png" alt="A git log beside a todo list pane: one item ticked off and three left, with 3 to do on the tab"></td>
-<td><b>Plugins</b>: turn plugins on and off, install and update them, and change their settings, all from one tab.<br><br><img src="assets/screenshots/gallery.png" alt="The plugin manager in a tab of its own: installed plugins on the left, Pomodoro Timer selected and on, its description, permissions and settings on the right"></td>
+<td><b>Plugins</b>: turn plugins on and off, install and update them, and change their settings, all from one tab.<br><br><img src="assets/screenshots/gallery.png" alt="The plugin manager in a tab of its own: installed plugins on the left, the todo plugin selected and on, its description and permissions on the right"></td>
 </tr>
 <tr>
 <td><b><code>watch_pane.py</code></b>, an example script: <code>watch</code> in a pane of its own, with changes highlighted.<br><br><img src="assets/screenshots/watch.png" alt="A shell above a watch pane rerunning a status script every second, with the changed time highlighted"></td>

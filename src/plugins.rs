@@ -358,10 +358,20 @@ pub const BUILTINS: &[Builtin] = &[
     builtin!("command-history", "Command History", ["plugin.toml", "main.py"]),
     builtin!("git-branch", "Switch Git Branch", ["plugin.toml", "main.py"]),
     builtin!("ssh-hosts", "SSH to Host", ["plugin.toml", "main.py"]),
-    builtin!("project-layout", "Projects & Tasks", ["plugin.toml", "main.py", "layoutfile.py", "discover.py", "checklist.py", "grid.py", "runner.py"]),
-    builtin!("build-status", "Build Status", ["plugin.toml", "main.py"]),
-    builtin!("pomodoro", "Pomodoro Timer", ["plugin.toml", "main.py"]),
 ];
+
+/// Plugins that used to come with Lumen and now come from the registry: a
+/// config.toml naming the old one means the new one.
+pub const MOVED: &[(&str, &str)] = &[
+    ("project-layout", "sn/project-layout"),
+    ("build-status", "sn/build-status"),
+    ("pomodoro", "sn/pomodoro"),
+];
+
+/// The registry plugin a once built-in plugin's name now means.
+pub fn moved_to(name: &str) -> Option<&'static str> {
+    MOVED.iter().find(|(old, _)| *old == name).map(|(_, new)| *new)
+}
 
 pub fn builtin(name: &str) -> Option<&'static Builtin> {
     BUILTINS.iter().find(|b| b.name == name)
@@ -403,7 +413,22 @@ impl Builtin {
 
 /// Where a plugin keeps its own data: kept across updates, only yours.
 fn data_dir(name: &str) -> Option<PathBuf> {
-    let dir = state_dir()?.join("plugin-data").join(name);
+    data_dir_in(&state_dir()?, name)
+}
+
+/// [`data_dir`] under `state`. A plugin that moved to the registry takes
+/// over its built-in days' folder, the first time.
+fn data_dir_in(state: &Path, name: &str) -> Option<PathBuf> {
+    let dir = state.join("plugin-data").join(name);
+    if !dir.exists()
+        && let Some((old, _)) = MOVED.iter().find(|(_, new)| *new == name)
+    {
+        let before = state.join("plugin-data").join(old);
+        if before.is_dir() {
+            std::fs::create_dir_all(dir.parent()?).ok()?;
+            let _ = std::fs::rename(&before, &dir);
+        }
+    }
     std::fs::create_dir_all(&dir).ok()?;
     #[cfg(unix)]
     {
@@ -1229,6 +1254,35 @@ mod tests {
     }
 
     #[test]
+    fn a_moved_plugin_keeps_its_data() {
+        let state = std::env::temp_dir().join(format!("lumen-moved-data-{}", std::process::id()));
+        let old = state.join("plugin-data").join("pomodoro");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("stats.json"), "{}").unwrap();
+        let dir = data_dir_in(&state, "sn/pomodoro").unwrap();
+        assert!(dir.join("stats.json").is_file(), "{}", dir.display());
+        assert!(!old.exists());
+        // Once moved, an old folder made later is left alone.
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("stats.json"), "old").unwrap();
+        let again = data_dir_in(&state, "sn/pomodoro").unwrap();
+        assert_eq!(std::fs::read_to_string(again.join("stats.json")).unwrap(), "{}");
+        // Others are untouched.
+        assert!(data_dir_in(&state, "mira/x").unwrap().ends_with("plugin-data/mira/x"));
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn moved_names_point_at_the_registry() {
+        assert_eq!(moved_to("project-layout"), Some("sn/project-layout"));
+        assert_eq!(moved_to("recent-dirs"), None);
+        for (old, new) in MOVED {
+            assert!(builtin(old).is_none(), "{old} is still built in");
+            assert!(crate::registry::valid_name(new), "{new}");
+        }
+    }
+
+    #[test]
     fn builtin_plugins_have_valid_manifests() {
         for b in BUILTINS {
             let toml = b.files.iter().find(|(f, _)| *f == "plugin.toml").expect("plugin.toml").1;
@@ -1239,7 +1293,6 @@ mod tests {
             let expected: &[(&str, i64, i64, i64)] = match b.name {
                 "command-history" => &[("max-entries", 10_000, 100, 1_000_000)],
                 "recent-dirs" => &[("max-shown", 200, 10, 1000)],
-                "pomodoro" => &[("long-break-every", 4, 2, 10)],
                 _ => &[],
             };
             let got: Vec<(&str, i64, i64, i64)> = m
