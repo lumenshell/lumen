@@ -273,6 +273,9 @@ struct Tab {
     short_badge: Option<String>,
     /// A colour tinting the tab, set over the socket API. Not saved.
     color: Option<TabColor>,
+    /// A colour you picked for the tab in the palette. Saved, and shown
+    /// over `color`; a plugin stopping leaves it be.
+    own_color: Option<TabColor>,
     /// The plugin connection that set the badge and colour: they go when it
     /// does, so a stopped plugin leaves no stale countdown. (A script's stay:
     /// `lumen msg` disconnects straight away.)
@@ -529,6 +532,7 @@ impl Workspace {
                 badge: None,
                 short_badge: None,
                 color: None,
+                own_color: tab.color.as_deref().and_then(|c| TabColor::parse(c).ok()),
                 style_owner: None,
             });
         }
@@ -593,6 +597,7 @@ impl Workspace {
                 active: kept.iter().position(|l| *l == tab.active).unwrap_or(0),
                 zoomed: tab.zoomed && kept.len() > 1,
                 title: tab.title.clone(),
+                color: tab.own_color.map(TabColor::name),
             });
         }
         Session::new(self.window_state, active_tab, tabs)
@@ -693,6 +698,7 @@ impl Workspace {
                 badge: None,
                 short_badge: None,
                 color: None,
+                own_color: None,
                 style_owner: None,
             },
         );
@@ -893,7 +899,8 @@ impl Workspace {
             self.dismiss_palette(window, cx);
             return;
         }
-        let items = palette_items(window, cx);
+        let color = self.tabs.get(self.active_tab).and_then(|t| shown_tab_color(t.own_color, t.color));
+        let items = palette_items(window, color, cx);
         let palette = cx.new(|cx| CommandPalette::new(items, cx));
         self.open_palette(palette, window, cx);
     }
@@ -911,6 +918,56 @@ impl Workspace {
             Rc::new(|i, _, cx| Settings::preview_theme(cx, crate::settings::ThemeChoice::One(i)));
         let palette = cx.new(|cx| {
             CommandPalette::picker(items, "Pick a theme…".into(), Some(cancel), cx)
+                .with_selected(current)
+                .with_highlight(highlight)
+        });
+        self.open_palette(palette, window, cx);
+    }
+
+    /// Pick a colour for the active tab, previewed on the tab as you move;
+    /// Esc puts the old one back.
+    fn open_tab_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active_tab) else { return };
+        let original = tab.own_color;
+        let current = tab_color_choice(shown_tab_color(tab.own_color, tab.color));
+        let target = tab.active.downgrade();
+        let ws = cx.entity().downgrade();
+        // Find the tab again by its pane: tabs may move meanwhile. `done`
+        // also drops a script's colour, so No Colour means none at all.
+        let set = Rc::new(move |color: Option<TabColor>, done: bool, cx: &mut App| {
+            let _ = ws.update(cx, |ws, cx| {
+                let Some(tab) = ws.tabs.iter_mut().find(|t| t.leaves().iter().any(|l| l.downgrade() == target)) else {
+                    return;
+                };
+                tab.own_color = color;
+                if done && color.is_none() {
+                    tab.color = None;
+                    if tab.badge.is_none() {
+                        tab.style_owner = None;
+                    }
+                }
+                cx.notify();
+            });
+        });
+        let items = TAB_COLOR_CHOICES
+            .iter()
+            .enumerate()
+            .map(|(i, &(label, color))| {
+                let set = set.clone();
+                let item = PaletteItem::new(label, Rc::new(move |_, cx| set(color, true, cx))).dot(match color {
+                    Some(TabColor::Ansi(n)) => Dot::Ansi(n),
+                    _ => Dot::Hollow,
+                });
+                if i == current { item.note("current") } else { item }
+            })
+            .collect();
+        let cancel: PaletteFn = {
+            let set = set.clone();
+            Rc::new(move |_, cx| set(original, false, cx))
+        };
+        let highlight: crate::palette::HighlightFn = Rc::new(move |i, _, cx| set(TAB_COLOR_CHOICES[i].1, false, cx));
+        let palette = cx.new(|cx| {
+            CommandPalette::picker(items, "Pick a colour for this tab…".into(), Some(cancel), cx)
                 .with_selected(current)
                 .with_highlight(highlight)
         });
@@ -1452,7 +1509,7 @@ impl Workspace {
                 (None, false) => None,
             };
             let fixed = fixed + if attention.is_some() { 15.0 } else { 0.0 };
-            let tint = tab.color.map(|c| c.resolve(theme));
+            let tint = shown_tab_color(tab.own_color, tab.color).map(|c| c.resolve(theme));
             // Monospace, so a ticking countdown doesn't jiggle the title. In a
             // narrow tab the title gives way first, down to a few letters;
             // then the badge does: its short form, shortened with an
@@ -1870,7 +1927,7 @@ pub fn fresh_session(setting: &WorkingDirectory, home: Option<PathBuf>) -> Optio
     Some(Session::new(
         None,
         0,
-        vec![TabState { root: NodeState::Pane { cwd: Some(cwd) }, active: 0, zoomed: false, title: None }],
+        vec![TabState { root: NodeState::Pane { cwd: Some(cwd) }, active: 0, zoomed: false, title: None, color: None }],
     ))
 }
 
@@ -2154,7 +2211,7 @@ impl Workspace {
                     "zoomed": tab.zoomed,
                     "badge": tab.badge,
                     "short_badge": tab.short_badge,
-                    "color": tab.color.map(TabColor::name),
+                    "color": shown_tab_color(tab.own_color, tab.color).map(TabColor::name),
                     "panes": panes,
                 })
             })
@@ -2484,7 +2541,8 @@ impl Workspace {
 const LUMEN: &str = "Lumen";
 const PLUGINS: &str = "Plugins";
 
-fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
+/// Every command in the palette; `tab_color` is the active tab's, for its note.
+fn palette_items(window: &Window, tab_color: Option<TabColor>, cx: &App) -> Vec<PaletteItem> {
     fn action<A: gpui::Action + Clone + Default>(label: &str) -> (SharedString, Box<dyn gpui::Action>) {
         (label.to_string().into(), Box::new(A::default()))
     }
@@ -2622,7 +2680,44 @@ fn palette_items(window: &Window, cx: &App) -> Vec<PaletteItem> {
             .section(LUMEN),
         );
     }
+    if let Some(ws) = ws.clone() {
+        items.push(
+            PaletteItem::new(
+                "Tab Color…",
+                Rc::new(move |window, cx| {
+                    let _ = ws.update(cx, |ws, cx| ws.open_tab_color_picker(window, cx));
+                }),
+            )
+            .note(match tab_color {
+                Some(c) => TAB_COLOR_CHOICES.iter().find(|(_, o)| *o == Some(c)).map_or_else(|| c.name(), |(l, _)| l.to_string()),
+                None => String::new(),
+            })
+            .section(LUMEN),
+        );
+    }
     items
+}
+
+/// The tab colour picker's rows: the theme's six colours, then none.
+const TAB_COLOR_CHOICES: [(&str, Option<TabColor>); 7] = [
+    ("Red", Some(TabColor::Ansi(1))),
+    ("Green", Some(TabColor::Ansi(2))),
+    ("Yellow", Some(TabColor::Ansi(3))),
+    ("Blue", Some(TabColor::Ansi(4))),
+    ("Magenta", Some(TabColor::Ansi(5))),
+    ("Cyan", Some(TabColor::Ansi(6))),
+    ("No Colour", None),
+];
+
+/// The row the tab colour picker opens on: the tab's colour, or the top for
+/// one that isn't listed.
+fn tab_color_choice(color: Option<TabColor>) -> usize {
+    TAB_COLOR_CHOICES.iter().position(|(_, c)| *c == color).unwrap_or(0)
+}
+
+/// The colour a tab shows: the one you picked, else a script's or plugin's.
+fn shown_tab_color(own: Option<TabColor>, set: Option<TabColor>) -> Option<TabColor> {
+    own.or(set)
 }
 
 /// The theme picker's items: every theme, the one shown marked.
@@ -3013,6 +3108,7 @@ mod tests {
             active: 0,
             zoomed: false,
             title: None,
+            color: None,
         }];
         let widths: Vec<u16> = layout_panes(&tabs, (900.0, 100.0), 0.0, &grid).iter().map(|(_, g)| g.cols).collect();
         assert_eq!(widths, [300, 300, 300]);
@@ -3027,7 +3123,7 @@ mod tests {
         // One "cell" per pixel, so sizes read as pixels.
         let grid = |w: f32, h: f32| GridSize { cols: w as u16, rows: h as u16, cell_width: 1, cell_height: 1 };
         let pane = |cwd: &str| NodeState::Pane { cwd: Some(cwd.into()) };
-        let tab = |root, active, zoomed| TabState { root, active, zoomed, title: None };
+        let tab = |root, active, zoomed| TabState { root, active, zoomed, title: None, color: None };
         let tabs = vec![
             tab(
                 NodeState::Split {
@@ -3108,6 +3204,28 @@ mod tests {
         assert!(parse_prompt(&json!({"placeholder": 3})).is_err());
         assert!(parse_prompt(&json!({"initial": ["a"]})).is_err());
         assert!(parse_prompt(&json!({"message": true})).is_err());
+    }
+
+    #[test]
+    fn the_tab_colour_picker_offers_the_theme_s_six_and_none() {
+        let names: Vec<_> = TAB_COLOR_CHOICES.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["Red", "Green", "Yellow", "Blue", "Magenta", "Cyan", "No Colour"]);
+        assert_eq!(TAB_COLOR_CHOICES[0].1, Some(TabColor::Ansi(1)));
+        assert_eq!(TAB_COLOR_CHOICES[5].1, Some(TabColor::Ansi(6)));
+        assert_eq!(TAB_COLOR_CHOICES[6].1, None);
+        // It opens on the tab's colour: none is the last row, and a colour not
+        // in the list (a script's #rrggbb) starts at the top.
+        assert_eq!(tab_color_choice(Some(TabColor::Ansi(4))), 3);
+        assert_eq!(tab_color_choice(None), 6);
+        assert_eq!(tab_color_choice(Some(TabColor::Rgb(1, 2, 3))), 0);
+    }
+
+    #[test]
+    fn a_colour_you_pick_wins_over_one_a_script_sets() {
+        let (mine, script) = (Some(TabColor::Ansi(1)), Some(TabColor::Ansi(4)));
+        assert_eq!(shown_tab_color(mine, script), mine);
+        assert_eq!(shown_tab_color(None, script), script);
+        assert_eq!(shown_tab_color(None, None), None);
     }
 
     #[test]

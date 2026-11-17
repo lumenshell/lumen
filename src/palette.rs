@@ -137,6 +137,10 @@ pub enum Dot {
     Busy,
     /// Failed or stopped.
     Bad,
+    /// A colour from the theme's 16: a swatch.
+    Ansi(u8),
+    /// An empty ring: no colour.
+    Hollow,
 }
 
 impl PaletteItem {
@@ -472,6 +476,8 @@ fn row_element(
             Dot::Good => d.bg(theme.ansi[2]),
             Dot::Busy => d.bg(theme.ansi[3]),
             Dot::Bad => d.bg(theme.ansi[1]),
+            Dot::Ansi(i) => d.bg(theme.ansi[usize::from(i) % 16]),
+            Dot::Hollow => d.border_1().border_color(theme.muted),
         }
     });
     let hint = fitted.map(|text| match &item.hint {

@@ -67,6 +67,8 @@ their headings, best first, and the section with the best match comes first. Bes
 - **Open Config File**
 - **Theme…**, a list of every theme: each one is shown as you move to it,
   Enter keeps it and Esc goes back to the one you had
+- **Tab Color…**, to tint the active tab in one of your theme's six colours
+  (see [Colouring tabs](#colouring-tabs))
 - **Plugin Logs…**, and **Allow Plugin:** for each plugin waiting for approval
 - **Plugins** (with the number of updates waiting) and **Reload Plugins**
 
@@ -90,6 +92,19 @@ palette, filled in with the name you gave it, if any.
 
 Names are saved with the session. `lumen msg set-title` sets the same name
 from a script.
+
+## Colouring tabs
+
+**Tab Color…** in the palette tints the active tab, to tell projects apart at
+a glance. It lists your theme's red, green, yellow, blue, magenta and cyan,
+each with a swatch, and No Colour.
+
+- Moving through the list shows each colour on the tab.
+- Enter keeps it. Esc puts back the colour the tab had.
+- No Colour clears it, including one a script set.
+
+A colour you pick is saved with the session and wins over one a script or
+plugin sets with `lumen msg tab-style --color`.
 
 ## Keyboard select mode
 

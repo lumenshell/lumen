@@ -42,7 +42,7 @@ lumen msg watch command-finished        # events as JSON lines, until Ctrl+C
 | `read-screen [--pane ID] [--lines N]` | Print the screen, or the last N lines including history |
 | `set-title [--pane ID] [TITLE]` | Name a tab. Without TITLE, the program's title shows again |
 | `move-tab [--pane ID] N` | Move the pane's tab to position N in its window (1 is first) |
-| `tab-style [--pane ID] [--badge TEXT] [--short TEXT] [--color COLOR] [--clear]` | Put a short badge beside the tab's title, tint the tab, or `--clear` both. Colours are `red`, `green`, `yellow`, `blue`, `magenta`, `cyan` from your theme, or `#rrggbb`. `--short` (up to 8 characters) shows instead of the badge when the tab is too narrow |
+| `tab-style [--pane ID] [--badge TEXT] [--short TEXT] [--color COLOR] [--clear]` | Put a short badge beside the tab's title, tint the tab, or `--clear` both. Colours are `red`, `green`, `yellow`, `blue`, `magenta`, `cyan` from your theme, or `#rrggbb`. `--short` (up to 8 characters) shows instead of the badge when the tab is too narrow. A colour picked with Tab Color… in the palette shows instead of this one |
 | `notify TITLE [BODY]` | Desktop notification (`notify-send` on Linux) |
 | `quick-terminal` | Show the [quick terminal](quick-terminal.md), or hide it if it's in front |
 | `action NAME [--pane ID]` | Run an action such as `split-right` or `find` (see [Actions](config.md#actions)) |
