@@ -379,7 +379,13 @@ impl Model {
                 self.ask(&name, up.new_permissions, effect)
             }
             ('u', _) => self.say(format!("{name} is up to date")),
-            ('x', Some(i)) if i.kind == Kind::BuiltIn => self.say("Built-in plugins can't be removed; press space to turn it off"),
+            // Built-ins come with Lumen: off is as removed as they get.
+            ('x', Some(i)) if i.kind == Kind::BuiltIn && i.on => {
+                self.start(Effect::SetEnabled { name, on: false, approve: None })
+            }
+            ('x', Some(i)) if i.kind == Kind::BuiltIn => {
+                self.say(format!("{name} is built in, so it can't be removed; it's off already"))
+            }
             ('x', Some(i)) if i.kind == Kind::Local => {
                 self.say("Local plugins are removed by deleting their folder from ~/.config/lumen/plugins")
             }
@@ -387,6 +393,8 @@ impl Model {
                 self.dialog = Some(Dialog::RemoveData { name });
                 Vec::new()
             }
+            // Listed in config.toml but not installed: take it off the list.
+            ('x', Some(i)) if i.on => self.start(Effect::SetEnabled { name, on: false, approve: None }),
             ('x', _) => self.say(format!("{name} isn't installed")),
             _ => Vec::new(),
         }
@@ -628,12 +636,31 @@ mod tests {
         ch(&mut m, 'x');
         assert!(key(&mut m, KeyCode::Esc).is_empty());
         assert!(m.dialog.is_none());
-        select(&mut m, "recent-dirs");
-        assert!(ch(&mut m, 'x').is_empty());
-        assert_eq!(m.status.as_deref(), Some("Built-in plugins can't be removed; press space to turn it off"));
         select(&mut m, "where");
         assert!(ch(&mut m, 'x').is_empty());
         assert!(m.status.as_deref().unwrap().contains("folder"), "{:?}", m.status);
+    }
+
+    #[test]
+    fn removing_a_built_in_turns_it_off() {
+        let mut m = model();
+        select(&mut m, "recent-dirs");
+        assert_eq!(ch(&mut m, 'x'), [Effect::SetEnabled { name: "recent-dirs".into(), on: false, approve: None }]);
+        m.busy = None;
+        select(&mut m, "git-branch");
+        assert!(ch(&mut m, 'x').is_empty());
+        assert_eq!(m.status.as_deref(), Some("git-branch is built in, so it can't be removed; it's off already"));
+    }
+
+    #[test]
+    fn removing_a_plugin_that_isn_t_installed_takes_it_off_the_list() {
+        let mut m = model();
+        let mut missing = item("sn/pomodoro", Kind::Registry, true, vec![]);
+        missing.attention = Some(Attention::NotInstalled);
+        missing.manifest = None;
+        m.items.push(missing);
+        select(&mut m, "sn/pomodoro");
+        assert_eq!(ch(&mut m, 'x'), [Effect::SetEnabled { name: "sn/pomodoro".into(), on: false, approve: None }]);
     }
 
     #[test]
