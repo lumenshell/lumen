@@ -49,6 +49,9 @@ pub struct TabState {
     /// A name you gave the tab, shown instead of the program's title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// A colour you gave the tab ("red", or "#rrggbb").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq)]
@@ -238,7 +241,20 @@ mod tests {
             active: 0,
             zoomed: false,
             title: None,
+            color: None,
         }])
+    }
+
+    #[test]
+    fn a_tab_s_colour_is_saved_and_old_files_without_one_load() {
+        let mut w = window("/");
+        w.tabs[0].color = Some("red".into());
+        let saved = serde_json::to_string(&w).unwrap();
+        assert!(saved.contains("\"color\":\"red\""), "{saved}");
+        assert_eq!(parse(&saved)[0].tabs[0].color.as_deref(), Some("red"));
+        let plain = serde_json::to_string(&window("/")).unwrap();
+        assert!(!plain.contains("color"), "no colour, no key: {plain}");
+        assert_eq!(parse(&plain)[0].tabs[0].color, None);
     }
 
     #[test]

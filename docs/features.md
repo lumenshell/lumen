@@ -22,6 +22,8 @@ The full list, grouped by area. The [README](../README.md) has the highlights.
   the current folder.
 - A tab shows the title its program sets until you rename it: double-click
   the tab, or press Ctrl+, (⌘,).
+- **Tab Color…** in the palette tints a tab in one of your theme's colours,
+  shown as you move through them, and kept next launch.
 - **+** opens a tab. A tab's **×** closes it with all its panes. Drag a tab
   along the bar to reorder it.
 - Drag the title bar to move the window. Double-click it to maximize.

@@ -298,6 +298,7 @@ pub fn new_window(cwd: Option<std::path::PathBuf>, from: Option<gpui::Size<Pixel
                 active: 0,
                 zoomed: false,
                 title: None,
+                color: None,
             }],
         )
     })
