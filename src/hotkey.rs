@@ -3,9 +3,11 @@
 
 /// X11 modifier masks.
 const SHIFT: u16 = 1;
+#[cfg(target_os = "linux")]
 const LOCK: u16 = 2;
 const CONTROL: u16 = 4;
 const ALT: u16 = 8;
+#[cfg(target_os = "linux")]
 const NUM_LOCK: u16 = 16;
 const SUPER: u16 = 64;
 

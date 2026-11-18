@@ -33,7 +33,6 @@ mod vi;
 mod workspace;
 
 use std::borrow::Cow;
-use std::time::Duration;
 
 use gpui::{
     Action, App, AppContext, Application, Bounds, Pixels, TitlebarOptions, WindowBounds, WindowDecorations,
@@ -260,7 +259,7 @@ fn open_window(
             // The WM places new windows itself; move ours back once it's managed
             // (retrying briefly), so it also maximizes on the right monitor.
             for _ in 0..20 {
-                cx.background_executor().timer(Duration::from_millis(50)).await;
+                cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
                 let Some(nth) = nth.filter(|_| place.restore_position) else { break };
                 if x11_move(place.bounds, scale, nth) {
                     break;
