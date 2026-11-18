@@ -315,7 +315,7 @@ permissions = ["panes", "input"]
 | Permission | Allows |
 |---|---|
 | `panes` | `new_tab`, `split`, `focus`, `close`, `set_title`, `set_tab_style`, `set_pane_style`, `move_tab`, and drawing your own plugin panes |
-| `input` | `send_text`, `run`, `run_action`: typing into panes, which can run any command |
+| `input` | `send_text`, `run`, `run_action`, and `run=` on `new_tab` and `split`: typing into panes, which can run any command |
 | `screen` | `read_screen`, and `command` in `command-finished` events |
 
 A call without the permission raises `LumenError` with `code == -32001` and a
@@ -382,7 +382,7 @@ else uses the most recently started Lumen.
 | `await panes()` | Every pane as a dict (`id`, `title`, `cwd`, `cols`, `rows`, `last_exit`, `active`, `focused`, `plugin_pane`, `tab`, `window`). |
 | `await focused()` | The focused `Pane`, or None. |
 | `pane(id)` | A `Pane` for an id. |
-| `await new_tab(cwd=None, run=None, plugin_pane=False)` | Open a tab (`~` works in `cwd`); returns its `Pane`, or a `PluginPane` with `plugin_pane=True`. `panes` |
+| `await new_tab(cwd=None, run=None, plugin_pane=False)` | Open a tab (`~` works in `cwd`); returns its `Pane`, or a `PluginPane` with `plugin_pane=True`. `panes`, and `input` with `run` |
 | `await pick(items, placeholder=None, message=None)` | Palette picker; returns the chosen id or None. Items: strings, `(id, label)`, `(id, label, detail)` or dicts. `message` is wrapped text under the input. |
 | `await prompt(placeholder=None, message=None, initial="")` | Text input in the palette; returns the trimmed text, or None for Esc or empty. |
 | `await confirm(question, message=None, yes="Yes", no="No")` | Yes/no in the palette; Esc is no. |
@@ -401,7 +401,7 @@ else uses the most recently started Lumen.
 | `await send_text(text)` | Type text as-is. `input` |
 | `await run(command)` | Type a command and press Enter; a list is quoted word by word. `input` |
 | `await read_screen(lines=None)` | The screen's text, or its last `lines` lines. `screen` |
-| `await split(direction="right", cwd=None, run=None, focus=True, size=None, plugin_pane=False)` | Split it; returns the new `Pane` (a `PluginPane` with `plugin_pane=True`). `size`: a fraction, or rows/columns. `panes` |
+| `await split(direction="right", cwd=None, run=None, focus=True, size=None, plugin_pane=False)` | Split it; returns the new `Pane` (a `PluginPane` with `plugin_pane=True`). `size`: a fraction, or rows/columns. `panes`, and `input` with `run` |
 | `await set_title(title=None)` | Name its tab; None goes back to the program's title. `panes` |
 | `await set_pane_style(label=…, color=…)` | Label (up to 32 characters) drawn above the pane when its tab is split, and a tint (`TAB_COLORS` or `"#rrggbb"`); None removes, left out stays. They go when the plugin stops. `panes` |
 | `await set_tab_style(badge=…, color=…, short_badge=None)` | Badge beside its tab's title (up to 24 characters) and a tint (`TAB_COLORS` or `"#rrggbb"`); None removes, left out stays. `short_badge` (up to 8 characters) shows instead when the tab is too narrow. `panes` |

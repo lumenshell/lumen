@@ -1130,7 +1130,14 @@ impl Workspace {
         let ws = cx.entity().downgrade();
         let choice = |allow: bool, m: crate::plugins::Manifest, ws: gpui::WeakEntity<Workspace>| -> PaletteFn {
             Rc::new(move |window, cx| {
-                crate::plugins::record_decision(&m, allow);
+                if let Err(e) = crate::plugins::record_decision(&m, allow) {
+                    // It still takes effect now; it just isn't remembered.
+                    let problem = format!("couldn't keep your answer about \"{}\", so Lumen will ask again: {e}", m.name);
+                    let _ = ws.update(cx, |ws, cx| {
+                        ws.plugin_problems.push(problem);
+                        cx.notify();
+                    });
+                }
                 let (settings, _) = plugin_settings_for(&m, cx);
                 if allow {
                     crate::plugins::start(m.clone(), settings);

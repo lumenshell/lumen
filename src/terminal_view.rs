@@ -242,8 +242,7 @@ impl TerminalView {
         let base_title = owner.as_ref().map_or_else(default_title, |o| o.name.clone());
         let (pty, rx) = match owner {
             Some(owner) => Pty::plugin(owner, pane, config),
-            None => Pty::spawn(cwd, settings.shell.as_deref(), settings.shell_integration, pane, config, GridSize::DEFAULT)
-                .expect("failed to spawn shell"),
+            None => Pty::shell(cwd, settings.shell.as_deref(), settings.shell_integration, pane, config, GridSize::DEFAULT),
         };
         Self::with_pty(pty, rx, base_title, window, cx)
     }
@@ -256,8 +255,7 @@ impl TerminalView {
         let (spawned, program) = match Pty::spawn(None, Some(&argv), false, pane, config.clone(), GridSize::DEFAULT) {
             Ok(p) => (p, true),
             Err(_) => (
-                Pty::spawn(None, settings.shell.as_deref(), settings.shell_integration, pane, config, GridSize::DEFAULT)
-                    .expect("failed to spawn shell"),
+                Pty::shell(None, settings.shell.as_deref(), settings.shell_integration, pane, config, GridSize::DEFAULT),
                 false,
             ),
         };

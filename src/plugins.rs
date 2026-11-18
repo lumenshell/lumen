@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -240,6 +241,15 @@ pub fn plugins_dir() -> Option<PathBuf> {
 }
 
 fn state_dir() -> Option<PathBuf> {
+    // Tests that run a plugin leave your real logs and data alone.
+    #[cfg(test)]
+    return Some(std::env::temp_dir().join(format!("lumen-test-state-{}", std::process::id())));
+    #[cfg(not(test))]
+    real_state_dir()
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn real_state_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let base = if cfg!(target_os = "macos") {
         home?.join("Library/Application Support")
@@ -601,12 +611,12 @@ pub fn refused_status(m: &Manifest) -> String {
 
 /// Approve a registry plugin's permissions (in the approvals file at
 /// `path`), when it's installed or updated.
-pub fn approve_registry_in(path: &Path, name: &str, permissions: &[Permission]) {
+pub fn approve_registry_in(path: &Path, name: &str, permissions: &[Permission]) -> Result<(), String> {
     store_approval_at(
         path,
         format!("registry:{name}"),
         Approval { command: Vec::new(), permissions: permissions.to_vec(), allowed: true },
-    );
+    )
 }
 
 /// The permissions a registry plugin has been allowed.
@@ -619,39 +629,43 @@ pub fn registry_approval_in(path: &Path, name: &str) -> Vec<Permission> {
 
 /// Forget a registry plugin's approval, when it's removed: installing it
 /// again asks again.
-pub fn forget_registry_in(path: &Path, name: &str) {
-    let _lock = lock_approvals(path);
+pub fn forget_registry_in(path: &Path, name: &str) -> Result<(), String> {
+    let _lock = lock_approvals(path)?;
     let mut all = load_approvals_from(path);
     if all.remove(&format!("registry:{name}")).is_some() {
-        let _ = crate::registry::write_private(path, &serde_json::to_string_pretty(&all).unwrap_or_default());
+        save_approvals_to(path, &all)?;
     }
+    Ok(())
 }
 
-pub fn record_decision(m: &Manifest, allowed: bool) {
-    store_approval(m.approval_key(), Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed });
+fn save_approvals_to(path: &Path, all: &BTreeMap<String, Approval>) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(all).map_err(|e| e.to_string())?;
+    crate::registry::write_private(path, &text)
+}
+
+/// Keep your answer about `m`. An error means it wasn't kept, so Lumen will
+/// ask again.
+pub fn record_decision(m: &Manifest, allowed: bool) -> Result<(), String> {
+    let path = approvals_path().ok_or("no home folder to keep the answer in")?;
+    record_decision_at(&path, m, allowed)
 }
 
 /// [`record_decision`], in the approvals file at `path`.
-pub fn record_decision_at(path: &Path, m: &Manifest, allowed: bool) {
-    store_approval_at(path, m.approval_key(), Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed });
-}
-
-fn store_approval(key: String, approval: Approval) {
-    if let Some(path) = approvals_path() {
-        store_approval_at(&path, key, approval);
-    }
+pub fn record_decision_at(path: &Path, m: &Manifest, allowed: bool) -> Result<(), String> {
+    store_approval_at(path, m.approval_key(), Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed })
 }
 
 /// The approvals file's lock: Lumen and `lumen plugins` both change it.
-fn lock_approvals(path: &Path) -> Option<crate::registry::Lock> {
-    crate::registry::Lock::take(&path.with_file_name("approvals.lock")).ok()
+/// Without it nothing is written: two writers would lose one's answers.
+fn lock_approvals(path: &Path) -> Result<crate::registry::Lock, String> {
+    crate::registry::Lock::take(&path.with_file_name("approvals.lock"))
 }
 
-fn store_approval_at(path: &Path, key: String, approval: Approval) {
-    let _lock = lock_approvals(path);
+fn store_approval_at(path: &Path, key: String, approval: Approval) -> Result<(), String> {
+    let _lock = lock_approvals(path)?;
     let mut all = load_approvals_from(path);
     all.insert(key, approval);
-    let _ = crate::registry::write_private(path, &serde_json::to_string_pretty(&all).unwrap_or_default());
+    save_approvals_to(path, &all)
 }
 
 // ---- running -----------------------------------------------------------
@@ -672,12 +686,28 @@ struct Running {
     commands: Vec<PluginCommand>,
     stop: Arc<AtomicBool>,
     pid: Option<u32>,
+    /// Its connection and process, while [`supervise`] is running it.
+    live: Option<Live>,
     /// Which start this is, so a copy still shutting down after a reload
     /// can't touch its replacement.
     generation: u64,
     /// Its settings now, defaults filled in: given to every (re)start.
     settings: serde_json::Map<String, Value>,
 }
+
+/// A running plugin's connection and process, for stopping it.
+#[derive(Clone)]
+struct Live {
+    /// Its connection's id, as [`api::disconnect`] takes it.
+    conn: u64,
+    /// Whether the process has been waited for. Until then its pid, and
+    /// its process group's id, can't have gone to anything else; signals
+    /// are sent with this held, so they can't either.
+    reaped: Arc<Mutex<bool>>,
+}
+
+/// How long a stopped plugin has to exit before it's killed.
+const STOP_GRACE: Duration = Duration::from_millis(if cfg!(test) { 300 } else { 2000 });
 
 static PLUGINS: Mutex<Vec<Running>> = Mutex::new(Vec::new());
 static GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -733,6 +763,7 @@ pub fn add_stopped(m: Manifest, status: &str, settings: serde_json::Map<String, 
         commands: Vec::new(),
         stop: Arc::new(AtomicBool::new(true)),
         pid: None,
+        live: None,
         generation: 0,
         settings,
     });
@@ -782,6 +813,7 @@ pub fn start(m: Manifest, settings: serde_json::Map<String, Value>) {
             commands: Vec::new(),
             stop: stop.clone(),
             pid: None,
+            live: None,
             generation,
             settings,
         });
@@ -815,6 +847,8 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
             .envs(data_dir(&name).map(|d| ("LUMEN_PLUGIN_DATA", d)))
             // Read now, not at the first start: they may have changed since.
             .env("LUMEN_PLUGIN_SETTINGS", Value::Object(started_with.clone()).to_string())
+            // A process group of its own, so stopping it reaches whatever it started.
+            .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -830,8 +864,10 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
             }
         };
         let pid = child.id();
-        let out = api::writer(child.stdin.take().expect("piped"));
-        attach(&name, generation, out.clone(), pid, &started_with);
+        // Stopping the plugin closes its stdin and ends its replies and events.
+        let out = api::writer_until(child.stdin.take().expect("piped"), Some(stop.clone()));
+        let live = Live { conn: api::new_conn(), reaped: Arc::new(Mutex::new(false)) };
+        attach(&name, generation, out.clone(), pid, live.clone(), &started_with);
         log(&name, &format!("{} [lumen] started `{}` (pid {pid})", now(), m.command.join(" ")));
         if stop.load(Ordering::SeqCst) {
             // Told to stop while starting: don't leave it behind.
@@ -846,14 +882,26 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
             }
         });
         let stdout = BufReader::new(child.stdout.take().expect("piped"));
-        api::serve_lines(stdout, &out, &jobs, &caller);
+        // Nothing it asks for after it's told to stop is carried out.
+        api::serve_conn(stdout, live.conn, &out, &jobs, &caller, Some(&stop));
         drop(out);
 
-        let status = child.wait().map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
+        wait_unreaped(pid);
+        let status = {
+            let mut reaped = live.reaped.lock().unwrap();
+            if stop.load(Ordering::SeqCst) {
+                // Whatever it started and left behind goes with it.
+                signal(pid, libc::SIGKILL);
+            }
+            let status = child.wait().map(|s| s.to_string()).unwrap_or_else(|e| e.to_string());
+            *reaped = true;
+            status
+        };
         // Its commands and key bindings go with it.
         let had_commands = with_run(&name, generation, |r| {
             r.out = None;
             r.pid = None;
+            r.live = None;
             !std::mem::take(&mut r.commands).is_empty()
         })
         .unwrap_or(false);
@@ -883,23 +931,67 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
     with_run(&name, generation, |r| r.status = "stopped".into());
 }
 
-/// Ask a plugin's process to exit (SIGTERM), and don't restart it.
-fn end(r: &Running) {
-    r.stop.store(true, Ordering::SeqCst);
-    if let Some(pid) = r.pid {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+/// Send `sig` to a plugin's process group (it leads one of its own), or to
+/// the process alone if it has none.
+fn signal(pid: u32, sig: i32) {
+    let Ok(pid) = i32::try_from(pid) else { return };
+    // 0 and 1 would mean our own group, and every process there is.
+    if pid <= 1 {
+        return;
+    }
+    unsafe {
+        if libc::kill(-pid, sig) != 0 {
+            libc::kill(pid, sig);
         }
     }
 }
 
-/// Stop every plugin: they're asked to exit (SIGTERM) and not restarted.
+/// Block until our child `pid` has exited, without reaping it: until it's
+/// reaped, the pid and its process group stay its own.
+fn wait_unreaped(pid: u32) {
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        while libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) != 0
+            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+        {}
+    }
+}
+
+/// Stop a plugin's process and don't restart it. At once, it loses its
+/// connection: nothing more it asks for is carried out, it's sent no more
+/// events, and its panes and styles go. It and everything it started are
+/// asked to exit (SIGTERM), and killed if still there after [`STOP_GRACE`].
+fn end(r: &Running) {
+    r.stop.store(true, Ordering::SeqCst);
+    let Some(pid) = r.pid else { return };
+    let Some(live) = r.live.clone() else {
+        // Not one [`supervise`] started.
+        signal(pid, libc::SIGTERM);
+        return;
+    };
+    if let Some(jobs) = api::jobs() {
+        let caller = Caller::Plugin { name: r.manifest.name.clone(), perms: r.manifest.permissions.clone() };
+        api::disconnect(&jobs, &caller, live.conn);
+    }
+    if !*live.reaped.lock().unwrap() {
+        signal(pid, libc::SIGTERM);
+    }
+    let _ = std::thread::Builder::new().name("plugin-stop".into()).spawn(move || {
+        std::thread::sleep(STOP_GRACE);
+        let reaped = live.reaped.lock().unwrap();
+        if !*reaped {
+            signal(pid, libc::SIGKILL);
+        }
+    });
+}
+
+/// Stop every plugin, as [`stop`] does, without forgetting them.
 pub fn stop_all() {
     PLUGINS.lock().unwrap().iter().for_each(end);
 }
 
-/// Stop one plugin and forget it: it's asked to exit (SIGTERM) and not
-/// restarted.
+/// Stop one plugin and forget it: it loses its connection, is asked to
+/// exit, is killed if it doesn't, and isn't restarted.
 pub fn stop(name: &str) {
     let mut all = PLUGINS.lock().unwrap();
     all.iter().filter(|r| r.manifest.name == name).for_each(end);
@@ -941,13 +1033,21 @@ pub fn clear() {
 
 /// The plugin's process is up and can be written to. Settings saved since
 /// it was given `started_with` reached nobody, so they're sent now.
-fn attach(name: &str, generation: u64, out: mpsc::Sender<String>, pid: u32, started_with: &serde_json::Map<String, Value>) {
+fn attach(
+    name: &str,
+    generation: u64,
+    out: mpsc::Sender<String>,
+    pid: u32,
+    live: Live,
+    started_with: &serde_json::Map<String, Value>,
+) {
     with_run(name, generation, |r| {
         if &r.settings != started_with {
             let _ = out.send(settings_message(&r.settings));
         }
         r.out = Some(out);
         r.pid = Some(pid);
+        r.live = Some(live);
         r.status = "running".into();
     });
 }
@@ -1038,6 +1138,7 @@ mod tests {
             commands: Vec::new(),
             stop: Arc::new(AtomicBool::new(false)),
             pid: None,
+            live: None,
             generation: 0,
             settings,
         });
@@ -1085,14 +1186,16 @@ mod tests {
             commands: Vec::new(),
             stop: Arc::new(AtomicBool::new(false)),
             pid: None,
+            live: None,
             generation: 7,
             settings: map(json!({"n": 1})),
         });
         assert!(update_settings("t-starting", map(json!({"n": 2}))));
-        attach("t-starting", 7, tx.clone(), 1, &map(json!({"n": 1})));
+        let live = Live { conn: 0, reaped: Arc::new(Mutex::new(true)) };
+        attach("t-starting", 7, tx.clone(), 1, live.clone(), &map(json!({"n": 1})));
         let msg: Value = serde_json::from_str(&rx.try_recv().expect("the newer values are sent")).unwrap();
         assert_eq!(msg["params"]["settings"], json!({"n": 2}));
-        attach("t-starting", 7, tx, 1, &map(json!({"n": 2})));
+        attach("t-starting", 7, tx, 1, live, &map(json!({"n": 2})));
         assert!(rx.try_recv().is_err(), "nothing when it started with them");
     }
 
@@ -1218,6 +1321,87 @@ mod tests {
         assert_eq!(r.keep, ["same"]);
     }
 
+    /// Whether process `pid` is still there (a zombie doesn't count).
+    fn alive(pid: i32) -> bool {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        match stat.rsplit_once(") ") {
+            Some((_, rest)) => !rest.starts_with('Z'),
+            None => unsafe { libc::kill(pid, 0) == 0 },
+        }
+    }
+
+    #[test]
+    fn a_plugin_that_ignores_being_stopped_is_cut_off_and_killed() {
+        use futures::StreamExt;
+        let dir = std::env::temp_dir().join(format!("lumen-stubborn-{}", std::process::id())).join("t-stubborn");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pids = dir.join("pids");
+        // Ignores SIGTERM, as does the `sleep` it starts. It asks for one
+        // thing while running and another once it's been told to stop
+        // (its stdin closes), then waits for ever.
+        let script = format!(
+            "trap '' TERM; sleep 60 & echo \"$$ $!\" > '{}'; \
+             echo '{{\"jsonrpc\":\"2.0\",\"method\":\"before\",\"id\":1}}'; \
+             while read -r line; do :; done; \
+             echo '{{\"jsonrpc\":\"2.0\",\"method\":\"after\",\"id\":2}}'; \
+             wait",
+            pids.display()
+        );
+        let toml = format!("command = [\"sh\", \"-c\", {}]", serde_json::to_string(&script).unwrap());
+        let m = parse_manifest(&dir, &toml).unwrap();
+
+        // The UI's side: note what's asked for, and answer it.
+        let (jobs, mut asked) = futures::channel::mpsc::unbounded::<api::Job>();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let noted = seen.clone();
+        std::thread::spawn(move || {
+            while let Some(job) = futures::executor::block_on(asked.next()) {
+                noted.lock().unwrap().push(job.method.clone());
+                let _ = job.reply.send(Ok(json!({})));
+            }
+        });
+        let has = |method: &str| seen.lock().unwrap().iter().any(|m| m == method);
+        let until = |what: &str, done: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !done() {
+                assert!(Instant::now() < deadline, "{what}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+
+        let stop = Arc::new(AtomicBool::new(false));
+        PLUGINS.lock().unwrap().push(Running {
+            manifest: m.clone(),
+            status: "starting".into(),
+            out: None,
+            commands: Vec::new(),
+            stop: stop.clone(),
+            pid: None,
+            live: None,
+            generation: 4242,
+            settings: serde_json::Map::new(),
+        });
+        let supervisor = std::thread::spawn(move || supervise(m, stop, jobs, 4242));
+        until("its first request arrives", &|| has("before"));
+        let both: Vec<i32> =
+            std::fs::read_to_string(&pids).unwrap().split_whitespace().map(|p| p.parse().unwrap()).collect();
+        let (plugin, child) = (both[0], both[1]);
+        assert!(alive(plugin) && alive(child));
+
+        let stopped = Instant::now();
+        super::stop("t-stubborn");
+        // Its connection goes at once, well before it's killed.
+        until("it's disconnected", &|| has("_disconnected"));
+        assert!(stopped.elapsed() < STOP_GRACE, "disconnected only once it was killed");
+        assert!(alive(plugin), "it ignores SIGTERM, so it's still there");
+        // Then it and what it started are killed.
+        until("it and its child are killed", &|| !alive(plugin) && !alive(child));
+        assert!(stopped.elapsed() >= STOP_GRACE, "killed before its time was up");
+        supervisor.join().unwrap();
+        assert!(!has("after"), "a request sent after it was stopped was carried out: {:?}", seen.lock().unwrap());
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
     #[test]
     fn replacing_a_plugin_stops_its_process() {
         let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
@@ -1229,6 +1413,7 @@ mod tests {
             commands: Vec::new(),
             stop: Arc::new(AtomicBool::new(false)),
             pid: Some(child.id()),
+            live: None,
             generation: 9,
             settings: serde_json::Map::new(),
         });

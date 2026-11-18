@@ -70,6 +70,12 @@ workspace, out of the taskbar) and to hide and show the window.
 `src/taffy.rs`: two float literals given an explicit `f32` type. Newer Rust
 warns that the old form will become an error.
 
+## A newer stacksafe
+
+`Cargo.toml`: `stacksafe` 1.0 instead of 0.1. The old one's macro crate
+depended on `proc-macro-error2` 2.0.1, which a future Rust will refuse to
+compile. GPUI uses only `StackSafe` and `#[stacksafe]`, which are unchanged.
+
 ## Upgrading
 
 When moving to a newer gpui, check whether it draws on demand on X11. If it

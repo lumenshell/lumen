@@ -255,7 +255,7 @@ mod tests {
 
     fn approve(p: &crate::registry::Paths, name: &str, perms: &[Permission]) {
         std::fs::create_dir_all(p.approvals.parent().unwrap()).unwrap();
-        crate::plugins::approve_registry_in(&p.approvals, name, perms);
+        crate::plugins::approve_registry_in(&p.approvals, name, perms).unwrap();
     }
 
     #[test]

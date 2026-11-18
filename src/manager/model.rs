@@ -754,7 +754,7 @@ mod tests {
         let dir = crate::registry::testing::temp("model-approved");
         m.snapshot.approvals = dir.join("approvals.json");
         let manifest = m.items.iter().find(|i| i.name == "ssh-hosts").unwrap().manifest.clone().unwrap();
-        crate::plugins::record_decision_at(&m.snapshot.approvals, &manifest, true);
+        crate::plugins::record_decision_at(&m.snapshot.approvals, &manifest, true).unwrap();
         select(&mut m, "ssh-hosts");
         assert_eq!(ch(&mut m, ' '), [Effect::SetEnabled { name: "ssh-hosts".into(), on: true, approve: None }]);
         std::fs::remove_dir_all(dir).unwrap();

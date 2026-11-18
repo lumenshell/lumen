@@ -256,7 +256,7 @@ pub(crate) fn apply(p: &Paths, index: Option<&Index>, effect: &Effect) -> Result
             if let Some(m) = approve {
                 // Approved before it's listed, so a running Lumen starts it
                 // without asking again.
-                crate::plugins::record_decision_at(&p.approvals, m, true);
+                crate::plugins::record_decision_at(&p.approvals, m, true)?;
             }
             registry::set_enabled_in(p, name, *on)?;
             Ok(format!("Turned {name} {}", if *on { "on" } else { "off" }))

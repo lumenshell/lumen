@@ -188,7 +188,7 @@ sessions. See [Commands](docs/commands.md).
 | [Shell integration](docs/shell-integration.md) | What it adds, how it loads, using it over SSH |
 | [Commands](docs/commands.md) | `lumen info` and `lumen campfire` |
 | [Scripting](docs/scripting.md) | `lumen msg`, events and the socket protocol |
-| [Built-in plugins](docs/builtin-plugins.md) | The seven plugins that come with Lumen |
+| [Built-in plugins](docs/builtin-plugins.md) | The four plugins that come with Lumen |
 | [Plugin guide](docs/plugins.md) | Writing plugins in Python |
 | [Plugin protocol](docs/plugin-protocol.md) | Writing plugins in any language, and permissions |
 | [Files and session](docs/files.md) | Where Lumen keeps things, and its environment variables |

@@ -34,9 +34,10 @@ brew install --cask lumenshell/tap/lumen
 
 ## The first launch on macOS
 
-Apple hasn't notarized the app yet. The first time you open it, macOS may say
-it can't check it for malware. Right-click Lumen.app, choose **Open**, then
-**Open** again. Or allow it in System Settings > Privacy & Security.
+Lumen.app is signed with an Apple Developer ID and notarized by Apple, so it
+opens like any other app. A version you [build yourself](#building-from-source)
+isn't: the first time, right-click it and choose **Open**, or allow it in
+System Settings > Privacy & Security.
 
 ## Installing by hand
 
