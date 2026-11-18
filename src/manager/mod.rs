@@ -494,7 +494,14 @@ mod tests {
             "LUMEN_MANAGER_TEST_PANIC=1 '{}' manager::tests::panic_child --exact --ignored --nocapture >/dev/null 2>&1; stty -a",
             me.display()
         );
-        let out = std::process::Command::new("script").args(["-qec", &inner, "/dev/null"]).output().unwrap();
+        // util-linux's `script` takes the command with -c; BSD's (macOS)
+        // takes it after the file.
+        let args: &[&str] = if cfg!(target_os = "linux") {
+            &["-qec", &inner, "/dev/null"]
+        } else {
+            &["-q", "/dev/null", "sh", "-c", &inner]
+        };
+        let out = std::process::Command::new("script").args(args).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains(" icanon") && text.contains(" echo"), "the terminal stayed raw:\n{text}");
     }

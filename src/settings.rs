@@ -1419,18 +1419,19 @@ mod tests {
         std::fs::write(dir.join("Midnight"), ghostty).unwrap();
         std::fs::write(dir.join("Midnight.toml"), lumen).unwrap();
         std::fs::write(dir.join("Typo.toml"), "background = \"#101010\nforeground = \"#eeeeee\"\n").unwrap();
+        // Not every file system takes a name that isn't UTF-8: APFS refuses.
         #[cfg(unix)]
-        {
+        let odd_name = {
             use std::os::unix::ffi::OsStrExt;
-            std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"Caf\xe9")), ghostty).unwrap();
-        }
+            std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"Caf\xe9")), ghostty).is_ok()
+        };
         let (themes, problems) = load_theme_files(&dir);
         let names: Vec<&str> = themes.iter().map(|t| t.name.as_ref()).collect();
         assert!(names.contains(&"Upper"), "an upper-case extension still loads: {names:?}");
         assert!(names.contains(&"Catppuccin.Mocha"), "a dot in the name isn't an extension: {names:?}");
         assert_eq!(names.iter().filter(|n| **n == "Midnight").count(), 1, "one Midnight: {names:?}");
         #[cfg(unix)]
-        assert!(names.iter().any(|n| n.starts_with("Caf")), "a non-UTF-8 name still loads: {names:?}");
+        assert!(!odd_name || names.iter().any(|n| n.starts_with("Caf")), "a non-UTF-8 name still loads: {names:?}");
         assert!(!problems.iter().any(|p| p.contains("README")), "a README isn't a broken theme: {problems:?}");
         let dup = problems.iter().find(|p| p.contains("themes/Midnight.toml")).expect("the duplicate is reported");
         assert!(dup.contains("Midnight"), "{dup}");
