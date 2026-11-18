@@ -784,6 +784,33 @@ fn tar_lines(flags: &str, archive: &Path, mut each: impl FnMut(&str) -> Result<(
     result.map(|()| status.success())
 }
 
+/// Whether `archive`'s files come to more than `limit` bytes, found by having
+/// tar unpack them to a pipe and counting. Unlike the sizes in a listing,
+/// which sit after names the archive chooses, this can't be talked round;
+/// and nothing is written. Tar is stopped as soon as the answer is yes.
+fn unpacks_past(archive: &Path, limit: u64) -> Result<bool, String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new("tar")
+        .arg("-xzOf")
+        .arg(archive)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("couldn't run tar: {e}"))?;
+    let out = child.stdout.take().expect("piped");
+    let seen = std::io::copy(&mut out.take(limit.saturating_add(1)), &mut std::io::sink());
+    let past = seen.as_ref().is_ok_and(|n| *n > limit);
+    if past || seen.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait().map_err(|e| format!("couldn't run tar: {e}"))?;
+    match seen {
+        Ok(_) if past => Ok(true),
+        Ok(_) if status.success() => Ok(false),
+        _ => Err("the download isn't a .tar.gz archive; not installed".to_string()),
+    }
+}
+
 /// Stop `cmd` writing any file longer than `cap` bytes: whatever a listing
 /// said, the kernel ends it there (SIGXFSZ).
 fn cap_file_size(cmd: &mut std::process::Command, cap: u64) {
@@ -830,7 +857,8 @@ fn unpack_within(archive: &Path, into: &Path, limits: &Limits) -> Result<PathBuf
         if entries > limits.entries {
             return Err(too_many());
         }
-        // A size that can't be read is caught as it's unpacked instead.
+        // An early answer only: the owner's name comes before the size and
+        // can put it out of place, so the total is counted again below.
         if let Some(bytes) = listed_size(line).filter(|_| line.starts_with('-')) {
             if bytes > limits.file {
                 return Err(file_too_big());
@@ -856,6 +884,9 @@ fn unpack_within(archive: &Path, into: &Path, limits: &Limits) -> Result<PathBuf
     })?;
     if !listed || !named {
         return Err(bad("isn't a .tar.gz archive"));
+    }
+    if unpacks_past(archive, limits.unpacked)? {
+        return Err(too_big());
     }
 
     std::fs::create_dir_all(into).map_err(|e| format!("{}: {e}", into.display()))?;
@@ -1360,6 +1391,27 @@ mod tests {
         // Too big to download at all.
         let e = fetch_within(archive.to_str().unwrap(), &dir.join("copy"), 100).unwrap_err();
         assert!(e.contains("is over 1 KB; not downloaded") && !dir.join("copy").exists(), "{e}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_listing_that_hides_sizes_cannot_hide_how_much_unpacks() {
+        // The owner's name is the archive's to choose and is printed before
+        // the size, so one with spaces in it moves the size out of place.
+        let (dir, _p) = paths("owner");
+        let archive = dir.join("x.tar.gz");
+        let script = "import io, sys, tarfile\nt = tarfile.open(sys.argv[1], 'w:gz')\n\
+                      for n in range(40):\n    \
+                      i = tarfile.TarInfo(f'x/f{n}'); i.size = 1000; i.uname = 'a/b 0 '; i.gname = 'g'\n    \
+                      t.addfile(i, io.BytesIO(b'0' * 1000))\nt.close()";
+        let ok = std::process::Command::new("python3").args(["-c", script]).arg(&archive).status().unwrap().success();
+        assert!(ok);
+        let limits = |unpacked| Limits { archive: 1 << 20, entries: 100, file: 1 << 20, unpacked };
+        // Refused before tar writes anything.
+        let into = dir.join("out");
+        let e = unpack_within(&archive, &into, &limits(20_000)).unwrap_err();
+        assert!(e.contains("unpacks to more than 20 KB") && !into.exists(), "{e}");
+        assert!(unpack_within(&archive, &into, &limits(40_000)).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
