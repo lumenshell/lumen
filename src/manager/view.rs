@@ -416,58 +416,135 @@ fn footer(model: &Model) -> &'static str {
     }
 }
 
+/// `text` broken at spaces into rows of at most `width` columns.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut rows = vec![String::new()];
+    for word in text.split(' ') {
+        let row = rows.last_mut().expect("starts with a row");
+        if row.is_empty() {
+            row.push_str(word);
+        } else if row.width() + 1 + word.width() > width {
+            rows.push(word.to_string());
+        } else {
+            row.push(' ');
+            row.push_str(word);
+        }
+    }
+    rows
+}
+
+/// A dialog's keys: each key in the accent colour, then what it does.
+fn key_hints(keys: &[(&str, &str)]) -> Line<'static> {
+    let key = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let mut spans = Vec::new();
+    for (n, (k, does)) in keys.iter().enumerate() {
+        if n > 0 {
+            spans.push(Span::raw("   "));
+        }
+        spans.push(Span::styled(k.to_string(), key));
+        spans.push(Span::raw(format!(" {does}")));
+    }
+    Line::from(spans)
+}
+
+/// What a dialog says, before it's fitted to a width.
+enum Part {
+    /// Kept on one row.
+    Row(Line<'static>),
+    /// Wrapped at spaces.
+    Text(String, Style),
+    /// Wrapped, behind a bullet, with later rows indented to match.
+    Bullet(String),
+    Gap,
+}
+
+impl Part {
+    fn width(&self) -> usize {
+        match self {
+            Part::Row(l) => l.width(),
+            Part::Text(t, _) => t.width(),
+            Part::Bullet(t) => t.width() + 2,
+            Part::Gap => 0,
+        }
+    }
+
+    fn rows(self, width: usize) -> Vec<Line<'static>> {
+        match self {
+            Part::Row(l) => vec![l],
+            Part::Text(t, style) => wrap(&t, width).into_iter().map(|r| Line::styled(r, style)).collect(),
+            Part::Bullet(t) => wrap(&t, width.saturating_sub(2).max(1))
+                .into_iter()
+                .enumerate()
+                .map(|(n, r)| Line::from(vec![Span::styled(if n == 0 { "• " } else { "  " }, Style::new().fg(ACCENT)), Span::raw(r)]))
+                .collect(),
+            Part::Gap => vec![Line::raw("")],
+        }
+    }
+}
+
 fn draw_dialog(frame: &mut Frame, dialog: &Dialog, area: Rect) {
+    use ratatui::widgets::{BorderType, Padding};
     let bold = Style::new().add_modifier(Modifier::BOLD);
-    let (title, lines): (&str, Vec<Line>) = match dialog {
+    let accent = bold.fg(ACCENT);
+    let plain = Style::new();
+    let (title, parts): (&str, Vec<Part>) = match dialog {
         Dialog::Approve { name, permissions, .. } => {
-            let mut l = vec![Line::styled(format!("Allow {name} to:"), bold), Line::raw("")];
-            l.extend(permissions.iter().map(|p| Line::raw(format!("  • {}", p.describe()))));
-            l.push(Line::raw(""));
-            l.push(Line::styled("A plugin is a program running as you; only allow ones you trust.", MUTED));
-            l.push(Line::raw(""));
-            l.push(Line::styled("y allow   n cancel", Style::new().fg(ACCENT)));
-            (" Permissions ", l)
+            let mut l = vec![
+                Part::Row(Line::from(vec![Span::styled("Allow ", bold), Span::styled(name.clone(), accent), Span::styled(" to:", bold)])),
+                Part::Gap,
+            ];
+            l.extend(permissions.iter().map(|p| Part::Bullet(p.describe().to_string())));
+            l.push(Part::Gap);
+            l.push(Part::Text("A plugin is a program running as you.".into(), MUTED));
+            l.push(Part::Text("Only allow ones you trust.".into(), MUTED));
+            l.push(Part::Gap);
+            l.push(Part::Row(key_hints(&[("y", "allow"), ("n", "cancel")])));
+            ("Permissions", l)
         }
         Dialog::RemoveData { name } => (
-            " Remove ",
+            "Remove",
             vec![
-                Line::styled(format!("Remove {name}."), bold),
-                Line::raw(""),
-                Line::raw(format!("Also delete {name}'s data? (y/N)")),
-                Line::raw(""),
-                Line::styled("y delete it   n keep it   esc cancel", Style::new().fg(ACCENT)),
+                Part::Row(Line::from(vec![Span::styled("Remove ", bold), Span::styled(name.clone(), accent), Span::styled(".", bold)])),
+                Part::Gap,
+                Part::Text(format!("Also delete {name}'s data? (y/N)"), plain),
+                Part::Gap,
+                Part::Row(key_hints(&[("y", "delete it"), ("n", "keep it"), ("esc", "cancel")])),
             ],
         ),
         Dialog::Keys => (
-            " Keys ",
+            "Keys",
             [
-                "tab, 1 2 3   switch tabs",
-                "↑ ↓  j k     move",
-                "/            filter, esc clears",
-                "enter        details",
-                "space        turn on or off",
-                "i            install",
-                "u, U         update one, or all",
-                "x            remove",
-                "s            settings",
-                "r            refresh the index",
-                "q            quit",
+                ("tab, 1 2 3", "switch tabs"),
+                ("↑ ↓  j k", "move"),
+                ("/", "filter, esc clears"),
+                ("enter", "details"),
+                ("space", "turn on or off"),
+                ("i", "install"),
+                ("u, U", "update one, or all"),
+                ("x", "remove"),
+                ("s", "settings"),
+                ("r", "refresh the index"),
+                ("q", "quit"),
             ]
             .into_iter()
-            .map(Line::raw)
+            .map(|(k, does)| Part::Row(Line::from(vec![Span::styled(format!("{k:<13}"), accent), Span::raw(does)])))
             .collect(),
         ),
     };
-    let width = area.width.saturating_sub(4).min(64);
-    // Rows after wrapping inside the border (a word wrap may need a row
-    // more than plain division says, so allow one per wrapped line).
-    let room = usize::from(width.saturating_sub(2)).max(1);
-    let rows: usize = lines.iter().map(|l| l.width().max(1).div_ceil(room) + usize::from(l.width() > room)).sum();
-    let height = (rows as u16 + 2).min(area.height);
+    // As wide as what it says, within reason; the border and its padding
+    // take 3 columns a side and 2 rows top and bottom.
+    let widest = parts.iter().map(Part::width).max().unwrap_or(0).clamp(36, 58);
+    let width = (widest as u16 + 6).min(area.width.saturating_sub(4));
+    let lines: Vec<Line> = parts.into_iter().flat_map(|p| p.rows(usize::from(width.saturating_sub(6)).max(1))).collect();
+    let height = (lines.len() as u16 + 4).min(area.height);
     let r = Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height);
     frame.render_widget(Clear, r);
-    let block = Block::bordered().title(title).border_style(Style::new().fg(ACCENT));
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), r);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ACCENT))
+        .title(Line::styled(format!(" {title} "), accent))
+        .padding(Padding::new(2, 2, 1, 1));
+    frame.render_widget(Paragraph::new(lines).block(block), r);
 }
 
 #[cfg(test)]
@@ -657,6 +734,35 @@ mod tests {
         assert!(s.contains("y allow   n cancel"), "{s}");
         m.dialog = Some(Dialog::RemoveData { name: "mira/x".into() });
         assert!(screen(&m, 100, 30).contains("Also delete mira/x's data? (y/N)"));
+    }
+
+    #[test]
+    fn dialogs_are_padded_and_wrap_to_fit() {
+        let mut m = model();
+        m.dialog = Some(Dialog::Approve {
+            name: "mira/x".into(),
+            permissions: vec![Permission::Panes, Permission::Input],
+            then: Box::new(crate::manager::model::Effect::Install { name: "mira/x".into(), allowed: vec![] }),
+        });
+        let ls = lines(&render(&m, 60, 20));
+        let top = ls.iter().position(|l| l.contains("╭ Permissions ─")).unwrap_or_else(|| panic!("{ls:#?}"));
+        let bottom = ls.iter().position(|l| l.contains('╰')).unwrap();
+        // One empty row inside the border, top and bottom, and two columns at the side.
+        let inside = ls[top].chars().skip_while(|c| *c != '╭').take_while(|c| *c != '╮').count() - 1;
+        let empty = format!("│{}│", " ".repeat(inside));
+        assert!(ls[top + 1].contains(&empty) && ls[bottom - 1].contains(&empty), "{ls:#?}");
+        assert!(ls[top + 2].contains("│  Allow mira/x to:"), "{ls:#?}");
+        assert!(ls[bottom - 2].contains("│  y allow   n cancel"), "{ls:#?}");
+        // Nothing wraps into the padding or is cut off.
+        assert!(ls.iter().any(|l| l.contains("which can run any command  │")), "{ls:#?}");
+        assert!(ls.iter().any(|l| l.contains("• type into your panes, which can run any command")), "{ls:#?}");
+    }
+
+    #[test]
+    fn wrapping_breaks_at_spaces() {
+        assert_eq!(wrap("only allow ones you trust", 12), ["only allow", "ones you", "trust"]);
+        assert_eq!(wrap("short", 12), ["short"]);
+        assert_eq!(wrap("unbreakablylongword x", 5), ["unbreakablylongword", "x"]);
     }
 
     #[test]
