@@ -15,26 +15,25 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
-use gpui::{AppContext, Entity, Reservation,
-    App, Bounds, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, FontStyle,
-    ElementInputHandler, EntityInputHandler, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers, UTF16Selection,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    DispatchPhase, ParentElement, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent, ShapedLine,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, Subscription, Task,
-    TextRun, UnderlineStyle, Window,
-    canvas, div, fill, font, point, prelude::FluentBuilder, px, size,
+use gpui::{
+    App, AppContext, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler, Entity, EntityInputHandler,
+    EventEmitter, FocusHandle, Focusable, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    KeyUpEvent, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Point, Render, Reservation, Rgba, ScrollDelta, ScrollWheelEvent, ShapedLine,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, Subscription, Task, TextRun, UTF16Selection,
+    UnderlineStyle, Window, canvas, div, fill, font, point, prelude::FluentBuilder, px, size,
 };
 
 use crate::boxdraw;
 use crate::glyphs::{self, Glyph, GlyphCache};
 use crate::links::{self, Link, LinkFinder};
-use crate::scrollbar::{self, Position};
-use crate::search::Search;
-use crate::shell_integration;
 use crate::marks;
 use crate::mouse::{self, Action as MouseAction, Button as ReportButton};
 use crate::pty::{GridSize, Owner, Pty};
+use crate::scrollbar::{self, Position};
+use crate::search::Search;
 use crate::settings::{Bell, LinkModifier, MONO_FONT, RightClick, Settings, ui_font};
+use crate::shell_integration;
 use crate::theme::{Theme, alpha, indexed};
 use crate::vi::{self, Outcome, ViState};
 use crate::{Copy, CopyLastOutput, Find, NextPrompt, Paste, PrevPrompt, ToggleSelectMode, input};
@@ -166,10 +165,7 @@ impl Focusable for TerminalView {
 }
 
 fn default_title() -> String {
-    std::env::var("SHELL")
-        .ok()
-        .and_then(|s| s.rsplit('/').next().map(str::to_string))
-        .unwrap_or_else(|| "shell".into())
+    std::env::var("SHELL").ok().and_then(|s| s.rsplit('/').next().map(str::to_string)).unwrap_or_else(|| "shell".into())
 }
 
 /// A shell started before its pane exists (see [`prespawn`]).
@@ -226,9 +222,9 @@ impl TerminalView {
         if let Some(argv) = program {
             return cx.new(|cx| Self::program(argv, window, cx));
         }
-        let waiting = owner.is_none().then(|| {
-            PRESPAWNED.with_borrow_mut(|p| p.iter().position(|s| s.cwd == cwd).map(|i| p.remove(i)))
-        });
+        let waiting = owner
+            .is_none()
+            .then(|| PRESPAWNED.with_borrow_mut(|p| p.iter().position(|s| s.cwd == cwd).map(|i| p.remove(i))));
         match waiting.flatten() {
             Some(s) => cx.insert_entity(s.reservation, |cx| Self::with_pty(s.pty, s.rx, default_title(), window, cx)),
             None => cx.new(|cx| Self::new(cwd, owner, window, cx)),
@@ -242,7 +238,9 @@ impl TerminalView {
         let base_title = owner.as_ref().map_or_else(default_title, |o| o.name.clone());
         let (pty, rx) = match owner {
             Some(owner) => Pty::plugin(owner, pane, config),
-            None => Pty::shell(cwd, settings.shell.as_deref(), settings.shell_integration, pane, config, GridSize::DEFAULT),
+            None => {
+                Pty::shell(cwd, settings.shell.as_deref(), settings.shell_integration, pane, config, GridSize::DEFAULT)
+            }
         };
         Self::with_pty(pty, rx, base_title, window, cx)
     }
@@ -255,7 +253,14 @@ impl TerminalView {
         let (spawned, program) = match Pty::spawn(None, Some(&argv), false, pane, config.clone(), GridSize::DEFAULT) {
             Ok(p) => (p, true),
             Err(_) => (
-                Pty::shell(None, settings.shell.as_deref(), settings.shell_integration, pane, config, GridSize::DEFAULT),
+                Pty::shell(
+                    None,
+                    settings.shell.as_deref(),
+                    settings.shell_integration,
+                    pane,
+                    config,
+                    GridSize::DEFAULT,
+                ),
                 false,
             ),
         };
@@ -455,7 +460,10 @@ impl TerminalView {
                 }),
             );
             let after = Settings::get(cx).notify_after;
-            if after == 0 || done.duration < std::time::Duration::from_secs(after) || (self.focused && self.window_active) {
+            if after == 0
+                || done.duration < std::time::Duration::from_secs(after)
+                || (self.focused && self.window_active)
+            {
                 continue;
             }
             let ok = done.exit.is_none_or(|c| c == 0);
@@ -500,11 +508,7 @@ impl TerminalView {
         let term = self.pty.term.lock();
         let grid = term.grid();
         let blank = |line: Line| grid[line].into_iter().all(|c| c.c == ' ' || c.c == '\0');
-        let bottom = (0..term.screen_lines() as i32)
-            .rev()
-            .map(Line)
-            .find(|&l| !blank(l))
-            .unwrap_or(Line(0));
+        let bottom = (0..term.screen_lines() as i32).rev().map(Line).find(|&l| !blank(l)).unwrap_or(Line(0));
         let top = match lines {
             Some(n) => Line((bottom.0 - n as i32 + 1).max(term.topmost_line().0)),
             None => Line(0),
@@ -549,16 +553,10 @@ impl TerminalView {
                     _ => theme.cursor,
                 };
                 let rgba: Rgba = color.into();
-                let rgb = Rgb {
-                    r: (rgba.r * 255.0) as u8,
-                    g: (rgba.g * 255.0) as u8,
-                    b: (rgba.b * 255.0) as u8,
-                };
+                let rgb = Rgb { r: (rgba.r * 255.0) as u8, g: (rgba.g * 255.0) as u8, b: (rgba.b * 255.0) as u8 };
                 self.pty.write(format(rgb).into_bytes());
             }
-            Event::TextAreaSizeRequest(format) => {
-                self.pty.write(format(self.pty.window_size()).into_bytes())
-            }
+            Event::TextAreaSizeRequest(format) => self.pty.write(format(self.pty.window_size()).into_bytes()),
             Event::Bell => {
                 crate::api::emit("bell", serde_json::json!({ "pane": cx.entity_id().as_u64() }));
                 self.ring(cx);
@@ -594,13 +592,7 @@ impl TerminalView {
         Some((x.min(l.cols.saturating_sub(1)), y.min(l.rows.saturating_sub(1))))
     }
 
-    fn report_mouse(
-        &mut self,
-        button: ReportButton,
-        action: MouseAction,
-        pos: Point<Pixels>,
-        mods: &Modifiers,
-    ) {
+    fn report_mouse(&mut self, button: ReportButton, action: MouseAction, pos: Point<Pixels>, mods: &Modifiers) {
         let Some((col, row)) = self.viewport_cell(pos) else { return };
         if action == MouseAction::Motion && self.last_report_cell == Some((col, row)) {
             return;
@@ -651,12 +643,7 @@ impl TerminalView {
         }
     }
 
-    fn on_modifiers_changed(
-        &mut self,
-        ev: &ModifiersChangedEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_modifiers_changed(&mut self, ev: &ModifiersChangedEvent, _: &mut Window, cx: &mut Context<Self>) {
         if let Some((_, mods)) = &mut self.pointer {
             *mods = ev.modifiers;
             self.update_hovered_link(cx);
@@ -855,10 +842,7 @@ impl TerminalView {
             }
             return;
         }
-        if ev.pressed_button.is_none()
-            && !ev.modifiers.shift
-            && mouse::wants_motion(mode, false)
-        {
+        if ev.pressed_button.is_none() && !ev.modifiers.shift && mouse::wants_motion(mode, false) {
             self.report_mouse(ReportButton::None, MouseAction::Motion, ev.position, &ev.modifiers);
             return;
         }
@@ -977,12 +961,7 @@ impl TerminalView {
             return;
         }
         // Start from the selection when it's a single short line.
-        let selected = self
-            .pty
-            .term
-            .lock()
-            .selection_to_string()
-            .filter(|t| !t.contains('\n') && t.len() <= 200);
+        let selected = self.pty.term.lock().selection_to_string().filter(|t| !t.contains('\n') && t.len() <= 200);
         let mut search = Search::default();
         search.query = selected.unwrap_or_default();
         self.search = Some(search);
@@ -1240,11 +1219,7 @@ impl TerminalView {
     fn paste_text(&mut self, text: &str) {
         let bracketed = self.pty.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
         let body = text.replace("\r\n", "\r").replace('\n', "\r");
-        let data = if bracketed {
-            format!("\x1b[200~{}\x1b[201~", body.replace('\x1b', ""))
-        } else {
-            body
-        };
+        let data = if bracketed { format!("\x1b[200~{}\x1b[201~", body.replace('\x1b', "")) } else { body };
         self.pty.term.lock().scroll_display(Scroll::Bottom);
         self.pty.write(data.into_bytes());
     }
@@ -1551,11 +1526,7 @@ fn search_bar(search: &Search, theme: &Theme) -> gpui::AnyElement {
                 .when(!has_query, |d| d.child(caret(theme.accent)).child("Find"))
                 .when(has_query, |d| d.child(search.query.clone()).child(caret(theme.accent))),
         )
-        .child(
-            div()
-                .text_color(if search.invalid { theme.ansi[1] } else { theme.subtext })
-                .child(status),
-        )
+        .child(div().text_color(if search.invalid { theme.ansi[1] } else { theme.subtext }).child(status))
         .child(toggle("Aa", search.case_sensitive, "search-case"))
         .child(toggle(".*", search.regex, "search-regex"))
         .into_any_element()
@@ -1638,12 +1609,8 @@ fn paint_shape(window: &mut Window, shape: boxdraw::Shape, color: Hsla) {
             match corner {
                 Corner::TopLeft => (radii.top_left, edges.top, edges.left) = (radius, width, width),
                 Corner::TopRight => (radii.top_right, edges.top, edges.right) = (radius, width, width),
-                Corner::BottomRight => {
-                    (radii.bottom_right, edges.bottom, edges.right) = (radius, width, width)
-                }
-                Corner::BottomLeft => {
-                    (radii.bottom_left, edges.bottom, edges.left) = (radius, width, width)
-                }
+                Corner::BottomRight => (radii.bottom_right, edges.bottom, edges.right) = (radius, width, width),
+                Corner::BottomLeft => (radii.bottom_left, edges.bottom, edges.left) = (radius, width, width),
             }
             window.with_content_mask(Some(gpui::ContentMask { bounds: clip }), |window| {
                 window.paint_quad(gpui::quad(
@@ -1656,8 +1623,7 @@ fn paint_shape(window: &mut Window, shape: boxdraw::Shape, color: Hsla) {
                 ))
             });
         }
-        Shape::Polygon(points) | Shape::Polyline(points, _)
-            if points.len() < 2 => {}
+        Shape::Polygon(points) | Shape::Polyline(points, _) if points.len() < 2 => {}
         Shape::Polygon(points) => {
             let mut path = gpui::PathBuilder::fill();
             path.move_to(points[0]);
@@ -1683,16 +1649,13 @@ fn paint_shape(window: &mut Window, shape: boxdraw::Shape, color: Hsla) {
 }
 
 fn rgb_to_hsla(rgb: Rgb) -> Hsla {
-    Rgba { r: rgb.r as f32 / 255.0, g: rgb.g as f32 / 255.0, b: rgb.b as f32 / 255.0, a: 1.0 }
-        .into()
+    Rgba { r: rgb.r as f32 / 255.0, g: rgb.g as f32 / 255.0, b: rgb.b as f32 / 255.0, a: 1.0 }.into()
 }
 
 fn resolve(color: Color, colors: &Colors, theme: &Theme) -> Hsla {
     match color {
         Color::Spec(rgb) => rgb_to_hsla(rgb),
-        Color::Indexed(i) => {
-            colors[i as usize].map(rgb_to_hsla).unwrap_or_else(|| indexed(theme, i))
-        }
+        Color::Indexed(i) => colors[i as usize].map(rgb_to_hsla).unwrap_or_else(|| indexed(theme, i)),
         Color::Named(named) => {
             let idx = named as usize;
             if let Some(rgb) = colors[named] {
@@ -1736,11 +1699,7 @@ impl Render for TerminalView {
         let hovered_link = self.hovered_link.clone();
         let dragging = self.selecting || self.reported_button.is_some();
         let mouse_mode = mouse::reporting(self.mode());
-        let search_hits = self
-            .search
-            .as_ref()
-            .map(|s| s.visible(&self.pty.term.lock()))
-            .unwrap_or_default();
+        let search_hits = self.search.as_ref().map(|s| s.visible(&self.pty.term.lock())).unwrap_or_default();
         let search_bar = self.search.as_ref().map(|s| search_bar(s, &theme));
         let flashing = self.bell_at.is_some_and(|t| t.elapsed() < BELL_FLASH);
         let flash_color = alpha(theme.text, 0.08);
@@ -1785,10 +1744,7 @@ impl Render for TerminalView {
             let text_system = window.text_system().clone();
             let base_font = font(font_family.clone());
             let font_id = text_system.resolve_font(&base_font);
-            let cell_width = text_system
-                .advance(font_id, font_size, 'm')
-                .map(|s| s.width)
-                .unwrap_or(px(8.0));
+            let cell_width = text_system.advance(font_id, font_size, 'm').map(|s| s.width).unwrap_or(px(8.0));
             let line_height = (font_size * line_height_factor).round();
             let cols = ((bounds.size.width / cell_width).floor() as usize).max(2);
             let rows = ((bounds.size.height / line_height).floor() as usize).max(1);
@@ -1796,18 +1752,9 @@ impl Render for TerminalView {
             // evenly between opposite edges (whole pixels keep glyphs crisp).
             let slack_x = (bounds.size.width - cell_width * cols as f32).max(px(0.0));
             let slack_y = (bounds.size.height - line_height * rows as f32).max(px(0.0));
-            let origin = point(
-                (bounds.origin.x + slack_x / 2.0).round(),
-                (bounds.origin.y + slack_y / 2.0).round(),
-            );
+            let origin = point((bounds.origin.x + slack_x / 2.0).round(), (bounds.origin.y + slack_y / 2.0).round());
 
-            layout_cell.set(Some(GridLayout {
-                origin,
-                cell_width,
-                line_height,
-                cols,
-                rows,
-            }));
+            layout_cell.set(Some(GridLayout { origin, cell_width, line_height, cols, rows }));
 
             let grid_size = GridSize {
                 cols: cols as u16,
@@ -1862,10 +1809,7 @@ impl Render for TerminalView {
 
             let cell_bounds = |row: usize, col: usize, span: usize| {
                 Bounds::new(
-                    point(
-                        origin.x + cell_width * col as f32,
-                        origin.y + line_height * row as f32,
-                    ),
+                    point(origin.x + cell_width * col as f32, origin.y + line_height * row as f32),
                     size(cell_width * span as f32, line_height),
                 )
             };
@@ -1932,14 +1876,11 @@ impl Render for TerminalView {
                 if flags.contains(Flags::DIM) {
                     fg = alpha(fg, 0.66);
                 }
-                let in_link =
-                    hovered_link.as_ref().is_some_and(|l| l.range.contains(&indexed_cell.point));
+                let in_link = hovered_link.as_ref().is_some_and(|l| l.range.contains(&indexed_cell.point));
                 if in_link {
                     fg = theme.accent;
                 }
-                if let Some((_, current)) =
-                    search_hits.iter().find(|(r, _)| r.contains(&indexed_cell.point))
-                {
+                if let Some((_, current)) = search_hits.iter().find(|(r, _)| r.contains(&indexed_cell.point)) {
                     if *current {
                         bg = Some(theme.accent);
                         fg = theme.pane;
@@ -1950,9 +1891,7 @@ impl Render for TerminalView {
                 if selection.is_some_and(|s| s.contains(indexed_cell.point)) {
                     bg = Some(theme.selection);
                 }
-                let is_cursor = show_cursor
-                    && row == cursor_row as usize
-                    && col == cursor.point.column.0;
+                let is_cursor = show_cursor && row == cursor_row as usize && col == cursor.point.column.0;
                 if is_cursor {
                     cursor_wide = wide;
                     if focused && cursor.shape == CursorShape::Block {
@@ -1976,12 +1915,11 @@ impl Render for TerminalView {
                 }
 
                 // Underline and strikethrough runs
-                let underline =
-                    (in_link || flags.intersects(Flags::ALL_UNDERLINES)).then(|| UnderlineStyle {
-                        thickness: px(1.0),
-                        color: Some(fg),
-                        wavy: !in_link && flags.contains(Flags::UNDERCURL),
-                    });
+                let underline = (in_link || flags.intersects(Flags::ALL_UNDERLINES)).then(|| UnderlineStyle {
+                    thickness: px(1.0),
+                    color: Some(fg),
+                    wavy: !in_link && flags.contains(Flags::UNDERCURL),
+                });
                 extend_run(&mut underline_run, underline, (row, col, span), &mut underlines);
                 let strike = flags
                     .contains(Flags::STRIKEOUT)
@@ -1990,8 +1928,7 @@ impl Render for TerminalView {
 
                 // Text
                 let ch = if flags.contains(Flags::HIDDEN) || cell.c == '\t' { ' ' } else { cell.c };
-                let style = (flags.contains(Flags::BOLD) as u8)
-                    | ((flags.contains(Flags::ITALIC) as u8) << 1);
+                let style = (flags.contains(Flags::BOLD) as u8) | ((flags.contains(Flags::ITALIC) as u8) << 1);
                 let zerowidth = cell.zerowidth().filter(|z| !z.is_empty() && ch != ' ');
                 if ligatures && !wide && zerowidth.is_none() && glyphs::joins(ch) {
                     if let Some(j) = &mut join
@@ -2019,9 +1956,7 @@ impl Render for TerminalView {
                     let top = f32::from(origin.y + line_height * row as f32).round();
                     let bottom = top + f32::from(line_height);
                     shapes.extend(
-                        boxdraw::shapes(ch, edge(col), edge(col + span), top, bottom)
-                            .into_iter()
-                            .map(|s| (s, fg)),
+                        boxdraw::shapes(ch, edge(col), edge(col + span), top, bottom).into_iter().map(|s| (s, fg)),
                     );
                     continue;
                 }
@@ -2125,8 +2060,8 @@ impl Render for TerminalView {
             });
 
             let scrollbar_track = scrollbar_on.then(|| scrollbar::track(bounds, padding, scrollbar_width));
-            let scrollbar_hitbox = scrollbar_track
-                .map(|track| window.insert_hitbox(scrollbar_zone(track), gpui::HitboxBehavior::Normal));
+            let scrollbar_hitbox =
+                scrollbar_track.map(|track| window.insert_hitbox(scrollbar_zone(track), gpui::HitboxBehavior::Normal));
             let scrollbar = scrollbar_track.filter(|_| scrollbar_opacity > 0.0).map(|track| {
                 let pos = Position { history, rows, offset: offset as usize };
                 ScrollbarDraw {
@@ -2194,9 +2129,7 @@ impl Render for TerminalView {
                 }
                 for d in &frame.decorations {
                     match d {
-                        Decoration::Underline(origin, width, style) => {
-                            window.paint_underline(*origin, *width, style)
-                        }
+                        Decoration::Underline(origin, width, style) => window.paint_underline(*origin, *width, style),
                         Decoration::Strikethrough(origin, width, style) => {
                             window.paint_strikethrough(*origin, *width, style)
                         }
@@ -2208,15 +2141,11 @@ impl Render for TerminalView {
                         CursorShape::Block if focused => {}
                         CursorShape::Block | CursorShape::HollowBlock => {
                             window.paint_quad(
-                                gpui::outline(b, cursor_color, gpui::BorderStyle::Solid)
-                                    .corner_radii(px(2.0)),
+                                gpui::outline(b, cursor_color, gpui::BorderStyle::Solid).corner_radii(px(2.0)),
                             );
                         }
                         CursorShape::Beam => {
-                            window.paint_quad(fill(
-                                Bounds::new(b.origin, size(thick, b.size.height)),
-                                cursor_color,
-                            ));
+                            window.paint_quad(fill(Bounds::new(b.origin, size(thick, b.size.height)), cursor_color));
                         }
                         CursorShape::Underline => {
                             window.paint_quad(fill(
@@ -2242,7 +2171,9 @@ impl Render for TerminalView {
             if let Some(bar) = &frame.scrollbar {
                 let o = bar.opacity;
                 window.paint_quad(fill(bar.track, alpha(theme_text, 0.05 * o)).corner_radii(px(3.0)));
-                window.paint_quad(fill(bar.thumb, alpha(theme_text, if held { 0.38 } else { 0.26 } * o)).corner_radii(px(3.0)));
+                window.paint_quad(
+                    fill(bar.thumb, alpha(theme_text, if held { 0.38 } else { 0.26 } * o)).corner_radii(px(3.0)),
+                );
                 // A command's mark across the track: red if it failed.
                 for &(y, failed) in &bar.ticks {
                     let color = if failed { alpha(theme_red, o) } else { alpha(theme_muted, 0.7 * o) };
@@ -2308,9 +2239,7 @@ impl Render for TerminalView {
                     point(bounds.origin.x, bounds.origin.y + bounds.size.height - height),
                     size(width, height),
                 );
-                window.paint_quad(
-                    fill(pill, *bg).corner_radii(px(6.0)).border_widths(px(1.0)).border_color(*border),
-                );
+                window.paint_quad(fill(pill, *bg).corner_radii(px(6.0)).border_widths(px(1.0)).border_color(*border));
                 window.with_content_mask(Some(gpui::ContentMask { bounds: pill }), |window| {
                     let origin = point(pill.origin.x + pad_x, pill.origin.y + px(3.0));
                     let _ = label.paint(origin, px(16.0), window, cx);
@@ -2352,9 +2281,7 @@ impl Render for TerminalView {
             .child(canvas(prepaint, paint).size_full())
             .children(search_bar)
             .children(select_badge)
-            .when(flashing, |d| {
-                d.child(div().absolute().inset_0().bg(flash_color))
-            })
+            .when(flashing, |d| d.child(div().absolute().inset_0().bg(flash_color)))
     }
 }
 

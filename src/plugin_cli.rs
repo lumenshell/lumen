@@ -145,12 +145,23 @@ fn execute(cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::Help => print!("{HELP}"),
         Cmd::List { json } => {
-            let rows = rows(&enabled(), &registry::load_installed(), &crate::plugins::local_plugins(), registry::cached_index().as_ref());
+            let rows = rows(
+                &enabled(),
+                &registry::load_installed(),
+                &crate::plugins::local_plugins(),
+                registry::cached_index().as_ref(),
+            );
             if json {
                 println!("{}", rows_json(&rows));
             } else {
                 for r in &rows {
-                    let mark = if !r.installed { "!" } else if r.on { "●" } else { "○" };
+                    let mark = if !r.installed {
+                        "!"
+                    } else if r.on {
+                        "●"
+                    } else {
+                        "○"
+                    };
                     let mut note = match r.kind {
                         "built-in" => "built in".to_string(),
                         "local" => format!("local {}", r.version).trim_end().to_string(),
@@ -248,7 +259,14 @@ fn rows(
     let on = |n: &str| enabled.iter().any(|e| e == n);
     let mut rows: Vec<Row> = BUILTINS
         .iter()
-        .map(|b| Row { name: b.name.into(), kind: "built-in", on: on(b.name), version: String::new(), installed: true, update: None })
+        .map(|b| Row {
+            name: b.name.into(),
+            kind: "built-in",
+            on: on(b.name),
+            version: String::new(),
+            installed: true,
+            update: None,
+        })
         .collect();
     rows.extend(local.iter().map(|(n, v)| Row {
         name: n.clone(),
@@ -264,10 +282,24 @@ fn rows(
             .and_then(|e| registry::best(e, registry::LUMEN_VERSION))
             .filter(|r| registry::newer(&r.version, &i.version))
             .map(|r| r.version.clone());
-        rows.push(Row { name: name.clone(), kind: "registry", on: on(name), version: i.version.clone(), installed: true, update });
+        rows.push(Row {
+            name: name.clone(),
+            kind: "registry",
+            on: on(name),
+            version: i.version.clone(),
+            installed: true,
+            update,
+        });
     }
     for name in enabled.iter().filter(|n| registry::valid_name(n) && !installed.contains_key(*n)) {
-        rows.push(Row { name: name.clone(), kind: "registry", on: true, version: String::new(), installed: false, update: None });
+        rows.push(Row {
+            name: name.clone(),
+            kind: "registry",
+            on: true,
+            version: String::new(),
+            installed: false,
+            update: None,
+        });
     }
     rows
 }
@@ -297,8 +329,14 @@ mod tests {
         assert_eq!(parse(&s(&["install", "mira/x", "--yes"])), Ok(Cmd::Install { name: "mira/x".into(), yes: true }));
         assert_eq!(parse(&s(&["install", "mira/x"])), Ok(Cmd::Install { name: "mira/x".into(), yes: false }));
         assert_eq!(parse(&s(&["update"])), Ok(Cmd::Update { name: None, yes: false }));
-        assert_eq!(parse(&s(&["update", "--yes", "mira/x"])), Ok(Cmd::Update { name: Some("mira/x".into()), yes: true }));
-        assert_eq!(parse(&s(&["remove", "mira/x", "--delete-data"])), Ok(Cmd::Remove { name: "mira/x".into(), delete_data: true }));
+        assert_eq!(
+            parse(&s(&["update", "--yes", "mira/x"])),
+            Ok(Cmd::Update { name: Some("mira/x".into()), yes: true })
+        );
+        assert_eq!(
+            parse(&s(&["remove", "mira/x", "--delete-data"])),
+            Ok(Cmd::Remove { name: "mira/x".into(), delete_data: true })
+        );
         assert_eq!(parse(&s(&["list", "--json"])), Ok(Cmd::List { json: true }));
         assert_eq!(parse(&s(&["search", "git", "tools"])), Ok(Cmd::Search { text: "git tools".into() }));
         assert_eq!(parse(&s(&["on", "recent-dirs"])), Ok(Cmd::On("recent-dirs".into())));
@@ -313,8 +351,15 @@ mod tests {
     fn check_folder_reports() {
         let dir = std::env::temp_dir().join(format!("lumen-check-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("plugin.toml"), "version = \"1.2.0\"\ncommand = \"python3 main.py\"\npermissions = [\"input\", \"panes\"]\n").unwrap();
-        assert_eq!(check(&dir), Ok(format!("ok {} 1.2.0 permissions=panes,input", dir.file_name().unwrap().to_string_lossy())));
+        std::fs::write(
+            dir.join("plugin.toml"),
+            "version = \"1.2.0\"\ncommand = \"python3 main.py\"\npermissions = [\"input\", \"panes\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            check(&dir),
+            Ok(format!("ok {} 1.2.0 permissions=panes,input", dir.file_name().unwrap().to_string_lossy()))
+        );
         std::fs::write(dir.join("plugin.toml"), "command = \"x\"\n[settings.a]\ntype = \"integer\"\n").unwrap();
         assert!(check(&dir).unwrap_err().contains("settings.a"));
         std::fs::remove_file(dir.join("plugin.toml")).unwrap();

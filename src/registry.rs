@@ -300,12 +300,9 @@ pub(crate) fn index_from(url: &str, cache: &Path, refresh: bool) -> Result<Index
 
 /// The index: the cached copy if it's younger than `max_age`, else fetched.
 pub(crate) fn index_within(url: &str, cache: &Path, max_age: std::time::Duration) -> Result<Index, String> {
-    let fresh = std::fs::metadata(cache)
-        .and_then(|m| m.modified())
-        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age < max_age));
-    if fresh
-        && let Some(index) = std::fs::read_to_string(cache).ok().and_then(|t| parse_index(&t).ok())
-    {
+    let fresh =
+        std::fs::metadata(cache).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age < max_age));
+    if fresh && let Some(index) = std::fs::read_to_string(cache).ok().and_then(|t| parse_index(&t).ok()) {
         return Ok(index);
     }
     let dir = cache.parent().ok_or("no folder")?;
@@ -350,7 +347,9 @@ impl Paths {
             installed: installed_path().ok_or_else(none)?,
             approvals: crate::plugins::approvals_path().ok_or_else(none)?,
             config: crate::settings::config_path().ok_or_else(none)?,
-            data: base("XDG_STATE_HOME", ".local/state", "Library/Application Support").ok_or_else(none)?.join("lumen/plugin-data"),
+            data: base("XDG_STATE_HOME", ".local/state", "Library/Application Support")
+                .ok_or_else(none)?
+                .join("lumen/plugin-data"),
         })
     }
 }
@@ -410,12 +409,20 @@ impl Paths {
 pub const LUMEN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn find<'a>(index: &'a Index, name: &str) -> Result<&'a Entry, String> {
-    index.plugins.iter().find(|e| e.name == name).ok_or_else(|| format!("there's no plugin called \"{name}\" in the registry"))
+    index
+        .plugins
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| format!("there's no plugin called \"{name}\" in the registry"))
 }
 
 fn newest(entry: &Entry) -> Result<&Release, String> {
     best(entry, LUMEN_VERSION).ok_or_else(|| {
-        let need = entry.versions.iter().map(|r| r.lumen.as_str()).fold("", |a, b| if a.is_empty() || newer(a, b) { b } else { a });
+        let need = entry
+            .versions
+            .iter()
+            .map(|r| r.lumen.as_str())
+            .fold("", |a, b| if a.is_empty() || newer(a, b) { b } else { a });
         format!("{} needs Lumen {need} or newer; this is {LUMEN_VERSION}", entry.name)
     })
 }
@@ -509,7 +516,8 @@ fn remove_from_list(doc: &mut toml_edit::DocumentMut, name: &str) {
     if let Some(list) = doc.get_mut("plugins").and_then(|i| i.as_array_mut()) {
         // A plugin that moved to the registry may still be listed by its
         // built-in name.
-        let gone = |v: &toml_edit::Value| v.as_str().is_some_and(|v| v == name || crate::plugins::moved_to(v) == Some(name));
+        let gone =
+            |v: &toml_edit::Value| v.as_str().is_some_and(|v| v == name || crate::plugins::moved_to(v) == Some(name));
         // The first item's spacing goes to whichever comes first after.
         let first = list.get(0).map(|v| v.decor().prefix().cloned());
         list.retain(|v| !gone(v));
@@ -759,7 +767,9 @@ fn tar_lines(flags: &str, archive: &Path, mut each: impl FnMut(&str) -> Result<(
         buf.clear();
         match (&mut out).take(LINE as u64 + 1).read_until(b'\n', &mut buf) {
             Ok(0) | Err(_) => break Ok(()),
-            Ok(_) if buf.len() > LINE => break Err("the download has a name too long to be real; not installed".to_string()),
+            Ok(_) if buf.len() > LINE => {
+                break Err("the download has a name too long to be real; not installed".to_string());
+            }
             Ok(_) => {}
         }
         if let Err(e) = each(String::from_utf8_lossy(&buf).trim_end_matches('\n')) {
@@ -983,8 +993,10 @@ mod tests {
 
     #[test]
     fn updates_are_counted() {
-        let installed = |v: &str| Installed { version: v.into(), commit: "c".repeat(40), permissions: vec![], dir: PathBuf::new() };
-        let all = BTreeMap::from([("mira/x".to_string(), installed("1.0.0")), ("mira/y".to_string(), installed("1.0.0"))]);
+        let installed =
+            |v: &str| Installed { version: v.into(), commit: "c".repeat(40), permissions: vec![], dir: PathBuf::new() };
+        let all =
+            BTreeMap::from([("mira/x".to_string(), installed("1.0.0")), ("mira/y".to_string(), installed("1.0.0"))]);
         let index = Index {
             version: 1,
             plugins: vec![
@@ -1033,7 +1045,11 @@ mod tests {
         docker.categories = vec!["containers".into()];
         let index = Index {
             version: 1,
-            plugins: vec![entry("a/git-tools", 5, &[("1.0.0", "1.0.0")]), docker, entry("b/git-more", 50, &[("1.0.0", "1.0.0")])],
+            plugins: vec![
+                entry("a/git-tools", 5, &[("1.0.0", "1.0.0")]),
+                docker,
+                entry("b/git-more", 50, &[("1.0.0", "1.0.0")]),
+            ],
         };
         let names = |text: &str| search(&index, text).iter().map(|e| e.name.clone()).collect::<Vec<_>>();
         assert_eq!(names("GIT"), ["b/git-more", "a/git-tools"], "any case, most stars first");
@@ -1137,7 +1153,8 @@ mod tests {
             }
         });
         assert_eq!(load_installed_from(&p.installed).len(), 8, "no install lost");
-        let approvals = (0..8).filter(|i| !crate::plugins::registry_approval_in(&p.approvals, &format!("mira/p{i}")).is_empty());
+        let approvals =
+            (0..8).filter(|i| !crate::plugins::registry_approval_in(&p.approvals, &format!("mira/p{i}")).is_empty());
         assert_eq!(approvals.count(), 8, "no approval lost");
         let config = config(&p);
         assert_eq!((0..8).filter(|i| config.contains(&format!("\"mira/p{i}\""))).count(), 8, "{config}");
@@ -1162,15 +1179,23 @@ mod tests {
                 if e.path().is_dir() {
                     files(&e.path(), out);
                 } else {
-                    out.push(format!("{}={}", e.path().display(), std::fs::read_to_string(e.path()).unwrap_or_default()));
+                    out.push(format!(
+                        "{}={}",
+                        e.path().display(),
+                        std::fs::read_to_string(e.path()).unwrap_or_default()
+                    ));
                 }
             }
         }
         let mut found = Vec::new();
         files(&p.root, &mut found);
         found.sort();
-        let installed: Vec<_> = load_installed_from(&p.installed).into_iter().map(|(n, i)| (n, i.version, i.dir)).collect();
-        (format!("{found:?} {installed:?} {:?}", config(p)), crate::plugins::registry_approval_in(&p.approvals, "mira/x"))
+        let installed: Vec<_> =
+            load_installed_from(&p.installed).into_iter().map(|(n, i)| (n, i.version, i.dir)).collect();
+        (
+            format!("{found:?} {installed:?} {:?}", config(p)),
+            crate::plugins::registry_approval_in(&p.approvals, "mira/x"),
+        )
     }
 
     #[test]
@@ -1191,7 +1216,11 @@ mod tests {
     fn an_update_that_cant_be_turned_on_leaves_the_old_version() {
         let (dir, p) = paths("no-enable");
         let v1 = release("1.0.0", vec![Permission::Panes], archive(&dir, "1.0.0", "\"panes\""));
-        let v2 = release("1.1.0", vec![Permission::Panes, Permission::Input], archive(&dir, "1.1.0", "\"panes\", \"input\""));
+        let v2 = release(
+            "1.1.0",
+            vec![Permission::Panes, Permission::Input],
+            archive(&dir, "1.1.0", "\"panes\", \"input\""),
+        );
         install_in(&p, &index_with(vec![v1.clone()]), "mira/x", &Approve::Yes).unwrap();
         let before = state(&p);
         // config.toml can't be rewritten: its folder is read-only.
@@ -1242,7 +1271,11 @@ mod tests {
         let (dir, p) = paths("update-asks");
         let v1 = release("1.0.0", vec![Permission::Panes], archive(&dir, "1.0.0", "\"panes\""));
         install_in(&p, &index_with(vec![v1.clone()]), "mira/x", &Approve::Yes).unwrap();
-        let v2 = release("2.0.0", vec![Permission::Panes, Permission::Screen], archive(&dir, "2.0.0", "\"panes\", \"screen\""));
+        let v2 = release(
+            "2.0.0",
+            vec![Permission::Panes, Permission::Screen],
+            archive(&dir, "2.0.0", "\"panes\", \"screen\""),
+        );
         let asked = std::cell::RefCell::new(Vec::new());
         let ask = |_: &str, new: &[Permission]| {
             asked.borrow_mut().extend_from_slice(new);
@@ -1253,7 +1286,10 @@ mod tests {
         assert_eq!(load_installed_from(&p.installed)["mira/x"].version, "1.0.0");
         let yes = |_: &str, _: &[Permission]| true;
         update_in(&p, &index_with(vec![v1, v2]), "mira/x", &Approve::Ask(&yes)).unwrap();
-        assert_eq!(crate::plugins::registry_approval_in(&p.approvals, "mira/x"), vec![Permission::Panes, Permission::Screen]);
+        assert_eq!(
+            crate::plugins::registry_approval_in(&p.approvals, "mira/x"),
+            vec![Permission::Panes, Permission::Screen]
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1334,7 +1370,17 @@ mod tests {
         std::fs::create_dir_all(dir.join("src/x")).unwrap();
         std::fs::write(dir.join("src/x/big"), "0".repeat(300_000)).unwrap();
         let archive = dir.join("x.tar.gz");
-        assert!(std::process::Command::new("tar").arg("-czf").arg(&archive).arg("-C").arg(dir.join("src")).arg("x").status().unwrap().success());
+        assert!(
+            std::process::Command::new("tar")
+                .arg("-czf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(dir.join("src"))
+                .arg("x")
+                .status()
+                .unwrap()
+                .success()
+        );
         let mut tar = std::process::Command::new("tar");
         std::fs::create_dir_all(dir.join("out")).unwrap();
         tar.arg("-xzf").arg(&archive).arg("-C").arg(dir.join("out"));
@@ -1371,7 +1417,9 @@ mod tests {
             make("two.tar.gz", &format!("{head}add('y/other')\nt.close()")),
             make(
                 "through-link.tar.gz",
-                &format!("{head}add('x/out', kind=tarfile.SYMTYPE, link=sys.argv[2])\nadd('x/out/evil-through')\nt.close()"),
+                &format!(
+                    "{head}add('x/out', kind=tarfile.SYMTYPE, link=sys.argv[2])\nadd('x/out/evil-through')\nt.close()"
+                ),
             ),
             make("hard.tar.gz", &format!("{head}add('x/hard', kind=tarfile.LNKTYPE, link='/etc/passwd')\nt.close()")),
         ];
@@ -1442,7 +1490,15 @@ mod tests {
         std::fs::create_dir_all(p.config.parent().unwrap()).unwrap();
         std::fs::write(&p.config, "plugins = [\"pomodoro\"]\n[plugin.pomodoro]\nlong-break-every = 3\n").unwrap();
         let mut all = BTreeMap::new();
-        all.insert("sn/pomodoro".to_string(), Installed { version: "1.0.0".into(), commit: "c".repeat(40), permissions: vec![], dir: p.root.join("sn/pomodoro") });
+        all.insert(
+            "sn/pomodoro".to_string(),
+            Installed {
+                version: "1.0.0".into(),
+                commit: "c".repeat(40),
+                permissions: vec![],
+                dir: p.root.join("sn/pomodoro"),
+            },
+        );
         save_installed_to(&p.installed, &all).unwrap();
         std::fs::create_dir_all(p.data.join("pomodoro")).unwrap();
         remove_in(&p, "sn/pomodoro", true).unwrap();
@@ -1458,7 +1514,8 @@ mod tests {
             assert!(valid_name(good), "{good}");
         }
         let long = format!("a/{}", "b".repeat(40));
-        for bad in ["mira", "Mira/x", "mira/-x", "mira/x-", "mira/x/y", "../x", "mira/", "/x", "mi ra/x", long.as_str()] {
+        for bad in ["mira", "Mira/x", "mira/-x", "mira/x-", "mira/x/y", "../x", "mira/", "/x", "mi ra/x", long.as_str()]
+        {
             assert!(!valid_name(bad), "{bad}");
         }
     }
@@ -1470,7 +1527,12 @@ mod tests {
         let mut all = BTreeMap::new();
         all.insert(
             "mira/x".to_string(),
-            Installed { version: "1.0.0".into(), commit: "a".repeat(40), permissions: vec![Permission::Panes], dir: dir.join("x") },
+            Installed {
+                version: "1.0.0".into(),
+                commit: "a".repeat(40),
+                permissions: vec![Permission::Panes],
+                dir: dir.join("x"),
+            },
         );
         all.insert(
             "mira/y".to_string(),

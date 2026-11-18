@@ -58,7 +58,9 @@ pub fn to_toml(v: &Value) -> Option<toml_edit::Value> {
 pub fn shown(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
-        Value::Array(list) => list.iter().map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).collect::<Vec<_>>().join(", "),
+        Value::Array(list) => {
+            list.iter().map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).collect::<Vec<_>>().join(", ")
+        }
         v => v.to_string(),
     }
 }
@@ -72,7 +74,10 @@ impl Editor {
         let fields = item
             .settings
             .iter()
-            .map(|s| Field { spec: s.clone(), value: item.values.get(&s.key).cloned().unwrap_or_else(|| s.default.clone()) })
+            .map(|s| Field {
+                spec: s.clone(),
+                value: item.values.get(&s.key).cloned().unwrap_or_else(|| s.default.clone()),
+            })
             .collect();
         Some(Editor { plugin: item.name.clone(), fields, selected: 0, input: None })
     }
@@ -95,7 +100,12 @@ impl Editor {
                     let base = parse(&kind, input).unwrap_or_else(|| field.value.clone());
                     *input = shown(&step(&kind, &base, key.code == KeyCode::Right));
                 }
-                KeyCode::Char(c) if text_kind || c.is_ascii_digit() || c == '-' || (c == '.' && matches!(kind, Kind::Number { .. })) => {
+                KeyCode::Char(c)
+                    if text_kind
+                        || c.is_ascii_digit()
+                        || c == '-'
+                        || (c == '.' && matches!(kind, Kind::Number { .. })) =>
+                {
                     input.push(c);
                 }
                 _ => {}
@@ -147,7 +157,9 @@ impl Editor {
         let Some(value) = value else {
             return EditorResult::Problem(format!("`{}` needs {}", spec.key, needs(&spec.kind)));
         };
-        let Some(toml) = to_toml(&value) else { return EditorResult::Problem(format!("`{}` can't be saved", spec.key)) };
+        let Some(toml) = to_toml(&value) else {
+            return EditorResult::Problem(format!("`{}` can't be saved", spec.key));
+        };
         let mut table = toml_edit::Table::new();
         table.insert(&spec.key, toml_edit::Item::Value(toml));
         let (_, problems) = crate::plugin_settings::resolve(&self.plugin, std::slice::from_ref(&spec), Some(&table));

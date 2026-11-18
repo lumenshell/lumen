@@ -10,8 +10,8 @@ mod hotkey;
 mod info;
 mod input;
 mod keymap;
-mod manager;
 mod links;
+mod manager;
 mod marks;
 mod mouse;
 mod palette;
@@ -36,8 +36,8 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use gpui::{
-    Action, App, AppContext, Application, Bounds, Pixels, TitlebarOptions,
-    WindowBounds, WindowDecorations, WindowOptions, actions, point, px, size,
+    Action, App, AppContext, Application, Bounds, Pixels, TitlebarOptions, WindowBounds, WindowDecorations,
+    WindowOptions, actions, point, px, size,
 };
 
 use settings::Settings;
@@ -102,7 +102,6 @@ fn load_fonts(cx: &App) {
     cx.text_system().add_fonts(fonts).expect("failed to load bundled fonts");
 }
 
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("msg") {
@@ -134,7 +133,9 @@ fn main() {
     }
     if let Some(arg) = args.first() {
         let help = matches!(arg.as_str(), "-h" | "--help" | "help");
-        eprintln!("Usage: lumen              open a window\n       lumen msg ...      control a running Lumen (lumen msg help)\n       lumen plugins ...  install, update and remove plugins (lumen plugins help)\n       lumen info         system facts and this Lumen's settings, beside a flame\n       lumen campfire     a fire that fills the pane, for cold coding sessions\n       lumen python-path  where the lumen_plugin Python package is\n       lumen --version    which version this is");
+        eprintln!(
+            "Usage: lumen              open a window\n       lumen msg ...      control a running Lumen (lumen msg help)\n       lumen plugins ...  install, update and remove plugins (lumen plugins help)\n       lumen info         system facts and this Lumen's settings, beside a flame\n       lumen campfire     a fire that fills the pane, for cold coding sessions\n       lumen python-path  where the lumen_plugin Python package is\n       lumen --version    which version this is"
+        );
         std::process::exit(if help { 0 } else { 2 });
     }
     Application::new().run(|cx: &mut App| {
@@ -148,14 +149,10 @@ fn main() {
         let listener = api::listen(cx);
 
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.on_action(|_: &NextTheme, cx| {
-            Settings::update(cx, Settings::next_theme)
-        });
+        cx.on_action(|_: &NextTheme, cx| Settings::update(cx, Settings::next_theme));
         cx.on_action(|_: &IncreaseFont, cx| Settings::update(cx, |s| s.font_size += 1.0));
         cx.on_action(|_: &DecreaseFont, cx| Settings::update(cx, |s| s.font_size -= 1.0));
-        cx.on_action(|_: &ResetFont, cx| {
-            Settings::update(cx, |s| s.font_size = settings::DEFAULT_FONT_SIZE)
-        });
+        cx.on_action(|_: &ResetFont, cx| Settings::update(cx, |s| s.font_size = settings::DEFAULT_FONT_SIZE));
 
         cx.on_action(|_: &NewWindow, cx| new_window(None, None, cx));
         cx.on_action(|_: &ToggleQuickTerminal, cx| {
@@ -289,24 +286,25 @@ fn open_window(
 /// The New Window action: a window with one tab in `cwd`, the size of the
 /// window it was opened from (or the default size), placed by the system.
 pub fn new_window(cwd: Option<std::path::PathBuf>, from: Option<gpui::Size<Pixels>>, cx: &mut App) {
-    let saved = cwd.map(|cwd| {
-        session::Session::new(
-            None,
-            0,
-            vec![session::TabState {
-                root: session::NodeState::Pane { cwd: Some(cwd) },
-                active: 0,
-                zoomed: false,
-                title: None,
-                color: None,
-            }],
-        )
-    })
-    .or_else(|| {
-        // No folder to inherit (no window open): use `working-directory`.
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        workspace::fresh_session(&Settings::get(cx).working_directory, home)
-    });
+    let saved = cwd
+        .map(|cwd| {
+            session::Session::new(
+                None,
+                0,
+                vec![session::TabState {
+                    root: session::NodeState::Pane { cwd: Some(cwd) },
+                    active: 0,
+                    zoomed: false,
+                    title: None,
+                    color: None,
+                }],
+            )
+        })
+        .or_else(|| {
+            // No folder to inherit (no window open): use `working-directory`.
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            workspace::fresh_session(&Settings::get(cx).working_directory, home)
+        });
     let mut place = initial_placement(None, cx);
     if let Some(size) = from {
         place.bounds = Bounds::centered(None, size, cx);
@@ -376,13 +374,11 @@ fn x11_move(bounds: Bounds<Pixels>, scale: f32, nth: usize) -> bool {
     let Ok((conn, screen)) = x11rb::connect(None) else { return true };
     let root = conn.setup().roots[screen].root;
     let atom = |name: &[u8]| Some(conn.intern_atom(true, name).ok()?.reply().ok()?.atom);
-    let (Some(client_list), Some(wm_pid)) = (atom(b"_NET_CLIENT_LIST"), atom(b"_NET_WM_PID"))
-    else {
+    let (Some(client_list), Some(wm_pid)) = (atom(b"_NET_CLIENT_LIST"), atom(b"_NET_WM_PID")) else {
         return true;
     };
-    let property = |window, prop, kind: AtomEnum| {
-        conn.get_property(false, window, prop, kind, 0, 4096).ok()?.reply().ok()
-    };
+    let property =
+        |window, prop, kind: AtomEnum| conn.get_property(false, window, prop, kind, 0, 4096).ok()?.reply().ok();
     let Some(clients) = property(root, client_list, AtomEnum::WINDOW) else { return true };
     let me = std::process::id();
     let Some(ours) = clients
@@ -390,9 +386,7 @@ fn x11_move(bounds: Bounds<Pixels>, scale: f32, nth: usize) -> bool {
         .into_iter()
         .flatten()
         .filter(|&w| {
-            property(w, wm_pid, AtomEnum::CARDINAL)
-                .and_then(|p| p.value32()?.next())
-                .is_some_and(|pid| pid == me)
+            property(w, wm_pid, AtomEnum::CARDINAL).and_then(|p| p.value32()?.next()).is_some_and(|pid| pid == me)
         })
         .nth(nth)
     else {

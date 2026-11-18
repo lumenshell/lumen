@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use gpui::{App, Font, FontId, GlyphId, Global, Hsla, Pixels, SharedString, TextRun, WindowTextSystem};
+use gpui::{App, Font, FontId, Global, GlyphId, Hsla, Pixels, SharedString, TextRun, WindowTextSystem};
 
 #[derive(Clone, Copy)]
 pub struct Glyph {
@@ -23,8 +23,27 @@ pub struct Glyph {
 pub fn joins(c: char) -> bool {
     matches!(
         c,
-        '!' | '#' | '$' | '%' | '&' | '*' | '+' | '-' | '.' | '/' | ':' | ';' | '<' | '=' | '>'
-            | '?' | '@' | '\\' | '^' | '_' | '|' | '~'
+        '!' | '#'
+            | '$'
+            | '%'
+            | '&'
+            | '*'
+            | '+'
+            | '-'
+            | '.'
+            | '/'
+            | ':'
+            | ';'
+            | '<'
+            | '='
+            | '>'
+            | '?'
+            | '@'
+            | '\\'
+            | '^'
+            | '_'
+            | '|'
+            | '~'
     )
 }
 
@@ -115,12 +134,7 @@ fn shape(text: &WindowTextSystem, font: &Font, size: Pixels, s: &str) -> Box<[Gl
     line.runs
         .iter()
         .flat_map(|run| {
-            run.glyphs.iter().map(|g| Glyph {
-                font_id: run.font_id,
-                id: g.id,
-                x: g.position.x,
-                emoji: g.is_emoji,
-            })
+            run.glyphs.iter().map(|g| Glyph { font_id: run.font_id, id: g.id, x: g.position.x, emoji: g.is_emoji })
         })
         .collect()
 }

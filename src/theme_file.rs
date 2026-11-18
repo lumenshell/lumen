@@ -93,7 +93,8 @@ fn parse_ghostty(name: &str, text: &str) -> Result<Theme, String> {
         let bad = || format!("line {}: `{key}` should be a colour like #1e1e2e", n + 1);
         match key {
             "palette" => {
-                let (index, hex) = value.split_once('=').ok_or_else(|| format!("line {}: expected `palette = N=#rrggbb`", n + 1))?;
+                let (index, hex) =
+                    value.split_once('=').ok_or_else(|| format!("line {}: expected `palette = N=#rrggbb`", n + 1))?;
                 let index: usize = index.trim().parse().map_err(|_| format!("line {}: bad palette number", n + 1))?;
                 if index < 16 {
                     palette[index] = color(hex).ok_or_else(bad)?;
@@ -178,7 +179,9 @@ mod tests {
         for i in 0..16 {
             text.push_str(&format!("palette = {i}=#{:02x}{:02x}{:02x}\n", i * 10, i * 10, i * 10));
         }
-        text.push_str("background = 1e1e2e\nforeground = #cdd6f4\ncursor-color = #f5e0dc\nselection-background = #585b70\n");
+        text.push_str(
+            "background = 1e1e2e\nforeground = #cdd6f4\ncursor-color = #f5e0dc\nselection-background = #585b70\n",
+        );
         let t = parse("Mocha", &text).unwrap();
         assert_eq!(t.pane, c(0x1e1e2e));
         assert_eq!(t.text, c(0xcdd6f4));

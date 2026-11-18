@@ -87,9 +87,20 @@ impl Owner {
 /// a pseudoterminal, a plugin drawing the pane itself, or nothing at all
 /// (a pane that only says why no shell could be started).
 enum Backend {
-    Process { notifier: Notifier, child_pid: u32 },
-    Message { parser: Box<alacritty_terminal::vte::ansi::Processor>, events: UnboundedSender<Event> },
-    Plugin { owner: Owner, pane: u64, parser: Box<alacritty_terminal::vte::ansi::Processor>, events: UnboundedSender<Event> },
+    Process {
+        notifier: Notifier,
+        child_pid: u32,
+    },
+    Message {
+        parser: Box<alacritty_terminal::vte::ansi::Processor>,
+        events: UnboundedSender<Event>,
+    },
+    Plugin {
+        owner: Owner,
+        pane: u64,
+        parser: Box<alacritty_terminal::vte::ansi::Processor>,
+        events: UnboundedSender<Event>,
+    },
 }
 
 pub struct Pty {
@@ -136,9 +147,7 @@ impl Pty {
             (shell, false)
         };
         let options = tty::Options {
-            shell: shell
-                .split_first()
-                .map(|(program, args)| tty::Shell::new(program.clone(), args.to_vec())),
+            shell: shell.split_first().map(|(program, args)| tty::Shell::new(program.clone(), args.to_vec())),
             working_directory: cwd.filter(|p| p.is_dir()).or_else(fallback_cwd),
             drain_on_exit: false,
             env,
@@ -187,7 +196,10 @@ impl Pty {
         .map(String::from);
         match Self::spawn(cwd, Some(&fallback), false, pane, config.clone(), size) {
             Ok(spawned) => spawned,
-            Err(e) => Self::message(&format!("\x1b[31m{why}\x1b[0m\r\n/bin/sh couldn't be started either: {e}\r\n{fix}\r\n"), config),
+            Err(e) => Self::message(
+                &format!("\x1b[31m{why}\x1b[0m\r\n/bin/sh couldn't be started either: {e}\r\n{fix}\r\n"),
+                config,
+            ),
         }
     }
 

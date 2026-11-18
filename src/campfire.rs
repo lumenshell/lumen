@@ -81,10 +81,8 @@ pub fn run(args: &[String]) -> i32 {
         eprintln!("lumen campfire: it needs a terminal to burn in");
         return 1;
     }
-    let settings = config_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|t| Settings::parse(&t))
-        .unwrap_or_default();
+    let settings =
+        config_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| Settings::parse(&t)).unwrap_or_default();
     let theme = settings.theme();
     let look = Look { bg: rgb_of(theme.pane), hint: rgb_of(theme.subtext), dark: !theme.is_light };
     burn(&look)
@@ -269,9 +267,7 @@ impl Rng {
 }
 
 fn seed() -> u64 {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
     (nanos ^ (std::process::id() as u64) << 32) | 1
 }
 
@@ -763,7 +759,8 @@ impl Fire {
                 if e > 1.0 {
                     continue;
                 }
-                let glow = noise(x as f32 * 0.45 + 7.0, y as f32 * 0.6 - self.t * 0.5) * (1.0 - 0.5 * e) * flicker * 1.3;
+                let glow =
+                    noise(x as f32 * 0.45 + 7.0, y as f32 * 0.6 - self.t * 0.5) * (1.0 - 0.5 * e) * flicker * 1.3;
                 px[y * self.w + x] = EMBERS[(dither(glow.min(1.0), 3.0, x, y) * 3.0).round() as usize];
             }
         }
@@ -806,7 +803,9 @@ impl Fire {
                     let inside = (1.0 - (p0 - l.cx).abs() / l.hw).clamp(0.0, 1.0);
                     if inside > 0.35 && side > 0.45 {
                         // A glowing seam where the flames lick it.
-                        let hot = noise(along * 0.25 + which * 13.0, self.t * 0.6) * (0.5 + inside) * (1.0 + 0.5 * self.surge);
+                        let hot = noise(along * 0.25 + which * 13.0, self.t * 0.6)
+                            * (0.5 + inside)
+                            * (1.0 + 0.5 * self.surge);
                         EMBERS[((hot * 3.0).round() as usize).clamp(1, 3)]
                     } else if inside > 0.35 {
                         CHARCOAL
@@ -856,12 +855,19 @@ impl Fire {
                 if !inside(fx, fy) {
                     continue;
                 }
-                let edge = !(inside(fx - 1.0, fy) && inside(fx + 1.0, fy) && inside(fx, fy - 1.0) && inside(fx, fy + 1.0));
+                let edge =
+                    !(inside(fx - 1.0, fy) && inside(fx + 1.0, fy) && inside(fx, fy - 1.0) && inside(fx, fy + 1.0));
                 let dx = (fx + 0.5 - c[0]) / rad[0];
                 let dy = (fy + 0.5 - c[1]) / rad[1];
                 let toward = if c[0] < l.cx { dx } else { -dx }; // 1 on the fire's side
                 let lit = -dy * 0.6 + toward * 0.5;
-                let tone = if lit > 0.3 { STONE_LIGHT } else if lit > -0.25 { STONE } else { STONE_DARK };
+                let tone = if lit > 0.3 {
+                    STONE_LIGHT
+                } else if lit > -0.25 {
+                    STONE
+                } else {
+                    STONE_DARK
+                };
                 px[y * self.w + x] = if outlined && edge {
                     OUTLINE
                 } else if toward > 0.35 && lit > -0.25 {
@@ -881,7 +887,8 @@ fn fire_color(heat: f32, x: usize, y: usize) -> Option<Rgb> {
     FIRE.iter().rev().find(|(from, _)| heat >= *from).map(|(_, c)| *c)
 }
 
-const BAYER: [[f32; 4]; 4] = [[0.0, 8.0, 2.0, 10.0], [12.0, 4.0, 14.0, 6.0], [3.0, 11.0, 1.0, 9.0], [15.0, 7.0, 13.0, 5.0]];
+const BAYER: [[f32; 4]; 4] =
+    [[0.0, 8.0, 2.0, 10.0], [12.0, 4.0, 14.0, 6.0], [3.0, 11.0, 1.0, 9.0], [15.0, 7.0, 13.0, 5.0]];
 
 /// An ordered-dither threshold for a pixel, in (0, 1).
 fn bayer(x: usize, y: usize) -> f32 {

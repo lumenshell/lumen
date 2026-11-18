@@ -158,9 +158,7 @@ impl Caller {
 fn required(method: &str) -> Option<Permission> {
     match method {
         "new-tab" | "split" | "focus" | "close" | "set-title" | "move-tab" | "set-tab-style" | "set-pane-style"
-        | "write" | "quick-terminal" => {
-            Some(Permission::Panes)
-        }
+        | "write" | "quick-terminal" => Some(Permission::Panes),
         "send-text" | "run-action" => Some(Permission::Input),
         "read-screen" => Some(Permission::Screen),
         _ => None,
@@ -427,10 +425,22 @@ pub fn serve_conn(
 pub fn disconnect(jobs: &Jobs, caller: &Caller, conn: u64) {
     let (reply, _) = oneshot::channel();
     let params = json!({ "conn": conn });
-    let _ = jobs.unbounded_send(Job { caller: caller.clone(), method: "_disconnected".into(), params, reply, origin: None });
+    let _ = jobs.unbounded_send(Job {
+        caller: caller.clone(),
+        method: "_disconnected".into(),
+        params,
+        reply,
+        origin: None,
+    });
 }
 
-fn read_requests(mut reader: impl BufRead, origin: &Origin, jobs: &Jobs, caller: &Caller, revoked: Option<&AtomicBool>) {
+fn read_requests(
+    mut reader: impl BufRead,
+    origin: &Origin,
+    jobs: &Jobs,
+    caller: &Caller,
+    revoked: Option<&AtomicBool>,
+) {
     let out = &origin.out;
     let mut buf = Vec::new();
     loop {
@@ -622,7 +632,12 @@ mod tests {
         let (out, _events) = mpsc::channel();
         let origin = Origin { conn: 0, out };
         let caller = Caller::Plugin { name: "p".into(), perms: vec![Panes] };
-        let reply = handle_line(r#"{"jsonrpc":"2.0","method":"new-tab","params":{"run":"make"},"id":1}"#, &jobs, &origin, &caller);
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","method":"new-tab","params":{"run":"make"},"id":1}"#,
+            &jobs,
+            &origin,
+            &caller,
+        );
         let reply: Value = serde_json::from_str(&reply.unwrap()).unwrap();
         assert_eq!(reply["error"]["code"], -32001);
         let message = reply["error"]["message"].as_str().unwrap();

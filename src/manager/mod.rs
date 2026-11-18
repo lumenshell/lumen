@@ -64,9 +64,7 @@ pub fn run() -> i32 {
         panic!("a test asked the manager to panic");
     }
     let backend = CrosstermBackend::new(std::io::stdout());
-    let result = run_with(env, backend, |wait| {
-        if event::poll(wait).ok()? { event::read().ok() } else { None }
-    });
+    let result = run_with(env, backend, |wait| if event::poll(wait).ok()? { event::read().ok() } else { None });
     drop(guard);
     match result {
         Ok(()) => 0,
@@ -119,7 +117,9 @@ struct Done {
 
 enum Job {
     /// Load the index: the cached copy unless it's over an hour old.
-    LoadIndex { refresh: bool },
+    LoadIndex {
+        refresh: bool,
+    },
     Apply(Box<Effect>),
 }
 
@@ -339,7 +339,10 @@ fn statuses() -> BTreeMap<String, (String, bool)> {
             list.iter()
                 .filter_map(|p| {
                     let name = p["name"].as_str()?.to_string();
-                    Some((name, (p["status"].as_str().unwrap_or_default().to_string(), p["trouble"].as_bool().unwrap_or(false))))
+                    Some((
+                        name,
+                        (p["status"].as_str().unwrap_or_default().to_string(), p["trouble"].as_bool().unwrap_or(false)),
+                    ))
                 })
                 .collect()
         })
@@ -349,10 +352,10 @@ fn statuses() -> BTreeMap<String, (String, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use crate::plugins::Permission;
     use crate::registry::testing::{archive, entry, paths, release};
     use crate::registry::{Index, Paths};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn index_of(plugins: Vec<(&str, Vec<crate::registry::Release>)>) -> Index {
         Index {
@@ -375,7 +378,10 @@ mod tests {
     #[test]
     fn installs_refuse_permissions_not_shown() {
         let (dir, p) = paths("manager-not-shown");
-        let idx = index_of(vec![("mira/x", vec![release("1.0.0", vec![Permission::Panes], archive(&dir, "1.0.0", "\"panes\""))])]);
+        let idx = index_of(vec![(
+            "mira/x",
+            vec![release("1.0.0", vec![Permission::Panes], archive(&dir, "1.0.0", "\"panes\""))],
+        )]);
         let e = apply(&p, Some(&idx), &install("mira/x", vec![])).unwrap_err();
         assert!(e.contains("asks for more"), "{e}");
         assert!(crate::registry::load_installed_from(&p.installed).is_empty(), "nothing installed");
@@ -387,8 +393,14 @@ mod tests {
     fn update_all_updates_only_what_was_shown() {
         let (dir, p) = paths("manager-update-shown");
         let ydir = dir.join("y");
-        let (x1, x2) = (release("1.0.0", vec![], archive(&dir, "1.0.0", "")), release("1.1.0", vec![], archive(&dir, "1.1.0", "")));
-        let (y1, y2) = (release("1.0.0", vec![], archive(&ydir, "1.0.0", "")), release("1.1.0", vec![], archive(&ydir, "1.1.0", "")));
+        let (x1, x2) = (
+            release("1.0.0", vec![], archive(&dir, "1.0.0", "")),
+            release("1.1.0", vec![], archive(&dir, "1.1.0", "")),
+        );
+        let (y1, y2) = (
+            release("1.0.0", vec![], archive(&ydir, "1.0.0", "")),
+            release("1.1.0", vec![], archive(&ydir, "1.1.0", "")),
+        );
         let first = index_of(vec![("mira/x", vec![x1.clone()]), ("mira/y", vec![y1.clone()])]);
         apply(&p, Some(&first), &install("mira/x", vec![])).unwrap();
         apply(&p, Some(&first), &install("mira/y", vec![])).unwrap();
@@ -452,7 +464,8 @@ mod tests {
         apply(&p, Some(&first), &install("mira/x", vec![])).unwrap();
         apply(&p, Some(&first), &install("mira/y", vec![])).unwrap();
         let next = index_of(vec![("mira/x", vec![x1, x2]), ("mira/y", vec![y1, y2])]);
-        let e = apply(&p, Some(&next), &Effect::UpdateAll(vec![("mira/x".into(), vec![]), ("mira/y".into(), vec![])])).unwrap_err();
+        let e = apply(&p, Some(&next), &Effect::UpdateAll(vec![("mira/x".into(), vec![]), ("mira/y".into(), vec![])]))
+            .unwrap_err();
         assert!(e.contains("mira/y"), "{e}");
         assert!(e.contains("Updated 1 plugin"), "{e}");
         assert_eq!(crate::registry::load_installed_from(&p.installed)["mira/x"].version, "1.1.0");
@@ -545,7 +558,11 @@ mod setting_tests {
     fn setting_saves_keep_comments_and_other_keys() {
         let (dir, p) = paths("manager-settings");
         std::fs::create_dir_all(p.config.parent().unwrap()).unwrap();
-        std::fs::write(&p.config, "# my settings\nfont-size = 14\n\n[plugin.command-history]\nmax-entries = 5000 # plenty\n").unwrap();
+        std::fs::write(
+            &p.config,
+            "# my settings\nfont-size = 14\n\n[plugin.command-history]\nmax-entries = 5000 # plenty\n",
+        )
+        .unwrap();
         let save = |plugin: &str, key: &str, value: Option<serde_json::Value>| {
             apply(&p, None, &Effect::SaveSetting { plugin: plugin.into(), key: key.into(), value }).unwrap()
         };

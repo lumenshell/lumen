@@ -254,9 +254,7 @@ fn real_state_dir() -> Option<PathBuf> {
     let base = if cfg!(target_os = "macos") {
         home?.join("Library/Application Support")
     } else {
-        std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| home.map(|h| h.join(".local/state")))?
+        std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".local/state")))?
     };
     Some(base.join("lumen"))
 }
@@ -372,11 +370,8 @@ pub const BUILTINS: &[Builtin] = &[
 
 /// Plugins that used to come with Lumen and now come from the registry: a
 /// config.toml naming the old one means the new one.
-pub const MOVED: &[(&str, &str)] = &[
-    ("project-layout", "sn/project-layout"),
-    ("build-status", "sn/build-status"),
-    ("pomodoro", "sn/pomodoro"),
-];
+pub const MOVED: &[(&str, &str)] =
+    &[("project-layout", "sn/project-layout"), ("build-status", "sn/build-status"), ("pomodoro", "sn/pomodoro")];
 
 /// The registry plugin a once built-in plugin's name now means.
 pub fn moved_to(name: &str) -> Option<&'static str> {
@@ -397,7 +392,9 @@ impl Builtin {
             let path = dir.join(file);
             if std::fs::read_to_string(&path).ok().as_deref() != Some(*text) {
                 let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-                std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| format!("{}: {e}", path.display()))?;
+                std::fs::write(&tmp, text)
+                    .and_then(|_| std::fs::rename(&tmp, &path))
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
             }
         }
         let toml = self.files.iter().find(|(f, _)| *f == "plugin.toml").map(|(_, t)| *t).unwrap_or_default();
@@ -594,7 +591,11 @@ fn decide(m: &Manifest, approvals: &BTreeMap<String, Approval>) -> Decision {
     }
     match approvals.get(&m.approval_key()) {
         Some(a) if a.command == m.command && m.permissions.iter().all(|p| a.permissions.contains(p)) => {
-            if a.allowed { Decision::Allowed } else { Decision::Refused }
+            if a.allowed {
+                Decision::Allowed
+            } else {
+                Decision::Refused
+            }
         }
         _ => Decision::Ask,
     }
@@ -602,11 +603,7 @@ fn decide(m: &Manifest, approvals: &BTreeMap<String, Approval>) -> Decision {
 
 /// What a plugin that isn't allowed to run says in the plugin list.
 pub fn refused_status(m: &Manifest) -> String {
-    if m.registry {
-        format!("not approved: run `lumen plugins install {}`", m.name)
-    } else {
-        "not allowed".into()
-    }
+    if m.registry { format!("not approved: run `lumen plugins install {}`", m.name) } else { "not allowed".into() }
 }
 
 /// Approve a registry plugin's permissions (in the approvals file at
@@ -652,7 +649,11 @@ pub fn record_decision(m: &Manifest, allowed: bool) -> Result<(), String> {
 
 /// [`record_decision`], in the approvals file at `path`.
 pub fn record_decision_at(path: &Path, m: &Manifest, allowed: bool) -> Result<(), String> {
-    store_approval_at(path, m.approval_key(), Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed })
+    store_approval_at(
+        path,
+        m.approval_key(),
+        Approval { command: m.command.clone(), permissions: m.permissions.clone(), allowed },
+    )
 }
 
 /// The approvals file's lock: Lumen and `lumen plugins` both change it.
@@ -714,12 +715,7 @@ static GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// The entry for this particular start of a plugin.
 fn with_run<R>(name: &str, generation: u64, f: impl FnOnce(&mut Running) -> R) -> Option<R> {
-    PLUGINS
-        .lock()
-        .unwrap()
-        .iter_mut()
-        .find(|r| r.manifest.name == name && r.generation == generation)
-        .map(f)
+    PLUGINS.lock().unwrap().iter_mut().find(|r| r.manifest.name == name && r.generation == generation).map(f)
 }
 
 /// A plugin as shown in the palette.
@@ -819,9 +815,8 @@ pub fn start(m: Manifest, settings: serde_json::Map<String, Value>) {
         });
     }
     let name = m.name.clone();
-    let _ = std::thread::Builder::new()
-        .name(format!("plugin-{name}"))
-        .spawn(move || supervise(m, stop, jobs, generation));
+    let _ =
+        std::thread::Builder::new().name(format!("plugin-{name}")).spawn(move || supervise(m, stop, jobs, generation));
 }
 
 const BACKOFF: [u64; 6] = [1, 2, 5, 10, 30, 60];
@@ -1110,9 +1105,7 @@ pub fn key_bindings() -> Vec<(String, String, String)> {
         .lock()
         .unwrap()
         .iter()
-        .flat_map(|r| {
-            r.commands.iter().filter_map(|c| Some((c.keys.clone()?, r.manifest.name.clone(), c.id.clone())))
-        })
+        .flat_map(|r| r.commands.iter().filter_map(|c| Some((c.keys.clone()?, r.manifest.name.clone(), c.id.clone()))))
         .collect()
 }
 
@@ -1200,14 +1193,23 @@ mod tests {
     }
 
     fn installed_at(dir: &Path, perms: Vec<Permission>) -> crate::registry::Installed {
-        crate::registry::Installed { version: "1.0.0".into(), commit: "c".repeat(40), permissions: perms, dir: dir.to_path_buf() }
+        crate::registry::Installed {
+            version: "1.0.0".into(),
+            commit: "c".repeat(40),
+            permissions: perms,
+            dir: dir.to_path_buf(),
+        }
     }
 
     #[test]
     fn registry_plugins_are_discovered() {
         let dir = std::env::temp_dir().join(format!("lumen-reg-discover-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("plugin.toml"), "version = \"1.0.0\"\ncommand = \"python3 main.py\"\npermissions = [\"panes\"]").unwrap();
+        std::fs::write(
+            dir.join("plugin.toml"),
+            "version = \"1.0.0\"\ncommand = \"python3 main.py\"\npermissions = [\"panes\"]",
+        )
+        .unwrap();
         let mut installed = BTreeMap::new();
         installed.insert("mira/x".to_string(), installed_at(&dir, vec![Permission::Panes]));
         let (found, problems) = discover_registry(&["recent-dirs".into(), "mira/x".into()], &installed);
@@ -1433,8 +1435,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m.settings.len(), 1);
-        let e = parse_manifest(Path::new("p"), "command = \"x\"\n[settings.n]\ntype = \"integer\"\ndescription = \"d\"")
-            .unwrap_err();
+        let e =
+            parse_manifest(Path::new("p"), "command = \"x\"\n[settings.n]\ntype = \"integer\"\ndescription = \"d\"")
+                .unwrap_err();
         assert!(e.contains("default"), "{e}");
     }
 
@@ -1513,7 +1516,11 @@ mod tests {
         assert_eq!(m.command, vec!["node", "my plugin.js"]);
         assert!(m.permissions.is_empty());
         assert!(parse_manifest(dir, "version = \"1\"\n").unwrap_err().contains("`command` is missing"));
-        assert!(parse_manifest(dir, "command = \"x\"\npermissions = [\"network\"]\n").unwrap_err().contains("unknown permission"));
+        assert!(
+            parse_manifest(dir, "command = \"x\"\npermissions = [\"network\"]\n")
+                .unwrap_err()
+                .contains("unknown permission")
+        );
         assert!(parse_manifest(dir, "command = \n").is_err());
     }
 

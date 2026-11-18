@@ -27,17 +27,34 @@ pub enum Effect {
     /// Install `name`; `allowed` is what you were asked about and allowed.
     /// If the plugin now needs more (the index changed meanwhile), nothing
     /// is installed.
-    Install { name: String, allowed: Vec<Permission> },
-    Update { name: String, allowed: Vec<Permission> },
+    Install {
+        name: String,
+        allowed: Vec<Permission>,
+    },
+    Update {
+        name: String,
+        allowed: Vec<Permission>,
+    },
     /// Update each of these plugins (the ones shown with updates), with
     /// what was allowed for each.
     UpdateAll(Vec<(String, Vec<Permission>)>),
-    Remove { name: String, delete_data: bool },
+    Remove {
+        name: String,
+        delete_data: bool,
+    },
     /// Turn a plugin on or off; `approve` is a built-in's manifest whose
     /// permissions you just allowed.
-    SetEnabled { name: String, on: bool, approve: Option<Manifest> },
+    SetEnabled {
+        name: String,
+        on: bool,
+        approve: Option<Manifest>,
+    },
     /// Set (or with `None`, reset) one of a plugin's settings.
-    SaveSetting { plugin: String, key: String, value: Option<serde_json::Value> },
+    SaveSetting {
+        plugin: String,
+        key: String,
+        value: Option<serde_json::Value>,
+    },
     RefreshIndex,
     Quit,
 }
@@ -357,9 +374,8 @@ impl Model {
             ('i', _) | (' ', None) => self.say(format!("{name} is installed already")),
             (' ', Some(i)) if needs_install && i.kind == Kind::Registry => self.install(&name),
             (' ', Some(i)) => match i.kind {
-                Kind::Local => {
-                    self.say("Local plugins are always on; move its folder out of ~/.config/lumen/plugins to turn it off")
-                }
+                Kind::Local => self
+                    .say("Local plugins are always on; move its folder out of ~/.config/lumen/plugins to turn it off"),
                 Kind::BuiltIn if !i.on => {
                     // Approved before (and unchanged since): no need to ask again.
                     let approved = i.manifest.as_ref().is_some_and(|m| {
@@ -441,8 +457,8 @@ mod tests {
     use super::*;
     use crate::manager::data::{Attention, Item, Kind, Snapshot, Upgrade};
     use crate::plugins::Permission;
-    use crate::registry::testing::{entry, release};
     use crate::registry::Index;
+    use crate::registry::testing::{entry, release};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(m: &mut Model, code: KeyCode) -> Vec<Effect> {
@@ -490,7 +506,8 @@ mod tests {
         x.versions = vec![release("1.0.0", vec![], String::new())];
         let mut git = entry("b/git", 1, &[]);
         git.versions = vec![release("1.0.0", vec![], String::new())];
-        let snapshot = Snapshot { index: Some(Index { version: 1, plugins: vec![docker, x, git] }), ..Default::default() };
+        let snapshot =
+            Snapshot { index: Some(Index { version: 1, plugins: vec![docker, x, git] }), ..Default::default() };
         let mut m = Model::new(snapshot);
         m.items = vec![
             item("recent-dirs", Kind::BuiltIn, true, vec![]),
@@ -602,7 +619,10 @@ mod tests {
             Some(Dialog::Approve { permissions, .. }) => assert_eq!(permissions, &[Permission::Screen]),
             other => panic!("{other:?}"),
         }
-        assert_eq!(key(&mut m, KeyCode::Enter), [Effect::Update { name: "mira/b".into(), allowed: vec![Permission::Screen] }]);
+        assert_eq!(
+            key(&mut m, KeyCode::Enter),
+            [Effect::Update { name: "mira/b".into(), allowed: vec![Permission::Screen] }]
+        );
     }
 
     #[test]
@@ -727,7 +747,11 @@ mod tests {
         assert!(m.editing.is_some());
         assert_eq!(
             ch(&mut m, ' '),
-            [Effect::SaveSetting { plugin: "git-branch".into(), key: "sound".into(), value: Some(serde_json::json!(false)) }]
+            [Effect::SaveSetting {
+                plugin: "git-branch".into(),
+                key: "sound".into(),
+                value: Some(serde_json::json!(false))
+            }]
         );
         m.busy = None;
         assert!(ch(&mut m, 'q').is_empty(), "q leaves the editor, not the manager");

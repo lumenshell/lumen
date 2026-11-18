@@ -99,11 +99,8 @@ pub fn grab(key: Hotkey, pressed: impl Fn() + Send + 'static) -> Result<Grab, St
     let (conn, screen) = x11rb::connect(None).map_err(|e| format!("can't reach the X server: {e}"))?;
     let root = conn.setup().roots[screen].root;
     let (min, max) = (conn.setup().min_keycode, conn.setup().max_keycode);
-    let map = conn
-        .get_keyboard_mapping(min, max - min + 1)
-        .map_err(|e| e.to_string())?
-        .reply()
-        .map_err(|e| e.to_string())?;
+    let map =
+        conn.get_keyboard_mapping(min, max - min + 1).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
     let per = map.keysyms_per_keycode as usize;
     let keycode = map
         .keysyms

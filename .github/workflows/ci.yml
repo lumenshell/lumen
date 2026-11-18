@@ -41,7 +41,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends pkg-config \
             libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
             libfreetype-dev libfontconfig-dev libwayland-dev libvulkan-dev
-      - run: rustup toolchain install stable --profile minimal --component clippy && rustup default stable
+      - run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt && rustup default stable
+      - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - name: Python tests

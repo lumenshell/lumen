@@ -7,8 +7,8 @@
 use std::io::{IsTerminal, Read, Write};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
-use std::sync::mpsc;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use gpui::{Hsla, Rgba};
@@ -54,10 +54,8 @@ pub fn run(args: &[String]) -> i32 {
     let color = stdout.is_terminal()
         && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
         && std::env::var("TERM").as_deref() != Ok("dumb");
-    let settings = config_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|t| Settings::parse(&t))
-        .unwrap_or_default();
+    let settings =
+        config_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| Settings::parse(&t)).unwrap_or_default();
     // Ask for the public IP while everything else is gathered.
     let ip = look_up_ip.then(spawn_ip_lookup);
     let mut facts = facts(&settings);
@@ -237,11 +235,9 @@ fn flame_lines(t: f32, theme: &Theme, color: bool) -> Vec<String> {
                     (false, false) => line.push_str("\x1b[0m "),
                     (true, false) => line.push_str(&format!("\x1b[0m{}▀", fg_rgb(flame_color(a, theme)))),
                     (false, true) => line.push_str(&format!("\x1b[0m{}▄", fg_rgb(flame_color(b, theme)))),
-                    (true, true) => line.push_str(&format!(
-                        "{}{}▀",
-                        fg_rgb(flame_color(a, theme)),
-                        bg_rgb(flame_color(b, theme))
-                    )),
+                    (true, true) => {
+                        line.push_str(&format!("{}{}▀", fg_rgb(flame_color(a, theme)), bg_rgb(flame_color(b, theme))))
+                    }
                 }
             }
             if color {
@@ -337,7 +333,8 @@ fn animate(out: &mut impl Write, theme: &Theme, lines: usize, motion: Motion, mu
             let mut fd = libc::pollfd { fd: libc::STDIN_FILENO, events: libc::POLLIN, revents: 0 };
             // SAFETY: one pollfd we own. Readable means a key: stop, and leave
             // it unread for whatever reads the terminal next.
-            if unsafe { libc::poll(&mut fd, 1, FRAME.as_millis() as libc::c_int) } > 0 && fd.revents & libc::POLLIN != 0 {
+            if unsafe { libc::poll(&mut fd, 1, FRAME.as_millis() as libc::c_int) } > 0 && fd.revents & libc::POLLIN != 0
+            {
                 break;
             }
         } else {
@@ -647,7 +644,8 @@ const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 /// The 1, 5 and 15 minute load averages, with how much of the machine the
 /// last minute's is.
 fn load() -> Option<String> {
-    let text = if cfg!(target_os = "macos") { output("sysctl", &["-n", "vm.loadavg"])? } else { read("/proc/loadavg")? };
+    let text =
+        if cfg!(target_os = "macos") { output("sysctl", &["-n", "vm.loadavg"])? } else { read("/proc/loadavg")? };
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     Some(format_load(parse_load(&text)?, threads))
 }
@@ -669,12 +667,7 @@ fn format_load(l: [f64; 3], threads: usize) -> String {
 /// Used and total bytes from /proc/meminfo (used = total - available).
 fn meminfo(text: &str) -> Option<(u64, u64)> {
     let kb = |key: &str| -> Option<u64> {
-        text.lines()
-            .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))?
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()
+        text.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))?.split_whitespace().next()?.parse().ok()
     };
     let total = kb("MemTotal")? * 1024;
     let available = kb("MemAvailable")? * 1024;
@@ -736,7 +729,10 @@ mod tests {
 
     #[test]
     fn os_release_prefers_the_pretty_name() {
-        assert_eq!(os_release_name("NAME=\"Ubuntu\"\nPRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\n").unwrap(), "Ubuntu 24.04.1 LTS");
+        assert_eq!(
+            os_release_name("NAME=\"Ubuntu\"\nPRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\n").unwrap(),
+            "Ubuntu 24.04.1 LTS"
+        );
         assert_eq!(os_release_name("NAME=Arch\n").unwrap(), "Arch");
         assert_eq!(os_release_name("ID=x\n"), None);
     }
@@ -747,7 +743,10 @@ mod tests {
         assert_eq!(cpu_model(intel).unwrap(), "Intel Core i7-9700K");
         let amd = "model name\t: AMD Ryzen 9 7950X 16-Core Processor\n";
         assert_eq!(cpu_model(amd).unwrap(), "AMD Ryzen 9 7950X 16-Core");
-        assert_eq!(cpu_model("Hardware\t: BCM2835\nModel\t: Raspberry Pi 4 Model B Rev 1.4\n").unwrap(), "Raspberry Pi 4 Model B Rev 1.4");
+        assert_eq!(
+            cpu_model("Hardware\t: BCM2835\nModel\t: Raspberry Pi 4 Model B Rev 1.4\n").unwrap(),
+            "Raspberry Pi 4 Model B Rev 1.4"
+        );
         assert_eq!(cpu_model("flags: fpu\n"), None);
     }
 
@@ -793,7 +792,10 @@ mod tests {
                      01:00.0 \"3D controller\" \"NVIDIA Corporation\" \"AD107M [GeForce RTX 4060 Max-Q / Mobile]\" -ra1 \"\" \"\"\n\
                      00:1f.3 \"Audio device\" \"Intel Corporation\" \"Raptor Lake High Definition Audio Controller\"\n";
         assert_eq!(gpus_from_lspci(lspci), ["Intel UHD Graphics 770", "NVIDIA GeForce RTX 4060 Max-Q / Mobile"]);
-        assert_eq!(nvidia_model("Model: \t\t NVIDIA GeForce RTX 5070 Ti\nIRQ: 112\n").unwrap(), "NVIDIA GeForce RTX 5070 Ti");
+        assert_eq!(
+            nvidia_model("Model: \t\t NVIDIA GeForce RTX 5070 Ti\nIRQ: 112\n").unwrap(),
+            "NVIDIA GeForce RTX 5070 Ti"
+        );
     }
 
     #[test]
@@ -819,7 +821,8 @@ mod tests {
             // Coloured cells: one character each, whatever the escapes.
             let colored = flame_lines(t, &theme, true);
             for line in &colored {
-                let visible = line.split('\x1b').map(|seg| seg.split_once('m').map_or(seg, |(_, r)| r)).collect::<String>();
+                let visible =
+                    line.split('\x1b').map(|seg| seg.split_once('m').map_or(seg, |(_, r)| r)).collect::<String>();
                 assert_eq!(visible.chars().count(), FLAME_W, "{line:?}");
             }
             let px = flame(t);

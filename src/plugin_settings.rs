@@ -9,8 +9,14 @@ use toml_edit::{DocumentMut, Item, Table};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
     String,
-    Integer { min: Option<i64>, max: Option<i64> },
-    Number { min: Option<f64>, max: Option<f64> },
+    Integer {
+        min: Option<i64>,
+        max: Option<i64>,
+    },
+    Number {
+        min: Option<f64>,
+        max: Option<f64>,
+    },
     Boolean,
     Choice(Vec<String>),
     /// A list of strings.
@@ -36,9 +42,10 @@ pub fn parse_schema(doc: &DocumentMut) -> Result<Vec<Spec>, String> {
 
 fn spec(key: &str, item: &Item) -> Result<Spec, String> {
     let t = item.as_table_like().ok_or("should be a table with `type`, `default` and `description`")?;
-    let kind_name = t.get("type").and_then(Item::as_str).ok_or(
-        "`type` should be \"string\", \"integer\", \"number\", \"boolean\", \"choice\" or \"list\"",
-    )?;
+    let kind_name = t
+        .get("type")
+        .and_then(Item::as_str)
+        .ok_or("`type` should be \"string\", \"integer\", \"number\", \"boolean\", \"choice\" or \"list\"")?;
     let description = t.get("description").and_then(Item::as_str).ok_or("`description` is missing")?.to_string();
     let (min, max) = (t.get("min"), t.get("max"));
     let integer = |i: Option<&Item>, name: &str| match i {
@@ -107,7 +114,8 @@ fn spec(key: &str, item: &Item) -> Result<Spec, String> {
 /// The value as JSON, if it suits `kind`.
 fn check(kind: &Kind, item: &Item) -> Option<Value> {
     let v = item.as_value()?;
-    let in_range = |n: f64, lo: Option<f64>, hi: Option<f64>| lo.is_none_or(|lo| n >= lo) && hi.is_none_or(|hi| n <= hi);
+    let in_range =
+        |n: f64, lo: Option<f64>, hi: Option<f64>| lo.is_none_or(|lo| n >= lo) && hi.is_none_or(|hi| n <= hi);
     match kind {
         Kind::String => v.as_str().map(Value::from),
         Kind::Integer { min, max } => {
