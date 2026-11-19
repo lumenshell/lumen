@@ -1808,14 +1808,19 @@ impl Render for TerminalView {
             let base_font = font(font_family.clone());
             let font_id = text_system.resolve_font(&base_font);
             let cell_width = text_system.advance(font_id, font_size, 'm').map(|s| s.width).unwrap_or(px(8.0));
-            let line_height = (font_size * line_height_factor).round();
+            // Everything on the grid sits on the screen's own pixels, whatever
+            // the display scale: rows are a whole number of them tall, and
+            // cell edges, lines and the cursor fall between them.
+            let scale = window.scale_factor();
+            let snap = move |v: Pixels| px((f32::from(v) * scale).round() / scale);
+            let line_height = snap((font_size * line_height_factor).round());
             let cols = ((bounds.size.width / cell_width).floor() as usize).max(2);
             let rows = ((bounds.size.height / line_height).floor() as usize).max(1);
             // Centre the grid so the space left over by whole cells is shared
             // evenly between opposite edges (whole pixels keep glyphs crisp).
             let slack_x = (bounds.size.width - cell_width * cols as f32).max(px(0.0));
             let slack_y = (bounds.size.height - line_height * rows as f32).max(px(0.0));
-            let origin = point((bounds.origin.x + slack_x / 2.0).round(), (bounds.origin.y + slack_y / 2.0).round());
+            let origin = point(snap(bounds.origin.x + slack_x / 2.0), snap(bounds.origin.y + slack_y / 2.0));
 
             layout_cell.set(Some(GridLayout { origin, cell_width, line_height, cols, rows }));
 
@@ -1864,20 +1869,26 @@ impl Render for TerminalView {
             // Consecutive operator characters, drawn together so ligatures form.
             let mut join: Option<Join> = None;
 
+            let box_light = boxdraw::light(f32::from(cell_width) * scale);
             let cache = GlyphCache::get(cx, &font_family, font_size);
             let (ascent, descent) = cache.metrics(&text_system, &fonts[0]);
             let baseline = (line_height - ascent - descent) / 2.0 + ascent;
-            let underline_y = baseline + descent * 0.618;
-            let strike_y = (ascent * 0.5 + baseline) * 0.5;
+            let underline_y = snap(baseline + descent * 0.618);
+            let strike_y = snap((ascent * 0.5 + baseline) * 0.5);
+            // One screen pixel at least, and a whole number of them.
+            let hairline = snap(px(1.0)).max(px(1.0 / scale));
 
+            // Cells are a fraction of a pixel wide, so each one's edges go
+            // to the nearest pixel: some are a pixel wider than others, and
+            // neighbours always share an edge.
+            let col_x = |col: usize| snap(origin.x + cell_width * col as f32);
+            let row_y = |row: usize| snap(origin.y + line_height * row as f32);
             let cell_bounds = |row: usize, col: usize, span: usize| {
-                Bounds::new(
-                    point(origin.x + cell_width * col as f32, origin.y + line_height * row as f32),
-                    size(cell_width * span as f32, line_height),
-                )
+                Bounds::from_corners(point(col_x(col), row_y(row)), point(col_x(col + span), row_y(row + 1)))
             };
             let emit = |glyphs: &mut Vec<GlyphDraw>, row: usize, col: usize, color: Hsla, cached: &[Glyph]| {
-                let origin = cell_bounds(row, col, 1).origin;
+                // Text keeps its even spacing: glyphs aren't moved to the cell's snapped edge.
+                let origin = point(origin.x + cell_width * col as f32, row_y(row));
                 glyphs.extend(cached.iter().map(|g| GlyphDraw {
                     origin: point(origin.x + g.x, origin.y + baseline),
                     glyph: *g,
@@ -1979,14 +1990,14 @@ impl Render for TerminalView {
 
                 // Underline and strikethrough runs
                 let underline = (in_link || flags.intersects(Flags::ALL_UNDERLINES)).then(|| UnderlineStyle {
-                    thickness: px(1.0),
+                    thickness: hairline,
                     color: Some(fg),
                     wavy: !in_link && flags.contains(Flags::UNDERCURL),
                 });
                 extend_run(&mut underline_run, underline, (row, col, span), &mut underlines);
                 let strike = flags
                     .contains(Flags::STRIKEOUT)
-                    .then(|| StrikethroughStyle { thickness: px(1.0), color: Some(fg) });
+                    .then_some(StrikethroughStyle { thickness: hairline, color: Some(fg) });
                 extend_run(&mut strike_run, strike, (row, col, span), &mut strikes);
 
                 // Text
@@ -2014,12 +2025,13 @@ impl Render for TerminalView {
                     continue;
                 }
                 if zerowidth.is_none() && boxdraw::handles(ch) {
-                    // Snap to whole pixels at edges shared with neighbouring cells.
-                    let edge = |c: usize| f32::from(origin.x + cell_width * c as f32).round();
-                    let top = f32::from(origin.y + line_height * row as f32).round();
-                    let bottom = top + f32::from(line_height);
+                    // Drawn in the screen's pixels, between the same edges as
+                    // the cell's background.
+                    let device = |v: Pixels| (f32::from(v) * scale).round();
+                    let (x0, x1) = (device(col_x(col)), device(col_x(col + span)));
+                    let (y0, y1) = (device(row_y(row)), device(row_y(row + 1)));
                     shapes.extend(
-                        boxdraw::shapes(ch, edge(col), edge(col + span), top, bottom).into_iter().map(|s| (s, fg)),
+                        boxdraw::shapes(ch, x0, x1, y0, y1, box_light).into_iter().map(|s| (s.scaled(1.0 / scale), fg)),
                     );
                     continue;
                 }
@@ -2064,8 +2076,8 @@ impl Render for TerminalView {
             underlines.extend(underline_run.take());
             strikes.extend(strike_run.take());
             let place = |(r, start, end): (usize, usize, usize), y: Pixels| {
-                let o = cell_bounds(r, start, 1).origin;
-                (point(o.x, o.y + y), cell_width * (end - start) as f32)
+                let b = cell_bounds(r, start, end - start);
+                (point(b.origin.x, b.origin.y + y), b.size.width)
             };
             let decorations = underlines
                 .into_iter()
