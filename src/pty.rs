@@ -68,7 +68,7 @@ pub type SharedTerm = Arc<FairMutex<Term<Listener>>>;
 pub struct Owner {
     /// The connection, to recognise its requests and notice it closing.
     pub conn: u64,
-    pub out: std::sync::mpsc::Sender<String>,
+    pub out: crate::api::Out,
     /// The plugin's name ("script" for a socket client), the pane's first title.
     pub name: String,
 }

@@ -77,6 +77,10 @@ A plugin talks to Lumen over its stdin and stdout. It uses the same JSON-RPC
 2.0 messages as the [socket API](scripting.md#protocol), one per line. It
 should exit when stdin closes.
 
+A plugin has to keep reading its stdin. If it stops and 16 MB of replies
+and events are waiting for it, Lumen kills it, says so in its log, and
+starts it again like any plugin that exited.
+
 Anything it writes to stderr goes to its log, a line at a time; a line over
 16 KB is split. **Plugin Logs…** in the palette opens it in a new tab.
 

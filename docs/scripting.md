@@ -145,6 +145,9 @@ After `subscribe`, the connection also receives events as notifications:
 {"jsonrpc":"2.0","method":"event","params":{"event":"bell","pane":4294967298}}
 ```
 
+Keep reading them: a connection with 16 MB of replies and events waiting
+to be read is closed.
+
 Errors use the standard JSON-RPC codes, with `-32000` for requests that can't
 be carried out, such as an unknown pane.
 
