@@ -129,6 +129,9 @@ pub struct Shared {
     /// UI sends the `command-finished` event, since it can read the command
     /// text off the screen.
     pub finished: Vec<Finished>,
+    /// How many marks the shell has sent. While it stays the same, no
+    /// prompt has been added to the terminal.
+    pub marks: u64,
 }
 
 /// A command that finished, for long-command notifications.
@@ -400,7 +403,11 @@ impl Rewriter {
             if !self.trusted(key) {
                 return;
             }
-            self.shared.lock().unwrap().active = true;
+            {
+                let mut shared = self.shared.lock().unwrap();
+                shared.active = true;
+                shared.marks += 1;
+            }
             let mut parts = parts.into_iter();
             match parts.next() {
                 Some("A") => {

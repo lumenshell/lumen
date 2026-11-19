@@ -113,6 +113,8 @@ pub struct TerminalView {
     /// and whether it failed: the scrollbar's marks.
     command_lines: Rc<Vec<(usize, bool)>>,
     marks_rescan: Option<Task<()>>,
+    /// What the last look for prompts saw, to tell whether another is due.
+    marks_seen: Option<MarksSeen>,
     scrollbar: ScrollbarState,
     /// Prompt last jumped to, highlighted until you type.
     jump_target: Option<String>,
@@ -353,6 +355,7 @@ impl TerminalView {
             exits: Rc::default(),
             command_lines: Rc::default(),
             marks_rescan: None,
+            marks_seen: None,
             scrollbar: ScrollbarState::default(),
             jump_target: None,
             vi: ViState::default(),
@@ -444,7 +447,7 @@ impl TerminalView {
             Vec::new()
         } else {
             let term = self.pty.term.lock();
-            marks::recent_commands(&term, &marks::prompts(&term), finished.len(), usize::from(running))
+            marks::newest_commands(&term, finished.len(), usize::from(running))
         };
         let pane = cx.entity_id().as_u64();
         for (i, done) in finished.into_iter().enumerate() {
@@ -481,7 +484,7 @@ impl TerminalView {
         }
         if running && self.running_command.is_none() {
             let term = self.pty.term.lock();
-            self.running_command = marks::last_command(&term, &marks::prompts(&term));
+            self.running_command = marks::newest_commands(&term, 1, 0).pop().flatten();
         }
     }
 
@@ -497,7 +500,7 @@ impl TerminalView {
 
     /// Exit status of the last command that finished (shell integration).
     pub fn last_exit(&self) -> Option<i32> {
-        marks::prompts(&self.pty.term.lock()).last().and_then(|p| p.exit_before)
+        marks::newest_prompt(&self.pty.term.lock()).and_then(|p| p.exit_before)
     }
 
     /// Text of the screen, or with `lines`, of the last `lines` lines of
@@ -990,18 +993,52 @@ impl TerminalView {
             cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
             let _ = this.update(cx, |this, cx| {
                 this.marks_rescan = None;
-                this.rescan_marks();
-                cx.notify();
+                if this.marks_moved(Settings::get(cx).scrollback) {
+                    this.rescan_marks();
+                    cx.notify();
+                }
             });
         }));
     }
 
     /// Find every prompt again and refresh the exit statuses shown in the
     /// margin and the scrollbar.
+    /// Whether the prompts found by the last [`Self::rescan_marks`] may have
+    /// changed or moved, in a terminal keeping `scrollback` lines. Looking
+    /// for them reads all the scrollback, so it's skipped while the shell
+    /// has marked nothing new and what was found is still where it was:
+    /// lines are counted from the oldest, which stays put until the
+    /// scrollback is full.
+    fn marks_moved(&mut self, scrollback: usize) -> bool {
+        use alacritty_terminal::grid::Dimensions as _;
+        let marks = self.pty.shell_state.lock().unwrap().marks;
+        let Some(seen) = &mut self.marks_seen else { return true };
+        let term = self.pty.term.lock();
+        let now = MarksSeen {
+            marks,
+            grid: (term.columns(), term.screen_lines()),
+            history: term.grid().history_size(),
+            prompts: seen.prompts,
+        };
+        let moved = seen.moved(&now, scrollback);
+        // So that scrollback cleared and filled again is still seen to have shrunk.
+        seen.history = now.history;
+        moved
+    }
+
     fn rescan_marks(&mut self) -> Vec<marks::Prompt> {
+        // Read before the grid, so a mark arriving meanwhile isn't missed.
+        let marks = self.pty.shell_state.lock().unwrap().marks;
+        use alacritty_terminal::grid::Dimensions as _;
         let term = self.pty.term.lock();
         let prompts = marks::prompts(&term);
         let history = alacritty_terminal::grid::Dimensions::history_size(term.grid()) as i32;
+        self.marks_seen = Some(MarksSeen {
+            marks,
+            grid: (term.columns(), term.screen_lines()),
+            history: history as usize,
+            prompts: prompts.len(),
+        });
         drop(term);
         let exits = marks::exits(&prompts);
         self.command_lines = Rc::new(
@@ -1368,6 +1405,32 @@ fn right_click(has_selection: bool, setting: RightClick) -> Option<ClickAction> 
 
 // ---------------------------------------------------------------------------
 // Rendering
+
+/// The terminal as it was when its prompts were last looked for.
+struct MarksSeen {
+    /// Marks the shell had sent.
+    marks: u64,
+    /// Columns and rows.
+    grid: (usize, usize),
+    /// Lines of scrollback.
+    history: usize,
+    /// How many prompts there were.
+    prompts: usize,
+}
+
+impl MarksSeen {
+    /// Whether the prompts found then may have changed or moved by `now`,
+    /// in a terminal keeping `scrollback` lines.
+    fn moved(&self, now: &MarksSeen, scrollback: usize) -> bool {
+        // A new mark, a different grid (lines rewrap), or scrollback cleared.
+        if now.marks != self.marks || now.grid != self.grid || now.history < self.history {
+            return true;
+        }
+        // Otherwise they only move once the scrollback is full and its
+        // oldest lines start to go; with none found, there's nothing to move.
+        self.prompts > 0 && now.history >= scrollback
+    }
+}
 
 struct Frame {
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
@@ -2289,6 +2352,25 @@ impl Render for TerminalView {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn prompts_are_looked_for_again_only_when_they_may_have_moved() {
+        let seen = MarksSeen { marks: 4, grid: (80, 24), history: 100, prompts: 2 };
+        let now = |marks, grid, history| MarksSeen { marks, grid, history, prompts: 2 };
+        // Output with no new mark, scrollback still filling: nothing moved.
+        assert!(!seen.moved(&now(4, (80, 24), 100), 10_000));
+        assert!(!seen.moved(&now(4, (80, 24), 9_999), 10_000));
+        // The shell marked something, the grid changed, or scrollback was cleared.
+        assert!(seen.moved(&now(5, (80, 24), 100), 10_000));
+        assert!(seen.moved(&now(4, (100, 24), 100), 10_000));
+        assert!(seen.moved(&now(4, (80, 30), 100), 10_000));
+        assert!(seen.moved(&now(4, (80, 24), 50), 10_000));
+        // Scrollback full: old lines go, so what's left moves up.
+        assert!(seen.moved(&now(4, (80, 24), 10_000), 10_000));
+        // Unless there were no prompts to move.
+        let none = MarksSeen { prompts: 0, ..now(4, (80, 24), 100) };
+        assert!(!none.moved(&now(4, (80, 24), 10_000), 10_000));
+    }
 
     #[test]
     fn a_bell_during_a_flash_starts_no_new_timer() {
