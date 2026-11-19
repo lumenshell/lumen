@@ -47,7 +47,9 @@ warnings as errors, on Linux and macOS
 | `src/cli.rs`           | The `lumen msg` command                                   |
 | `src/info.rs`          | The `lumen info` command                                  |
 | `src/campfire.rs`      | The `lumen campfire` command                              |
-| `src/plugins.rs`       | Plugin manifests, approvals, running and restarting them  |
+| `src/plugins/`         | Plugins, in two files: |
+| `  mod.rs`             | Plugin manifests, discovery, approvals and update checks  |
+| `  supervisor.rs`      | Running plugins: each one's process, restarts, stopping, logs, settings and commands |
 | `src/workspace/`       | The window, in six files: |
 | `  mod.rs`             | The window's state, session restore, tab and pane actions, and drawing the whole |
 | `  titlebar.rs`        | Title bar, tab strip, tab colours and badges, window controls |

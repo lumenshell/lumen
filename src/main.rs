@@ -199,7 +199,7 @@ fn main() {
         }
         first.update(cx, |ws, window, cx| ws.start_plugins(window, cx)).ok();
         cx.on_app_quit(|_| {
-            plugins::stop_all();
+            plugins::shut_down();
             async {}
         })
         .detach();

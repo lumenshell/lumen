@@ -25,7 +25,8 @@ When a plugin is stopped (turned off, removed, replaced by a new version, or
 Lumen quits), it loses its connection at once: its stdin closes, nothing more
 it asks for is carried out, it's sent no more events, and its panes close. It
 and every process it started are sent SIGTERM, and SIGKILL two seconds later
-if they're still there. A program that should outlive the plugin, such as a
+if they're still there. When Lumen quits it waits half a second instead, and
+doesn't exit until they're gone. A program that should outlive the plugin, such as a
 browser it opened, has to be started in a session of its own (`setsid`, or
 `start_new_session=True` in Python).
 
@@ -76,8 +77,8 @@ A plugin talks to Lumen over its stdin and stdout. It uses the same JSON-RPC
 2.0 messages as the [socket API](scripting.md#protocol), one per line. It
 should exit when stdin closes.
 
-Anything it writes to stderr goes to its log. **Plugin Logs…** in the
-palette opens it in a new tab.
+Anything it writes to stderr goes to its log, a line at a time; a line over
+16 KB is split. **Plugin Logs…** in the palette opens it in a new tab.
 
 Its environment has:
 
