@@ -13,8 +13,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use futures::StreamExt;
 use futures::channel::{mpsc as fmpsc, oneshot};
@@ -157,13 +158,24 @@ impl Caller {
 fn required(method: &str) -> Option<Permission> {
     match method {
         "new-tab" | "split" | "focus" | "close" | "set-title" | "move-tab" | "set-tab-style" | "set-pane-style"
-        | "write" | "quick-terminal" => {
-            Some(Permission::Panes)
-        }
+        | "write" | "quick-terminal" => Some(Permission::Panes),
         "send-text" | "run-action" => Some(Permission::Input),
         "read-screen" => Some(Permission::Screen),
         _ => None,
     }
+}
+
+/// Every permission a request needs: the method's own, and `input` for a
+/// `run` on `new-tab` or `split`, which is typed into the new pane's shell
+/// like `send-text`. Parameter-dependent rules belong here, beside the
+/// method's own, so there's one place to look.
+fn needed(method: &str, params: &Value) -> Vec<Permission> {
+    let mut all: Vec<Permission> = required(method).into_iter().collect();
+    let runs = matches!(method, "new-tab" | "split") && params.get("run").is_some_and(|r| !r.is_null());
+    if runs {
+        all.push(Permission::Input);
+    }
+    all
 }
 
 /// The connection a request came in on: plugin panes it opens send their
@@ -350,28 +362,85 @@ fn serve_connection(stream: UnixStream, jobs: Jobs) {
 
 /// A thread writing lines to `w`; replies and events share it, so lines
 /// never interleave. Ends when `w` can't be written.
-pub fn writer(mut w: impl Write + Send + 'static) -> mpsc::Sender<String> {
+pub fn writer(w: impl Write + Send + 'static) -> mpsc::Sender<String> {
+    writer_until(w, None)
+}
+
+/// [`writer`], which also ends (closing `w`, and so refusing every later
+/// reply and event) soon after `revoked` is set.
+pub fn writer_until(mut w: impl Write + Send + 'static, revoked: Option<Arc<AtomicBool>>) -> mpsc::Sender<String> {
     let (out, lines) = mpsc::channel::<String>();
     std::thread::spawn(move || {
-        for line in lines {
-            if w.write_all(line.as_bytes()).and_then(|_| w.write_all(b"\n")).and_then(|_| w.flush()).is_err() {
-                break;
+        let gone = || revoked.as_ref().is_some_and(|r| r.load(Ordering::SeqCst));
+        loop {
+            let line = match &revoked {
+                None => lines.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                Some(_) => lines.recv_timeout(REVOKE_CHECK),
+            };
+            match line {
+                _ if gone() => break,
+                Ok(line) => {
+                    if w.write_all(line.as_bytes()).and_then(|_| w.write_all(b"\n")).and_then(|_| w.flush()).is_err() {
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
     });
     out
 }
 
-/// Read requests line by line from `reader` until it closes, answering on `out`.
-pub fn serve_lines(mut reader: impl BufRead, out: &mpsc::Sender<String>, jobs: &Jobs, caller: &Caller) {
-    let origin = Origin { conn: NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed), out: out.clone() };
-    read_requests(&mut reader, &origin, jobs, caller);
-    let (reply, _) = oneshot::channel();
-    let params = json!({ "conn": origin.conn });
-    let _ = jobs.unbounded_send(Job { caller: caller.clone(), method: "_disconnected".into(), params, reply, origin: None });
+/// How often a revocable writer looks at its flag while nothing is sent.
+const REVOKE_CHECK: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A connection id, for [`serve_conn`] and [`disconnect`].
+pub fn new_conn() -> u64 {
+    NEXT_CONN.fetch_add(1, Ordering::Relaxed)
 }
 
-fn read_requests(mut reader: impl BufRead, origin: &Origin, jobs: &Jobs, caller: &Caller) {
+/// Read requests line by line from `reader` until it closes, answering on `out`.
+pub fn serve_lines(reader: impl BufRead, out: &mpsc::Sender<String>, jobs: &Jobs, caller: &Caller) {
+    serve_conn(reader, new_conn(), out, jobs, caller, None);
+}
+
+/// [`serve_lines`] as connection `conn`. Once `revoked` is set, nothing more
+/// it sends is carried out.
+pub fn serve_conn(
+    mut reader: impl BufRead,
+    conn: u64,
+    out: &mpsc::Sender<String>,
+    jobs: &Jobs,
+    caller: &Caller,
+    revoked: Option<&AtomicBool>,
+) {
+    let origin = Origin { conn, out: out.clone() };
+    read_requests(&mut reader, &origin, jobs, caller, revoked);
+    disconnect(jobs, caller, conn);
+}
+
+/// Tell the UI connection `conn` is over: its plugin panes close and its
+/// tab and pane styles go. Harmless to say twice.
+pub fn disconnect(jobs: &Jobs, caller: &Caller, conn: u64) {
+    let (reply, _) = oneshot::channel();
+    let params = json!({ "conn": conn });
+    let _ = jobs.unbounded_send(Job {
+        caller: caller.clone(),
+        method: "_disconnected".into(),
+        params,
+        reply,
+        origin: None,
+    });
+}
+
+fn read_requests(
+    mut reader: impl BufRead,
+    origin: &Origin,
+    jobs: &Jobs,
+    caller: &Caller,
+    revoked: Option<&AtomicBool>,
+) {
     let out = &origin.out;
     let mut buf = Vec::new();
     loop {
@@ -387,6 +456,10 @@ fn read_requests(mut reader: impl BufRead, origin: &Origin, jobs: &Jobs, caller:
         let text = String::from_utf8_lossy(&buf);
         if text.trim().is_empty() {
             continue;
+        }
+        // A stopped plugin's requests are dropped, even ones already on their way.
+        if revoked.is_some_and(|r| r.load(Ordering::SeqCst)) {
+            break;
         }
         if let Some(reply) = handle_line(&text, jobs, origin, caller) {
             let _ = out.send(reply);
@@ -436,12 +509,13 @@ fn handle_line(text: &str, jobs: &Jobs, origin: &Origin, caller: &Caller) -> Opt
     };
     let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
 
-    if let (Caller::Plugin { name, .. }, Some(p)) = (caller, required(&method))
-        && !caller.may(p)
+    if let Caller::Plugin { name, .. } = caller
+        && let Some(p) = needed(&method, &params).into_iter().find(|p| !caller.may(*p))
     {
+        let what = if required(&method) == Some(p) { method.clone() } else { format!("{method} with `run`") };
         let e = ApiError(
             -32001,
-            format!("plugin \"{name}\" needs the \"{}\" permission for {method}; add it to its plugin.toml", p.name()),
+            format!("plugin \"{name}\" needs the \"{}\" permission for {what}; add it to its plugin.toml", p.name()),
         );
         return id.map(|id| error_response(id, e));
     }
@@ -539,6 +613,36 @@ mod tests {
     #[test]
     fn plugin_status_needs_no_permission() {
         assert_eq!(required("plugin-status"), None);
+    }
+
+    #[test]
+    fn running_a_command_in_a_new_pane_needs_input_too() {
+        use Permission::{Input, Panes};
+        for method in ["new-tab", "split"] {
+            assert_eq!(needed(method, &json!({})), [Panes]);
+            assert_eq!(needed(method, &json!({"run": null, "cwd": "~"})), [Panes]);
+            assert_eq!(needed(method, &json!({"run": "make"})), [Panes, Input]);
+        }
+        // `run` means nothing elsewhere.
+        assert_eq!(needed("focus", &json!({"run": "make"})), [Panes]);
+        assert_eq!(needed("list", &json!({"run": "make"})), []);
+
+        // A plugin with only `panes` is refused before anything is opened.
+        let (jobs, mut asked) = fmpsc::unbounded();
+        let (out, _events) = mpsc::channel();
+        let origin = Origin { conn: 0, out };
+        let caller = Caller::Plugin { name: "p".into(), perms: vec![Panes] };
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","method":"new-tab","params":{"run":"make"},"id":1}"#,
+            &jobs,
+            &origin,
+            &caller,
+        );
+        let reply: Value = serde_json::from_str(&reply.unwrap()).unwrap();
+        assert_eq!(reply["error"]["code"], -32001);
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains("\"input\" permission for new-tab with `run`"), "{message}");
+        assert!(asked.try_recv().is_err(), "nothing reached the UI");
     }
 
     fn line(text: &str) -> (Option<Value>, mpsc::Receiver<String>) {

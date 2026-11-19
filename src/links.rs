@@ -14,10 +14,8 @@ const URL_REGEX: &str = "(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https:
 
 /// Schemes we'll hand to the system opener for URLs written out in the text,
 /// where what you see is what opens.
-const ALLOWED_SCHEMES: &[&str] = &[
-    "http", "https", "mailto", "ftp", "file", "gemini", "gopher", "ssh", "git", "news", "magnet",
-    "ipfs", "ipns",
-];
+const ALLOWED_SCHEMES: &[&str] =
+    &["http", "https", "mailto", "ftp", "file", "gemini", "gopher", "ssh", "git", "news", "magnet", "ipfs", "ipns"];
 
 /// OSC 8 links hide their target behind arbitrary text, so a program could
 /// dress up `file:///…/evil.desktop` as "docs". Only web and mail targets open.
@@ -57,8 +55,7 @@ impl LinkFinder {
         // Search the whole logical line, following soft wraps.
         let start = term.line_search_left(point);
         let end = term.line_search_right(point);
-        let found = RegexIter::new(start, end, Direction::Right, term, regex)
-            .find(|m| m.contains(&point))?;
+        let found = RegexIter::new(start, end, Direction::Right, term, regex).find(|m| m.contains(&point))?;
         let (start, end) = (*found.start(), *found.end());
         let text = term.bounds_to_string(start, end);
         let trimmed = trim_url(&text);
@@ -74,15 +71,11 @@ impl LinkFinder {
 /// Is this link something we're willing to open?
 pub fn openable(link: &Link) -> bool {
     let allowed = if link.explicit { EXPLICIT_SCHEMES } else { ALLOWED_SCHEMES };
-    link.uri
-        .split_once(':')
-        .is_some_and(|(scheme, _)| allowed.contains(&scheme.to_ascii_lowercase().as_str()))
+    link.uri.split_once(':').is_some_and(|(scheme, _)| allowed.contains(&scheme.to_ascii_lowercase().as_str()))
 }
 
 fn in_grid<T>(term: &Term<T>, point: Point) -> bool {
-    point.line >= term.topmost_line()
-        && point.line <= term.bottommost_line()
-        && point.column.0 < term.columns()
+    point.line >= term.topmost_line() && point.line <= term.bottommost_line() && point.column.0 < term.columns()
 }
 
 /// Extend an OSC 8 hyperlink in both directions over cells sharing it.
@@ -141,7 +134,10 @@ mod tests {
     fn trims_prose_punctuation() {
         assert_eq!(trim_url("https://a.b/c."), "https://a.b/c");
         assert_eq!(trim_url("https://a.b/c),"), "https://a.b/c");
-        assert_eq!(trim_url("https://en.wikipedia.org/wiki/Rust_(language)"), "https://en.wikipedia.org/wiki/Rust_(language)");
+        assert_eq!(
+            trim_url("https://en.wikipedia.org/wiki/Rust_(language)"),
+            "https://en.wikipedia.org/wiki/Rust_(language)"
+        );
         assert_eq!(trim_url("https://a.b/?q=1"), "https://a.b/?q=1");
     }
 

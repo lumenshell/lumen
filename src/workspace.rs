@@ -4,13 +4,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext, Bounds, font, BoxShadow, Context, CursorStyle, Decorations, Hsla, Rgba,
-    DragMoveEvent, ElementId, Entity, EntityId, Focusable, HitboxBehavior, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ResizeEdge,
-    SharedString, Size, StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task,
-    Window,
-    WindowBackgroundAppearance, WindowBounds, canvas, div,
-    point, prelude::FluentBuilder, px, relative,
+    AnyElement, AnyView, App, AppContext, Bounds, BoxShadow, Context, CursorStyle, Decorations, DragMoveEvent,
+    ElementId, Entity, EntityId, Focusable, HitboxBehavior, Hsla, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, Point, Render, ResizeEdge, Rgba, SharedString, Size,
+    StatefulInteractiveElement, StyleRefinement, Styled, Subscription, Task, Window, WindowBackgroundAppearance,
+    WindowBounds, canvas, div, font, point, prelude::FluentBuilder, px, relative,
 };
 
 use serde_json::{Value, json};
@@ -18,13 +16,13 @@ use serde_json::{Value, json};
 use crate::api::{self, ApiError, ApiResult};
 use crate::keymap;
 use crate::palette::{CommandPalette, Dot, PaletteEvent, PaletteFn, PaletteItem};
+use crate::pty::{GridSize, Owner};
 use crate::session::{self, Axis, NodeState, Session, TabState, WindowState};
 use crate::settings::{MONO_FONT, Settings, WorkingDirectory, ui_font};
-use crate::pty::{GridSize, Owner};
-use std::path::PathBuf;
 use crate::terminal_view::{TerminalEvent, TerminalView};
 use crate::theme::{Theme, alpha};
 use crate::*;
+use std::path::PathBuf;
 
 /// Space between the panes and the window's edges.
 const EDGE: f32 = 8.0;
@@ -50,7 +48,11 @@ const MIN_PANE: f32 = 80.0;
 enum PaneNode {
     Leaf(Entity<TerminalView>),
     /// `ratios[i]` is child i's share of the space; they need not sum to 1.
-    Split { axis: Axis, children: Vec<PaneNode>, ratios: Vec<f32> },
+    Split {
+        axis: Axis,
+        children: Vec<PaneNode>,
+        ratios: Vec<f32>,
+    },
 }
 
 /// Drag payload for a split divider: the split (by child-index path from the tab
@@ -140,11 +142,8 @@ impl PaneNode {
                 view.kept_in_session().then(|| NodeState::Pane { cwd: view.cwd() })
             }
             PaneNode::Split { axis, children, ratios } => {
-                let (children, ratios): (Vec<_>, Vec<_>) = children
-                    .iter()
-                    .zip(ratios)
-                    .filter_map(|(c, r)| Some((c.to_state(cx)?, *r)))
-                    .unzip();
+                let (children, ratios): (Vec<_>, Vec<_>) =
+                    children.iter().zip(ratios).filter_map(|(c, r)| Some((c.to_state(cx)?, *r))).unzip();
                 match children.len() {
                     0 => None,
                     1 => children.into_iter().next(),
@@ -178,9 +177,7 @@ impl PaneNode {
                     let share = ratio / total;
                     let cr = match axis {
                         Axis::Row => Rect { x: r.x + r.w * start, y: r.y, w: r.w * share, h: r.h },
-                        Axis::Column => {
-                            Rect { x: r.x, y: r.y + r.h * start, w: r.w, h: r.h * share }
-                        }
+                        Axis::Column => Rect { x: r.x, y: r.y + r.h * start, w: r.w, h: r.h * share },
                     };
                     child.rects(cr, out);
                     start += share;
@@ -196,18 +193,14 @@ impl PaneNode {
                     return false;
                 }
                 let old = PaneNode::Leaf(e.clone());
-                *self = PaneNode::Split {
-                    axis,
-                    children: vec![old, PaneNode::Leaf(new.clone())],
-                    ratios: vec![1.0, 1.0],
-                };
+                *self =
+                    PaneNode::Split { axis, children: vec![old, PaneNode::Leaf(new.clone())], ratios: vec![1.0, 1.0] };
                 true
             }
             PaneNode::Split { axis: a, children, ratios } => {
                 if *a == axis
-                    && let Some(i) = children
-                        .iter()
-                        .position(|c| matches!(c, PaneNode::Leaf(e) if e.entity_id() == target))
+                    && let Some(i) =
+                        children.iter().position(|c| matches!(c, PaneNode::Leaf(e) if e.entity_id() == target))
                 {
                     // The new pane takes half of the pane it was split from.
                     let half = ratios[i] / 2.0;
@@ -239,19 +232,17 @@ impl PaneNode {
     /// Remove a leaf. Returns true if found. Collapses single-child splits.
     fn remove(&mut self, target: EntityId) -> bool {
         let PaneNode::Split { children, ratios, .. } = self else { return false };
-        let found = if let Some(i) = children
-            .iter()
-            .position(|c| matches!(c, PaneNode::Leaf(e) if e.entity_id() == target))
-        {
-            children.remove(i);
-            // Hand the freed space to the neighbour that grows into it.
-            let freed = ratios.remove(i);
-            let neighbour = i.saturating_sub(1).min(ratios.len() - 1);
-            ratios[neighbour] += freed;
-            true
-        } else {
-            children.iter_mut().any(|c| c.remove(target))
-        };
+        let found =
+            if let Some(i) = children.iter().position(|c| matches!(c, PaneNode::Leaf(e) if e.entity_id() == target)) {
+                children.remove(i);
+                // Hand the freed space to the neighbour that grows into it.
+                let freed = ratios.remove(i);
+                let neighbour = i.saturating_sub(1).min(ratios.len() - 1);
+                ratios[neighbour] += freed;
+                true
+            } else {
+                children.iter_mut().any(|c| c.remove(target))
+            };
         if found && children.len() == 1 {
             *self = children.pop().unwrap();
         }
@@ -327,9 +318,9 @@ impl TabColor {
                 let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(0);
                 Ok(TabColor::Rgb(byte(0), byte(2), byte(4)))
             }
-            None => Err(format!(
-                "`color` should be red, green, yellow, blue, magenta, cyan or #rrggbb, not \"{text}\""
-            )),
+            None => {
+                Err(format!("`color` should be red, green, yellow, blue, magenta, cyan or #rrggbb, not \"{text}\""))
+            }
         }
     }
 
@@ -344,7 +335,9 @@ impl TabColor {
     pub fn resolve(self, theme: &Theme) -> Hsla {
         match self {
             TabColor::Ansi(i) => theme.ansi[i as usize],
-            TabColor::Rgb(r, g, b) => Rgba { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a: 1.0 }.into(),
+            TabColor::Rgb(r, g, b) => {
+                Rgba { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a: 1.0 }.into()
+            }
         }
     }
 }
@@ -376,10 +369,7 @@ fn fit_badge(
         return fits(short).then(|| short.to_string());
     }
     let chars: Vec<char> = badge.chars().collect();
-    (2..chars.len())
-        .rev()
-        .map(|n| chars[..n].iter().chain(['…'].iter()).collect::<String>())
-        .find(|cut| fits(cut))
+    (2..chars.len()).rev().map(|n| chars[..n].iter().chain(['…'].iter()).collect::<String>()).find(|cut| fits(cut))
 }
 
 /// `a` with `t` of `b` mixed in.
@@ -436,8 +426,10 @@ impl Workspace {
     /// The quick terminal's workspace: one fresh tab.
     pub fn new_quick(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let this = Self::with(None, true, window, cx);
-        cx.observe_window_activation(window, |_, window, cx| crate::quick::activation_changed(window.is_window_active(), cx))
-            .detach();
+        cx.observe_window_activation(window, |_, window, cx| {
+            crate::quick::activation_changed(window.is_window_active(), cx)
+        })
+        .detach();
         this
     }
 
@@ -552,21 +544,13 @@ impl Workspace {
         };
         let prev = self.window_state;
         let (x, y, width, height) = match (bounds, prev) {
-            (Some(b), _) => (
-                f32::from(b.origin.x),
-                f32::from(b.origin.y),
-                f32::from(b.size.width),
-                f32::from(b.size.height),
-            ),
+            (Some(b), _) => {
+                (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height))
+            }
             (None, Some(p)) => (p.x, p.y, p.width, p.height),
             (None, None) => {
                 let b = window.inner_window_bounds().get_bounds();
-                (
-                    f32::from(b.origin.x),
-                    f32::from(b.origin.y),
-                    f32::from(b.size.width),
-                    f32::from(b.size.height),
-                )
+                (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height))
             }
         };
         self.window_state = Some(WindowState { x, y, width, height, maximized, fullscreen });
@@ -607,31 +591,21 @@ impl Workspace {
         session::record(self.window_id, self.snapshot(cx));
     }
 
-    fn spawn_terminal(
-        &mut self,
-        what: NewPane,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<TerminalView> {
+    fn spawn_terminal(&mut self, what: NewPane, window: &mut Window, cx: &mut Context<Self>) -> Entity<TerminalView> {
         let (cwd, owner, program) = what.into_parts();
         let term = TerminalView::open(cwd, owner, program, window, cx);
         api::emit("pane-opened", json!({ "pane": term.entity_id().as_u64() }));
         let sub = cx.subscribe_in(&term, window, |this, term, event, window, cx| match event {
             TerminalEvent::Attention => cx.notify(),
             TerminalEvent::TitleChanged => {
-                api::emit(
-                    "title-changed",
-                    json!({ "pane": term.entity_id().as_u64(), "title": term.read(cx).title }),
-                );
+                api::emit("title-changed", json!({ "pane": term.entity_id().as_u64(), "title": term.read(cx).title }));
                 cx.notify()
             }
             TerminalEvent::Focused => {
                 api::emit("focus-changed", json!({ "pane": term.entity_id().as_u64() }));
                 // Only track the active pane within its own tab; switching tabs is
                 // driven explicitly so a late focus event can't snap back.
-                if let Some(tab) =
-                    this.tabs.iter_mut().find(|t| t.leaves().iter().any(|l| l == term))
-                {
+                if let Some(tab) = this.tabs.iter_mut().find(|t| t.leaves().iter().any(|l| l == term)) {
                     tab.active = term.clone();
                 }
                 cx.notify();
@@ -680,12 +654,7 @@ impl Workspace {
     }
 
     /// Open a tab after the current one and switch to it.
-    fn open_tab(
-        &mut self,
-        what: NewPane,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<TerminalView> {
+    fn open_tab(&mut self, what: NewPane, window: &mut Window, cx: &mut Context<Self>) -> Entity<TerminalView> {
         let term = self.spawn_terminal(what, window, cx);
         let insert_at = if self.tabs.is_empty() { 0 } else { self.active_tab + 1 };
         self.tabs.insert(
@@ -754,9 +723,7 @@ impl Workspace {
     }
 
     fn close_pane_entity(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab_idx) =
-            self.tabs.iter().position(|t| t.leaves().iter().any(|l| l.entity_id() == id))
-        else {
+        let Some(tab_idx) = self.tabs.iter().position(|t| t.leaves().iter().any(|l| l.entity_id() == id)) else {
             return;
         };
         api::emit("pane-closed", json!({ "pane": id.as_u64() }));
@@ -1130,7 +1097,15 @@ impl Workspace {
         let ws = cx.entity().downgrade();
         let choice = |allow: bool, m: crate::plugins::Manifest, ws: gpui::WeakEntity<Workspace>| -> PaletteFn {
             Rc::new(move |window, cx| {
-                crate::plugins::record_decision(&m, allow);
+                if let Err(e) = crate::plugins::record_decision(&m, allow) {
+                    // It still takes effect now; it just isn't remembered.
+                    let problem =
+                        format!("couldn't keep your answer about \"{}\", so Lumen will ask again: {e}", m.name);
+                    let _ = ws.update(cx, |ws, cx| {
+                        ws.plugin_problems.push(problem);
+                        cx.notify();
+                    });
+                }
                 let (settings, _) = plugin_settings_for(&m, cx);
                 if allow {
                     crate::plugins::start(m.clone(), settings);
@@ -1289,13 +1264,7 @@ impl Workspace {
 
     /// Move divider `drag.index` so it sits under the mouse. `bounds` are the
     /// split container's bounds.
-    fn drag_divider(
-        &mut self,
-        drag: &SplitDrag,
-        mouse: Point<Pixels>,
-        bounds: Bounds<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
+    fn drag_divider(&mut self, drag: &SplitDrag, mouse: Point<Pixels>, bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
         if drag.tab != self.active_tab {
             return;
         }
@@ -1348,7 +1317,14 @@ impl Workspace {
                 let mut items = Vec::with_capacity(children.len() * 2);
                 for (i, (child, ratio)) in children.iter().zip(ratios).enumerate() {
                     if i > 0 {
-                        items.push(self.render_divider(row, path.clone(), i - 1, theme, Settings::get(cx).pane_gap, cx));
+                        items.push(self.render_divider(
+                            row,
+                            path.clone(),
+                            i - 1,
+                            theme,
+                            Settings::get(cx).pane_gap,
+                            cx,
+                        ));
                     }
                     let mut child_path = path.clone();
                     child_path.push(i);
@@ -1368,14 +1344,12 @@ impl Workspace {
                     .size_full()
                     .when(row, |d| d.flex_row())
                     .when(!row, |d| d.flex_col())
-                    .on_drag_move(cx.listener(
-                        move |this, e: &DragMoveEvent<SplitDrag>, _window, cx| {
-                            let drag = e.drag(cx).clone();
-                            if drag.path == path {
-                                this.drag_divider(&drag, e.event.position, e.bounds, cx);
-                            }
-                        },
-                    ))
+                    .on_drag_move(cx.listener(move |this, e: &DragMoveEvent<SplitDrag>, _window, cx| {
+                        let drag = e.drag(cx).clone();
+                        if drag.path == path {
+                            this.drag_divider(&drag, e.event.position, e.bounds, cx);
+                        }
+                    }))
                     .children(items)
                     .into_any_element()
             }
@@ -1487,8 +1461,7 @@ impl Workspace {
         };
         let tabs = self.tabs.iter().enumerate().map(|(i, tab)| {
             let active = i == self.active_tab;
-            let title: SharedString =
-                tab.title.clone().unwrap_or_else(|| tab.active.read(cx).title.clone()).into();
+            let title: SharedString = tab.title.clone().unwrap_or_else(|| tab.active.read(cx).title.clone()).into();
             let panes = tab.leaves().len();
             let show_close = active || !compact;
             let width = share + if active { active_extra } else { 0.0 };
@@ -1516,7 +1489,9 @@ impl Workspace {
             // ellipsis, or left out.
             let title_room = measure(&title, ui_font(), 12.5).min(MIN_TITLE_WIDTH);
             let badge = tab.badge.as_deref().and_then(|b| {
-                fit_badge(b, tab.short_badge.as_deref(), width - fixed, title_room, |t| measure(t, MONO_FONT.into(), 10.5))
+                fit_badge(b, tab.short_badge.as_deref(), width - fixed, title_room, |t| {
+                    measure(t, MONO_FONT.into(), 10.5)
+                })
             });
             let fixed = fixed + badge.as_ref().map_or(0.0, |b| BADGE_CHROME + measure(b, MONO_FONT.into(), 10.5));
             // The pane count goes before the badge does: a badge was put
@@ -1557,12 +1532,18 @@ impl Workspace {
                     None => d.hover(|d| d.bg(alpha(theme.raised, 0.55))),
                 })
                 .on_drag(
-                    TabDrag { index: i, title: title.clone(), colors: (theme.raised, theme.text, alpha(theme.accent, 0.5)) },
+                    TabDrag {
+                        index: i,
+                        title: title.clone(),
+                        colors: (theme.raised, theme.text, alpha(theme.accent, 0.5)),
+                    },
                     |drag, _, _, cx| cx.new(|_| TabGhost(drag.clone())),
                 )
-                .drag_over::<TabDrag>(move |style, drag, _, _| {
-                    if drag.index == i { style } else { style.bg(alpha(accent, 0.22)) }
-                })
+                .drag_over::<TabDrag>(
+                    move |style, drag, _, _| {
+                        if drag.index == i { style } else { style.bg(alpha(accent, 0.22)) }
+                    },
+                )
                 .on_drop(cx.listener(move |this, drag: &TabDrag, window, cx| {
                     this.move_tab(drag.index, i, window, cx);
                 }))
@@ -1642,33 +1623,34 @@ impl Workspace {
                             .child(pane_count),
                     )
                 })
-                .when(show_close, |d| d.child(
-                    div()
-                        .id(("tab-close", i))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .justify_center()
-                        .size(px(18.0))
-                        .rounded(px(5.0))
-                        .text_size(px(13.0))
-                        .text_color(theme.muted)
-                        .opacity(if active { 0.8 } else { 0.0 })
-                        .group_hover("tab", |s| s.opacity(0.8))
-                        .hover(|s| s.bg(alpha(theme.muted, 0.2)).text_color(theme.text))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                let ids: Vec<_> =
-                                    this.tabs[i].leaves().iter().map(|l| l.entity_id()).collect();
-                                for id in ids {
-                                    this.close_pane_entity(id, window, cx);
-                                }
-                            }),
-                        )
-                        .child(div().relative().top(px(-1.0)).child("×")),
-                ))
+                .when(show_close, |d| {
+                    d.child(
+                        div()
+                            .id(("tab-close", i))
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(18.0))
+                            .rounded(px(5.0))
+                            .text_size(px(13.0))
+                            .text_color(theme.muted)
+                            .opacity(if active { 0.8 } else { 0.0 })
+                            .group_hover("tab", |s| s.opacity(0.8))
+                            .hover(|s| s.bg(alpha(theme.muted, 0.2)).text_color(theme.text))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    let ids: Vec<_> = this.tabs[i].leaves().iter().map(|l| l.entity_id()).collect();
+                                    for id in ids {
+                                        this.close_pane_entity(id, window, cx);
+                                    }
+                                }),
+                            )
+                            .child(div().relative().top(px(-1.0)).child("×")),
+                    )
+                })
         });
 
         let new_tab = div()
@@ -1691,7 +1673,6 @@ impl Workspace {
                 }),
             )
             .child(div().relative().top(px(-1.0)).child("+"));
-
 
         div()
             .id("titlebar")
@@ -1745,47 +1726,38 @@ fn problem_banner(problems: &[String], plugin_problems: &[String], theme: &Theme
     let path = settings::config_path()
         .map(|p| p.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~"))
         .unwrap_or_else(|| "config.toml".into());
-    div()
-        .absolute()
-        .bottom(px(EDGE * 2.0))
-        .left_0()
-        .right_0()
-        .flex()
-        .justify_center()
-        .child(
-            div()
-                .max_w(px(720.0))
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .px(px(14.0))
-                .py(px(9.0))
-                .rounded(px(10.0))
-                .bg(theme.raised)
-                .border_1()
-                .border_color(alpha(theme.ansi[1], 0.5))
-                .font_family(ui_font())
-                .text_size(px(12.5))
-                .text_color(theme.text)
-                .shadow(vec![BoxShadow {
-                    color: alpha(gpui::black(), 0.35),
-                    offset: point(px(0.0), px(6.0)),
-                    blur_radius: px(18.0),
-                    spread_radius: px(0.0),
-                }])
-                .when(!problems.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .text_color(theme.ansi[1])
-                            .child(format!("Problem in {path} (other settings still apply)")),
-                    )
-                    .children(problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone())))
-                })
-                .when(!plugin_problems.is_empty(), |d| {
-                    d.child(div().text_color(theme.ansi[1]).child("Plugins that couldn't be loaded"))
-                        .children(plugin_problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone())))
-                }),
-        )
+    div().absolute().bottom(px(EDGE * 2.0)).left_0().right_0().flex().justify_center().child(
+        div()
+            .max_w(px(720.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .px(px(14.0))
+            .py(px(9.0))
+            .rounded(px(10.0))
+            .bg(theme.raised)
+            .border_1()
+            .border_color(alpha(theme.ansi[1], 0.5))
+            .font_family(ui_font())
+            .text_size(px(12.5))
+            .text_color(theme.text)
+            .shadow(vec![BoxShadow {
+                color: alpha(gpui::black(), 0.35),
+                offset: point(px(0.0), px(6.0)),
+                blur_radius: px(18.0),
+                spread_radius: px(0.0),
+            }])
+            .when(!problems.is_empty(), |d| {
+                d.child(
+                    div().text_color(theme.ansi[1]).child(format!("Problem in {path} (other settings still apply)")),
+                )
+                .children(problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone())))
+            })
+            .when(!plugin_problems.is_empty(), |d| {
+                d.child(div().text_color(theme.ansi[1]).child("Plugins that couldn't be loaded"))
+                    .children(plugin_problems.iter().take(4).map(|p| div().text_color(theme.subtext).child(p.clone())))
+            }),
+    )
 }
 
 /// `title` shortened with an ellipsis to fit `width` in the tab font. (GPUI's
@@ -2011,22 +1983,13 @@ fn pane_frame(
                     .child(div().min_w_0().truncate().child(label)),
             )
         })
-        .child(
-            div().flex_1().min_h_0().w_full().p(px(padding)).child(
-                // Reuse the pane's last frame unless it changed, so output in one
-                // pane (or hovering a tab) doesn't redraw every other pane.
-                AnyView::from(term.clone()).cached(StyleRefinement::default().size_full()),
-            ),
-        )
+        .child(div().flex_1().min_h_0().w_full().p(px(padding)).child(
+            // Reuse the pane's last frame unless it changed, so output in one
+            // pane (or hovering a tab) doesn't redraw every other pane.
+            AnyView::from(term.clone()).cached(StyleRefinement::default().size_full()),
+        ))
         .when(multi && !focused && dim > 0.0, |d| {
-            d.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .bg(alpha(theme.shell, dim)),
-            )
+            d.child(div().absolute().top_0().left_0().size_full().bg(alpha(theme.shell, dim)))
         })
         .into_any_element()
 }
@@ -2112,13 +2075,7 @@ fn plugin_dot(status: &str) -> Dot {
 fn shortcut_label(action: &dyn gpui::Action, window: &Window) -> SharedString {
     window
         .highest_precedence_binding_for_action(action)
-        .map(|b| {
-            b.keystrokes()
-                .iter()
-                .map(|k| pretty_keystroke(&k.to_string()))
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
+        .map(|b| b.keystrokes().iter().map(|k| pretty_keystroke(&k.to_string())).collect::<Vec<_>>().join(" "))
         .unwrap_or_default()
         .into()
 }
@@ -2150,9 +2107,10 @@ impl Workspace {
     // ---- socket API -----------------------------------------------------
 
     fn find_pane(&self, id: u64) -> Option<(usize, Entity<TerminalView>)> {
-        self.tabs.iter().enumerate().find_map(|(i, t)| {
-            t.leaves().into_iter().find(|l| l.entity_id().as_u64() == id).map(|l| (i, l))
-        })
+        self.tabs
+            .iter()
+            .enumerate()
+            .find_map(|(i, t)| t.leaves().into_iter().find(|l| l.entity_id().as_u64() == id).map(|l| (i, l)))
     }
 
     /// The pane named by `params.pane`, or the focused one.
@@ -2164,8 +2122,7 @@ impl Workspace {
                 .ok_or_else(|| ApiError::failed("there are no panes")),
             Some(v) => {
                 let id = v.as_u64().ok_or_else(|| ApiError::invalid_params("`pane` should be a pane id"))?;
-                self.find_pane(id)
-                    .ok_or_else(|| ApiError::failed(format!("no pane {id}; `lumen msg list` shows them")))
+                self.find_pane(id).ok_or_else(|| ApiError::failed(format!("no pane {id}; `lumen msg list` shows them")))
             }
         }
     }
@@ -2237,13 +2194,18 @@ impl Workspace {
                 Some(_) => Err(ApiError::invalid_params(format!("`{name}` should be a string"))),
             }
         };
-        let required = |name: &str| string(name)?.ok_or_else(|| ApiError::invalid_params(format!("`{name}` is required")));
+        let required =
+            |name: &str| string(name)?.ok_or_else(|| ApiError::invalid_params(format!("`{name}` is required")));
         let cwd = || -> Result<Option<std::path::PathBuf>, ApiError> {
             match string("cwd")? {
                 None => Ok(None),
                 Some(dir) => {
                     let path = std::path::PathBuf::from(&dir);
-                    if path.is_dir() { Ok(Some(path)) } else { Err(ApiError::failed(format!("{dir} isn't a directory"))) }
+                    if path.is_dir() {
+                        Ok(Some(path))
+                    } else {
+                        Err(ApiError::failed(format!("{dir} isn't a directory")))
+                    }
                 }
             }
         };
@@ -2252,10 +2214,15 @@ impl Workspace {
             match params.get("plugin_pane") {
                 None | Some(Value::Null) | Some(Value::Bool(false)) => Ok(None),
                 Some(Value::Bool(true)) => {
-                    if params.get("run").is_some_and(|r| !r.is_null()) || params.get("cwd").is_some_and(|c| !c.is_null()) {
-                        return Err(ApiError::invalid_params("a plugin pane runs no program, so takes no `run` or `cwd`"));
+                    if params.get("run").is_some_and(|r| !r.is_null())
+                        || params.get("cwd").is_some_and(|c| !c.is_null())
+                    {
+                        return Err(ApiError::invalid_params(
+                            "a plugin pane runs no program, so takes no `run` or `cwd`",
+                        ));
                     }
-                    let origin = origin.ok_or_else(|| ApiError::failed("plugin panes need a connection to draw them"))?;
+                    let origin =
+                        origin.ok_or_else(|| ApiError::failed("plugin panes need a connection to draw them"))?;
                     let name = match caller {
                         api::Caller::Plugin { name, .. } => name.clone(),
                         api::Caller::Socket => "script".into(),
@@ -2305,7 +2272,9 @@ impl Workspace {
                 };
                 let focus = match params.get("focus") {
                     None | Some(Value::Null) => true,
-                    Some(v) => v.as_bool().ok_or_else(|| ApiError::invalid_params("`focus` should be true or false"))?,
+                    Some(v) => {
+                        v.as_bool().ok_or_else(|| ApiError::invalid_params("`focus` should be true or false"))?
+                    }
                 };
                 // The new pane's share of the space: a fraction, or a number
                 // of rows (down) or columns (right) of the pane split.
@@ -2313,7 +2282,9 @@ impl Workspace {
                     None | Some(Value::Null) => None,
                     Some(v) => {
                         let n = v.as_f64().filter(|n| *n > 0.0).ok_or_else(|| {
-                            ApiError::invalid_params("`size` should be a fraction (like 0.3) or a number of rows or columns")
+                            ApiError::invalid_params(
+                                "`size` should be a fraction (like 0.3) or a number of rows or columns",
+                            )
                         })?;
                         Some(n)
                     }
@@ -2465,7 +2436,9 @@ impl Workspace {
                 let text = required("text")?;
                 let (_, pane) = self.target_pane(params)?;
                 match pane.read(cx).owner_conn() {
-                    None => Err(ApiError::failed("that pane runs a program; `write` is for plugin panes (`send-text` types into it)")),
+                    None => Err(ApiError::failed(
+                        "that pane runs a program; `write` is for plugin panes (`send-text` types into it)",
+                    )),
                     Some(conn) if Some(conn) != origin.map(|o| o.conn) => {
                         Err(ApiError::failed("that plugin pane belongs to another connection"))
                     }
@@ -2584,9 +2557,12 @@ fn palette_items(window: &Window, tab_color: Option<TabColor>, cx: &App) -> Vec<
     if let Some(path) = settings::config_path() {
         let shown = path.display().to_string().replace(&std::env::var("HOME").unwrap_or_default(), "~");
         items.push(
-            PaletteItem::new("Open Config File", Rc::new(move |_, cx| cx.open_url(&format!("file://{}", path.display()))))
-                .note(shown)
-                .section(LUMEN),
+            PaletteItem::new(
+                "Open Config File",
+                Rc::new(move |_, cx| cx.open_url(&format!("file://{}", path.display()))),
+            )
+            .note(shown)
+            .section(LUMEN),
         );
     }
     // Plugin commands, then a way to allow each plugin waiting for it.
@@ -2689,7 +2665,10 @@ fn palette_items(window: &Window, tab_color: Option<TabColor>, cx: &App) -> Vec<
                 }),
             )
             .note(match tab_color {
-                Some(c) => TAB_COLOR_CHOICES.iter().find(|(_, o)| *o == Some(c)).map_or_else(|| c.name(), |(l, _)| l.to_string()),
+                Some(c) => TAB_COLOR_CHOICES
+                    .iter()
+                    .find(|(_, o)| *o == Some(c))
+                    .map_or_else(|| c.name(), |(l, _)| l.to_string()),
                 None => String::new(),
             })
             .section(LUMEN),
@@ -2721,15 +2700,17 @@ fn shown_tab_color(own: Option<TabColor>, set: Option<TabColor>) -> Option<TabCo
 }
 
 /// The theme picker's items: every theme, the one shown marked.
-fn theme_picker_items(names: &[SharedString], current: usize, original: crate::settings::ThemeChoice) -> Vec<PaletteItem> {
+fn theme_picker_items(
+    names: &[SharedString],
+    current: usize,
+    original: crate::settings::ThemeChoice,
+) -> Vec<PaletteItem> {
     names
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            let item = PaletteItem::new(
-                name.clone(),
-                Rc::new(move |_, cx| Settings::finish_preview(cx, original, Some(i))),
-            );
+            let item =
+                PaletteItem::new(name.clone(), Rc::new(move |_, cx| Settings::finish_preview(cx, original, Some(i))));
             if i == current { item.note("current") } else { item }
         })
         .collect()
@@ -2740,13 +2721,37 @@ fn resize_edge(pos: Point<Pixels>, inset: Pixels, size: Size<Pixels>) -> Option<
     let (l, r) = (pos.x < corner, pos.x > size.width - corner);
     let (t, b) = (pos.y < corner, pos.y > size.height - corner);
     let edge = if pos.y < inset {
-        if l { ResizeEdge::TopLeft } else if r { ResizeEdge::TopRight } else { ResizeEdge::Top }
+        if l {
+            ResizeEdge::TopLeft
+        } else if r {
+            ResizeEdge::TopRight
+        } else {
+            ResizeEdge::Top
+        }
     } else if pos.y > size.height - inset {
-        if l { ResizeEdge::BottomLeft } else if r { ResizeEdge::BottomRight } else { ResizeEdge::Bottom }
+        if l {
+            ResizeEdge::BottomLeft
+        } else if r {
+            ResizeEdge::BottomRight
+        } else {
+            ResizeEdge::Bottom
+        }
     } else if pos.x < inset {
-        if t { ResizeEdge::TopLeft } else if b { ResizeEdge::BottomLeft } else { ResizeEdge::Left }
+        if t {
+            ResizeEdge::TopLeft
+        } else if b {
+            ResizeEdge::BottomLeft
+        } else {
+            ResizeEdge::Left
+        }
     } else if pos.x > size.width - inset {
-        if t { ResizeEdge::TopRight } else if b { ResizeEdge::BottomRight } else { ResizeEdge::Right }
+        if t {
+            ResizeEdge::TopRight
+        } else if b {
+            ResizeEdge::BottomRight
+        } else {
+            ResizeEdge::Right
+        }
     } else {
         return None;
     };
@@ -2819,16 +2824,17 @@ impl Render for Workspace {
             .cursor(CursorStyle::Arrow)
             .on_mouse_move(|_, _, cx| cx.stop_propagation())
             .when_some(tiling, |d, tiling| {
-                d.border_1()
-                    .border_color(alpha(theme.text, if theme.is_light { 0.12 } else { 0.07 }))
-                    .when(!tiling.is_tiled(), |d| {
+                d.border_1().border_color(alpha(theme.text, if theme.is_light { 0.12 } else { 0.07 })).when(
+                    !tiling.is_tiled(),
+                    |d| {
                         d.rounded(px(WINDOW_RADIUS)).shadow(vec![BoxShadow {
                             color: alpha(gpui::black(), 0.45),
                             offset: point(px(0.0), px(2.0)),
                             blur_radius: inset / 1.5,
                             spread_radius: px(0.0),
                         }])
-                    })
+                    },
+                )
             })
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::new_window))
@@ -2851,21 +2857,12 @@ impl Render for Workspace {
             // Keep the resize cursor while a divider drag strays off the divider.
             .when_some(drag_cursor, |d, style| {
                 d.child(
-                    canvas(|_, _, _| {}, move |_, _, window, _| {
-                        window.set_window_cursor_style(style)
-                    })
-                    .absolute()
-                    .size_0(),
+                    canvas(|_, _, _| {}, move |_, _, window, _| window.set_window_cursor_style(style))
+                        .absolute()
+                        .size_0(),
                 )
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .px(px(EDGE))
-                    .pb(px(EDGE))
-                    .children(content),
-            )
+            .child(div().flex_1().min_h_0().px(px(EDGE)).pb(px(EDGE)).children(content))
             .when_some(self.palette.clone(), |d, palette| {
                 d.child(
                     div()
@@ -2903,10 +2900,7 @@ impl Render for Workspace {
                     canvas(
                         |_bounds, window, _cx| {
                             window.insert_hitbox(
-                                gpui::Bounds::new(
-                                    point(px(0.0), px(0.0)),
-                                    window.window_bounds().get_bounds().size,
-                                ),
+                                gpui::Bounds::new(point(px(0.0), px(0.0)), window.window_bounds().get_bounds().size),
                                 HitboxBehavior::Normal,
                             )
                         },
@@ -2916,12 +2910,8 @@ impl Render for Workspace {
                             if let Some(edge) = resize_edge(mouse, inset, size) {
                                 window.set_cursor_style(
                                     match edge {
-                                        ResizeEdge::Top | ResizeEdge::Bottom => {
-                                            CursorStyle::ResizeUpDown
-                                        }
-                                        ResizeEdge::Left | ResizeEdge::Right => {
-                                            CursorStyle::ResizeLeftRight
-                                        }
+                                        ResizeEdge::Top | ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
+                                        ResizeEdge::Left | ResizeEdge::Right => CursorStyle::ResizeLeftRight,
                                         ResizeEdge::TopLeft | ResizeEdge::BottomRight => {
                                             CursorStyle::ResizeUpLeftDownRight
                                         }
@@ -3104,7 +3094,11 @@ mod tests {
         let grid = |w: f32, h: f32| GridSize { cols: w as u16, rows: h as u16, cell_width: 1, cell_height: 1 };
         let pane = || NodeState::Pane { cwd: Some("/x".into()) };
         let tabs = vec![TabState {
-            root: NodeState::Split { axis: Axis::Row, children: vec![pane(), pane(), pane()], ratios: vec![1.0, 1.0, 1.0] },
+            root: NodeState::Split {
+                axis: Axis::Row,
+                children: vec![pane(), pane(), pane()],
+                ratios: vec![1.0, 1.0, 1.0],
+            },
             active: 0,
             zoomed: false,
             title: None,
@@ -3130,14 +3124,22 @@ mod tests {
                     axis: Axis::Row,
                     children: vec![
                         pane("/a"),
-                        NodeState::Split { axis: Axis::Column, children: vec![pane("/b"), pane("/c")], ratios: vec![1.0, 3.0] },
+                        NodeState::Split {
+                            axis: Axis::Column,
+                            children: vec![pane("/b"), pane("/c")],
+                            ratios: vec![1.0, 3.0],
+                        },
                     ],
                     ratios: vec![1.0, 1.0],
                 },
                 0,
                 false,
             ),
-            tab(NodeState::Split { axis: Axis::Row, children: vec![pane("/d"), pane("/e")], ratios: vec![1.0, 1.0] }, 1, true),
+            tab(
+                NodeState::Split { axis: Axis::Row, children: vec![pane("/d"), pane("/e")], ratios: vec![1.0, 1.0] },
+                1,
+                true,
+            ),
         ];
         let got: Vec<(String, u16, u16)> = layout_panes(&tabs, (408.0, 208.0), 8.0, &grid)
             .into_iter()
@@ -3197,7 +3199,8 @@ mod tests {
     fn prompt_params_are_strings() {
         let ok = parse_prompt(&json!({})).unwrap();
         assert_eq!(ok, ("Type here…".to_string(), String::new(), None));
-        let ok = parse_prompt(&json!({"placeholder": "Command", "initial": "npm ", "message": "  Runs it.  "})).unwrap();
+        let ok =
+            parse_prompt(&json!({"placeholder": "Command", "initial": "npm ", "message": "  Runs it.  "})).unwrap();
         assert_eq!(ok, ("Command".to_string(), "npm ".to_string(), Some("Runs it.".to_string())));
         // A blank message is none; null counts as left out.
         assert_eq!(parse_prompt(&json!({"message": " ", "initial": null})).unwrap().2, None);

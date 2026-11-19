@@ -21,6 +21,14 @@ If a plugin exits, Lumen restarts it. After quick crashes, it waits 1, 2, 5,
 Each plugin runs as its own process, so a slow or crashing plugin can't freeze
 Lumen.
 
+When a plugin is stopped (turned off, removed, replaced by a new version, or
+Lumen quits), it loses its connection at once: its stdin closes, nothing more
+it asks for is carried out, it's sent no more events, and its panes close. It
+and every process it started are sent SIGTERM, and SIGKILL two seconds later
+if they're still there. A program that should outlive the plugin, such as a
+browser it opened, has to be started in a session of its own (`setsid`, or
+`start_new_session=True` in Python).
+
 ## The manifest
 
 ```
@@ -128,7 +136,7 @@ starts.
 | Permission | Allows |
 |---|---|
 | `panes` | `new-tab`, `split`, `focus`, `close`, `set-title`, `set-tab-style`, `set-pane-style`, `move-tab`, `quick-terminal`, and drawing its own plugin panes (`write`) |
-| `input` | `send-text`, `run-action`: typing into panes, which can run any command |
+| `input` | `send-text`, `run-action`, and `run` on `new-tab` and `split`: typing into panes, which can run any command |
 | `screen` | `read-screen`, and the command text in `command-finished` events |
 
 A plugin missing a permission gets a JSON-RPC error saying which one to add.

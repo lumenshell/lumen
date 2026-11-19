@@ -158,8 +158,21 @@ fn defaults() -> Vec<(String, &'static str)> {
 /// Named keys accepted besides single characters.
 fn is_named_key(key: &str) -> bool {
     const NAMED: &[&str] = &[
-        "enter", "tab", "space", "backspace", "escape", "delete", "insert", "home", "end", "pageup", "pagedown",
-        "up", "down", "left", "right",
+        "enter",
+        "tab",
+        "space",
+        "backspace",
+        "escape",
+        "delete",
+        "insert",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "up",
+        "down",
+        "left",
+        "right",
     ];
     NAMED.contains(&key)
         || key.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=24).contains(&n))
@@ -182,7 +195,8 @@ pub fn normalize_keys(source: &str) -> Result<String, String> {
         .map(|part| {
             // Case-insensitive: GPUI would read `T` as shift-t, which surprises
             // people writing `Ctrl-Alt-T`.
-            let ks = Keystroke::parse(&part.to_ascii_lowercase()).map_err(|_| format!("`{part}` isn't a key GPUI understands"))?;
+            let ks = Keystroke::parse(&part.to_ascii_lowercase())
+                .map_err(|_| format!("`{part}` isn't a key GPUI understands"))?;
             if ks.key_char.is_some() || !(ks.key.chars().count() == 1 || is_named_key(&ks.key)) {
                 return Err(format!("unknown key `{}` in `{part}`", ks.key));
             }

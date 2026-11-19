@@ -1,4 +1,5 @@
 description = "Pick a host from ~/.ssh/config and open it in a new tab (Ctrl+Shift+S, ⌘⇧S on macOS)"
-version = "1.0.0"
+version = "1.0.1"
 command = "python3 main.py"
-permissions = ["panes"]
+# panes: to open the tab. input: to run ssh in it.
+permissions = ["panes", "input"]

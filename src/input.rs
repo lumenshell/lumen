@@ -118,18 +118,18 @@ fn kitty(ks: &Keystroke, mode: TermMode, event: KeyEvent, alt_sends_esc: bool) -
         (true, KeyEvent::Release) => ":3",
         _ => "",
     };
-    let modifiers = if mods == 1 && event_suffix.is_empty() {
-        String::new()
-    } else {
-        format!("{mods}{event_suffix}")
-    };
+    let modifiers = if mods == 1 && event_suffix.is_empty() { String::new() } else { format!("{mods}{event_suffix}") };
     let out = match key {
         KittyKey::Functional { number: _, last } if last != 'u' && last != '~' => {
             // Letter-terminated keys: CSI 1 ; mods X, or CSI X when plain.
             if modifiers.is_empty() { format!("\x1b[{last}") } else { format!("\x1b[1;{modifiers}{last}") }
         }
         KittyKey::Functional { number, last } => {
-            if modifiers.is_empty() { format!("\x1b[{number}{last}") } else { format!("\x1b[{number};{modifiers}{last}") }
+            if modifiers.is_empty() {
+                format!("\x1b[{number}{last}")
+            } else {
+                format!("\x1b[{number};{modifiers}{last}")
+            }
         }
         KittyKey::Text(base) => {
             let mut code = (base as u32).to_string();
@@ -181,18 +181,10 @@ pub fn to_esc(ks: &Keystroke, mode: TermMode, alt_sends_esc: bool) -> Option<Vec
         }
     };
     let csi_tilde = |n: u8| -> Vec<u8> {
-        if modp > 1 {
-            format!("\x1b[{n};{modp}~").into_bytes()
-        } else {
-            format!("\x1b[{n}~").into_bytes()
-        }
+        if modp > 1 { format!("\x1b[{n};{modp}~").into_bytes() } else { format!("\x1b[{n}~").into_bytes() }
     };
     let ss3_or_csi = |letter: char| -> Vec<u8> {
-        if modp > 1 {
-            format!("\x1b[1;{modp}{letter}").into_bytes()
-        } else {
-            format!("\x1bO{letter}").into_bytes()
-        }
+        if modp > 1 { format!("\x1b[1;{modp}{letter}").into_bytes() } else { format!("\x1bO{letter}").into_bytes() }
     };
 
     let bytes = match ks.key.as_str() {
@@ -267,9 +259,7 @@ pub fn to_esc(ks: &Keystroke, mode: TermMode, alt_sends_esc: bool) -> Option<Vec
                 v.push(code);
                 v
             } else {
-                let mut text = ks.key_char.clone().or_else(|| {
-                    (key == "space").then(|| " ".to_string())
-                })?;
+                let mut text = ks.key_char.clone().or_else(|| (key == "space").then(|| " ".to_string()))?;
                 // Guard against a stale keyboard state reporting an unshifted letter.
                 if m.shift && text.len() == 1 && text.chars().all(|c| c.is_ascii_lowercase()) {
                     text = text.to_ascii_uppercase();
@@ -357,7 +347,10 @@ mod tests {
         assert_eq!(send("up", None, m, KeyEvent::Release).as_deref(), Some("\x1b[1;1:3A"));
         // Enter's release only with every key as an escape code.
         assert_eq!(send("enter", None, m, KeyEvent::Release), None);
-        assert_eq!(send("enter", None, m | T::REPORT_ALL_KEYS_AS_ESC, KeyEvent::Release).as_deref(), Some("\x1b[13;1:3u"));
+        assert_eq!(
+            send("enter", None, m | T::REPORT_ALL_KEYS_AS_ESC, KeyEvent::Release).as_deref(),
+            Some("\x1b[13;1:3u")
+        );
     }
 
     #[test]

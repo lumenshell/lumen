@@ -223,11 +223,26 @@ pub fn count_updates(installed: &BTreeMap<String, Installed>, index: &Index) -> 
 /// Download `url` to `dest` with curl. An absolute path is copied instead
 /// (for testing an index or archive before it's published).
 pub fn fetch(url: &str, dest: &Path) -> Result<(), String> {
+    fetch_within(url, dest, FETCH_LIMIT)
+}
+
+/// The most [`fetch`] downloads: room for the index and any archive [`LIMITS`] allows.
+const FETCH_LIMIT: u64 = 64 * MB;
+
+/// [`fetch`], refusing more than `limit` bytes: by its announced size, while
+/// it arrives (curl 8.4 and later), and once it's here.
+fn fetch_within(url: &str, dest: &Path, limit: u64) -> Result<(), String> {
+    let too_big = || format!("{url} is over {}; not downloaded", size(limit));
     if url.starts_with('/') {
+        if std::fs::metadata(url).map_err(|e| format!("{url}: {e}"))?.len() > limit {
+            return Err(too_big());
+        }
         return std::fs::copy(url, dest).map(|_| ()).map_err(|e| format!("{url}: {e}"));
     }
     let out = std::process::Command::new("curl")
-        .args(["-fsSL", "--proto", "=https,file", "--max-time", "120", "-o"])
+        .args(["-fsSL", "--proto", "=https,file", "--max-time", "120", "--max-filesize"])
+        .arg(limit.to_string())
+        .arg("-o")
         .arg(dest)
         .arg(url)
         .output()
@@ -235,6 +250,12 @@ pub fn fetch(url: &str, dest: &Path) -> Result<(), String> {
             std::io::ErrorKind::NotFound => "Lumen needs `curl` to download plugins; install it and try again".into(),
             _ => format!("couldn't run curl: {e}"),
         })?;
+    // 63 is curl's "file size exceeded".
+    let arrived = std::fs::metadata(dest).map_or(0, |m| m.len());
+    if out.status.code() == Some(63) || arrived > limit {
+        let _ = std::fs::remove_file(dest);
+        return Err(too_big());
+    }
     if out.status.success() {
         Ok(())
     } else {
@@ -279,12 +300,9 @@ pub(crate) fn index_from(url: &str, cache: &Path, refresh: bool) -> Result<Index
 
 /// The index: the cached copy if it's younger than `max_age`, else fetched.
 pub(crate) fn index_within(url: &str, cache: &Path, max_age: std::time::Duration) -> Result<Index, String> {
-    let fresh = std::fs::metadata(cache)
-        .and_then(|m| m.modified())
-        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age < max_age));
-    if fresh
-        && let Some(index) = std::fs::read_to_string(cache).ok().and_then(|t| parse_index(&t).ok())
-    {
+    let fresh =
+        std::fs::metadata(cache).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age < max_age));
+    if fresh && let Some(index) = std::fs::read_to_string(cache).ok().and_then(|t| parse_index(&t).ok()) {
         return Ok(index);
     }
     let dir = cache.parent().ok_or("no folder")?;
@@ -329,7 +347,9 @@ impl Paths {
             installed: installed_path().ok_or_else(none)?,
             approvals: crate::plugins::approvals_path().ok_or_else(none)?,
             config: crate::settings::config_path().ok_or_else(none)?,
-            data: base("XDG_STATE_HOME", ".local/state", "Library/Application Support").ok_or_else(none)?.join("lumen/plugin-data"),
+            data: base("XDG_STATE_HOME", ".local/state", "Library/Application Support")
+                .ok_or_else(none)?
+                .join("lumen/plugin-data"),
         })
     }
 }
@@ -389,12 +409,20 @@ impl Paths {
 pub const LUMEN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn find<'a>(index: &'a Index, name: &str) -> Result<&'a Entry, String> {
-    index.plugins.iter().find(|e| e.name == name).ok_or_else(|| format!("there's no plugin called \"{name}\" in the registry"))
+    index
+        .plugins
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| format!("there's no plugin called \"{name}\" in the registry"))
 }
 
 fn newest(entry: &Entry) -> Result<&Release, String> {
     best(entry, LUMEN_VERSION).ok_or_else(|| {
-        let need = entry.versions.iter().map(|r| r.lumen.as_str()).fold("", |a, b| if a.is_empty() || newer(a, b) { b } else { a });
+        let need = entry
+            .versions
+            .iter()
+            .map(|r| r.lumen.as_str())
+            .fold("", |a, b| if a.is_empty() || newer(a, b) { b } else { a });
         format!("{} needs Lumen {need} or newer; this is {LUMEN_VERSION}", entry.name)
     })
 }
@@ -459,7 +487,7 @@ pub(crate) fn remove_in(p: &Paths, name: &str, delete_data: bool) -> Result<Stri
     if folder.exists() {
         std::fs::remove_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     }
-    crate::plugins::forget_registry_in(&p.approvals, name);
+    crate::plugins::forget_registry_in(&p.approvals, name)?;
     crate::settings::edit_config_at(&p.config, |doc| {
         remove_from_list(doc, name);
         adopt_old_table(doc, name);
@@ -488,7 +516,8 @@ fn remove_from_list(doc: &mut toml_edit::DocumentMut, name: &str) {
     if let Some(list) = doc.get_mut("plugins").and_then(|i| i.as_array_mut()) {
         // A plugin that moved to the registry may still be listed by its
         // built-in name.
-        let gone = |v: &toml_edit::Value| v.as_str().is_some_and(|v| v == name || crate::plugins::moved_to(v) == Some(name));
+        let gone =
+            |v: &toml_edit::Value| v.as_str().is_some_and(|v| v == name || crate::plugins::moved_to(v) == Some(name));
         // The first item's spacing goes to whichever comes first after.
         let first = list.get(0).map(|v| v.decor().prefix().cloned());
         list.retain(|v| !gone(v));
@@ -546,8 +575,8 @@ impl Drop for Scratch {
 }
 
 /// Download, check, approve and install one release, then switch over to
-/// it. Until the switch nothing installed changes, so a failure leaves the
-/// old version (if any) in use.
+/// it. Until the switch nothing installed changes, and a switch that fails
+/// part way is undone, so a failure leaves the old version (if any) in use.
 fn put_in_place(p: &Paths, entry: &Entry, release: &Release, approve: &Approve) -> Result<(), String> {
     let name = entry.name.as_str();
     if !valid_name(name) {
@@ -587,14 +616,32 @@ fn put_in_place(p: &Paths, entry: &Entry, release: &Release, approve: &Approve) 
         ));
     }
     check_approval(p, name, &manifest.permissions, approve)?;
-    // The switch: move the files into place, then record them.
+    // The switch: the files, their record, the approval, then turning it
+    // on. Each step that fails undoes the ones before it.
     let dest = p.root.join(name).join(&release.version);
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+    // The same version installed again: its files are kept aside until
+    // the new ones are in use.
+    let aside = scratch.0.join("previous");
+    let had_files = dest.exists();
+    if had_files {
+        std::fs::rename(&dest, &aside).map_err(|e| format!("{}: {e}", dest.display()))?;
     }
-    std::fs::create_dir_all(dest.parent().ok_or("no folder")?).map_err(|e| e.to_string())?;
-    std::fs::rename(&folder, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
-    let mut all = load_installed_from(&p.installed);
+    let put_files_back = || {
+        let _ = std::fs::remove_dir_all(&dest);
+        if had_files {
+            let _ = std::fs::rename(&aside, &dest);
+        }
+    };
+    let moved = std::fs::create_dir_all(dest.parent().ok_or("no folder")?)
+        .and_then(|_| std::fs::rename(&folder, &dest))
+        .map_err(|e| format!("{}: {e}", dest.display()));
+    if let Err(e) = moved {
+        put_files_back();
+        return Err(e);
+    }
+
+    let before = load_installed_from(&p.installed);
+    let mut all = before.clone();
     let old = all.insert(
         name.to_string(),
         Installed {
@@ -605,13 +652,30 @@ fn put_in_place(p: &Paths, entry: &Entry, release: &Release, approve: &Approve) 
         },
     );
     if let Err(e) = save_installed_to(&p.installed, &all) {
-        let _ = std::fs::remove_dir_all(&dest);
+        put_files_back();
         return Err(e);
     }
-    if !manifest.permissions.is_empty() {
-        crate::plugins::approve_registry_in(&p.approvals, name, &manifest.permissions);
+    let put_record_back = || {
+        let _ = save_installed_to(&p.installed, &before);
+        put_files_back();
+    };
+
+    let approved_before = crate::plugins::registry_approval_in(&p.approvals, name);
+    if !manifest.permissions.is_empty()
+        && let Err(e) = crate::plugins::approve_registry_in(&p.approvals, name, &manifest.permissions)
+    {
+        put_record_back();
+        return Err(format!("{name}: couldn't keep your approval ({e}); not installed"));
     }
-    set_enabled_locked(p, name, true)?;
+    if let Err(e) = set_enabled_locked(p, name, true) {
+        let _ = if approved_before.is_empty() {
+            crate::plugins::forget_registry_in(&p.approvals, name)
+        } else {
+            crate::plugins::approve_registry_in(&p.approvals, name, &approved_before)
+        };
+        put_record_back();
+        return Err(format!("{name}: couldn't turn it on ({e}); not installed"));
+    }
     if let Some(old) = old.filter(|o| o.dir != dest) {
         let _ = std::fs::remove_dir_all(&old.dir);
     }
@@ -647,62 +711,223 @@ pub(crate) fn new_permissions_in(p: &Paths, name: &str, permissions: &[Permissio
 fn approve_new(p: &Paths, name: &str, permissions: &[Permission], approve: &Approve) -> Result<(), String> {
     check_approval(p, name, permissions, approve)?;
     if !permissions.is_empty() {
-        crate::plugins::approve_registry_in(&p.approvals, name, permissions);
+        crate::plugins::approve_registry_in(&p.approvals, name, permissions)?;
     }
     Ok(())
 }
 
+/// How much a plugin's download may hold. Plugins are source files, so
+/// these are far above any real one, and only stop an archive made to fill
+/// the disk or keep `tar` busy.
+pub(crate) struct Limits {
+    /// The `.tar.gz` itself, in bytes.
+    pub archive: u64,
+    /// Files and folders in it.
+    pub entries: usize,
+    /// One file, unpacked, in bytes.
+    pub file: u64,
+    /// Everything, unpacked, in bytes.
+    pub unpacked: u64,
+}
+
+const MB: u64 = 1024 * 1024;
+pub(crate) const LIMITS: Limits = Limits { archive: 50 * MB, entries: 10_000, file: 50 * MB, unpacked: 200 * MB };
+
+/// `bytes` for a message: whole megabytes, or kilobytes below one.
+fn size(bytes: u64) -> String {
+    if bytes >= MB { format!("{} MB", bytes / MB) } else { format!("{} KB", bytes.div_ceil(1024)) }
+}
+
+/// The size on a line of `tar -tv`, if it can be told. GNU tar prints
+/// `mode owner/group size date time name`; BSD tar (macOS) prints
+/// `mode links owner group size month day time name`.
+fn listed_size(line: &str) -> Option<u64> {
+    let fields: Vec<&str> = line.split_whitespace().take(5).collect();
+    let at = if fields.get(1)?.contains('/') { 2 } else { 4 };
+    fields.get(at)?.parse().ok()
+}
+
+/// Run `tar <flags> <archive>`, giving `each` every line it prints. An
+/// error from `each` stops tar there, so a listing made to go on for ever
+/// doesn't. Returns whether tar succeeded.
+fn tar_lines(flags: &str, archive: &Path, mut each: impl FnMut(&str) -> Result<(), String>) -> Result<bool, String> {
+    use std::io::{BufRead, Read};
+    /// Longer than any real path; a longer line isn't a listing.
+    const LINE: usize = 64 * 1024;
+    let mut child = std::process::Command::new("tar")
+        .arg(flags)
+        .arg(archive)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("couldn't run tar: {e}"))?;
+    let mut out = std::io::BufReader::new(child.stdout.take().expect("piped"));
+    let mut buf = Vec::new();
+    let result = loop {
+        buf.clear();
+        match (&mut out).take(LINE as u64 + 1).read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break Ok(()),
+            Ok(_) if buf.len() > LINE => {
+                break Err("the download has a name too long to be real; not installed".to_string());
+            }
+            Ok(_) => {}
+        }
+        if let Err(e) = each(String::from_utf8_lossy(&buf).trim_end_matches('\n')) {
+            break Err(e);
+        }
+    };
+    if result.is_err() {
+        let _ = child.kill();
+    }
+    drop(out);
+    let status = child.wait().map_err(|e| format!("couldn't run tar: {e}"))?;
+    result.map(|()| status.success())
+}
+
+/// Whether `archive`'s files come to more than `limit` bytes, found by having
+/// tar unpack them to a pipe and counting. Unlike the sizes in a listing,
+/// which sit after names the archive chooses, this can't be talked round;
+/// and nothing is written. Tar is stopped as soon as the answer is yes.
+fn unpacks_past(archive: &Path, limit: u64) -> Result<bool, String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new("tar")
+        .arg("-xzOf")
+        .arg(archive)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("couldn't run tar: {e}"))?;
+    let out = child.stdout.take().expect("piped");
+    let seen = std::io::copy(&mut out.take(limit.saturating_add(1)), &mut std::io::sink());
+    let past = seen.as_ref().is_ok_and(|n| *n > limit);
+    if past || seen.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait().map_err(|e| format!("couldn't run tar: {e}"))?;
+    match seen {
+        Ok(_) if past => Ok(true),
+        Ok(_) if status.success() => Ok(false),
+        _ => Err("the download isn't a .tar.gz archive; not installed".to_string()),
+    }
+}
+
+/// Stop `cmd` writing any file longer than `cap` bytes: whatever a listing
+/// said, the kernel ends it there (SIGXFSZ).
+fn cap_file_size(cmd: &mut std::process::Command, cap: u64) {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        cmd.pre_exec(move || {
+            let limit = libc::rlimit { rlim_cur: cap as libc::rlim_t, rlim_max: cap as libc::rlim_t };
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Unpack a `.tar.gz` into `into` and return its one top-level folder.
 /// Refuses archives with absolute paths, `..`, links or special files, so
-/// nothing can be written outside `into`.
+/// nothing can be written outside `into`, and ones holding more than
+/// [`LIMITS`], so nothing can fill the disk.
 fn unpack(archive: &Path, into: &Path) -> Result<PathBuf, String> {
+    unpack_within(archive, into, &LIMITS)
+}
+
+fn unpack_within(archive: &Path, into: &Path, limits: &Limits) -> Result<PathBuf, String> {
     let bad = |why: &str| format!("the download {why}; not installed");
-    let tar = |flags: &str| {
-        std::process::Command::new("tar").arg(flags).arg(archive).output().map_err(|e| format!("couldn't run tar: {e}"))
-    };
-    let (list, long) = (tar("-tzf")?, tar("-tvzf")?);
-    if !list.status.success() || !long.status.success() {
-        return Err(bad("isn't a .tar.gz archive"));
+    let too_many = || bad(&format!("has more than {} files", limits.entries));
+    let too_big = || bad(&format!("unpacks to more than {}", size(limits.unpacked)));
+    let file_too_big = || bad(&format!("has a file over {}", size(limits.file)));
+    let packed = std::fs::metadata(archive).map_err(|e| format!("{}: {e}", archive.display()))?.len();
+    if packed > limits.archive {
+        return Err(bad(&format!("is over {}", size(limits.archive))));
     }
-    // Links are refused before anything is unpacked: not every tar refuses
-    // to write through one by itself. GNU tar marks them `l` and `h`;
-    // BSD tar shows hard links as "link to".
-    for line in String::from_utf8_lossy(&long.stdout).lines() {
+
+    // Read the listings before anything is unpacked, stopping at the first
+    // thing wrong. Links are refused here: not every tar refuses to write
+    // through one by itself. GNU tar marks them `l` and `h`; BSD tar shows
+    // hard links as "link to".
+    let (mut entries, mut total) = (0usize, 0u64);
+    let listed = tar_lines("-tvzf", archive, |line| {
         if !(line.starts_with('-') || line.starts_with('d')) || line.contains(" link to ") || line.contains(" -> ") {
             return Err(bad("has a link or special file"));
         }
-    }
-    for entry in String::from_utf8_lossy(&list.stdout).lines() {
+        entries += 1;
+        if entries > limits.entries {
+            return Err(too_many());
+        }
+        // An early answer only: the owner's name comes before the size and
+        // can put it out of place, so the total is counted again below.
+        if let Some(bytes) = listed_size(line).filter(|_| line.starts_with('-')) {
+            if bytes > limits.file {
+                return Err(file_too_big());
+            }
+            total = total.saturating_add(bytes);
+            if total > limits.unpacked {
+                return Err(too_big());
+            }
+        }
+        Ok(())
+    })?;
+    let mut names = 0usize;
+    let named = tar_lines("-tzf", archive, |entry| {
+        names += 1;
+        if names > limits.entries {
+            return Err(too_many());
+        }
         let path = Path::new(entry);
         if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
             return Err(bad("has files outside its folder"));
         }
+        Ok(())
+    })?;
+    if !listed || !named {
+        return Err(bad("isn't a .tar.gz archive"));
     }
+    if unpacks_past(archive, limits.unpacked)? {
+        return Err(too_big());
+    }
+
     std::fs::create_dir_all(into).map_err(|e| format!("{}: {e}", into.display()))?;
-    let out = std::process::Command::new("tar")
-        .arg("-xzf")
-        .arg(archive)
-        .arg("-C")
-        .arg(into)
-        .args(["--no-same-owner", "--no-same-permissions"])
-        .output()
-        .map_err(|e| format!("couldn't run tar: {e}"))?;
+    let mut tar = std::process::Command::new("tar");
+    tar.arg("-xzf").arg(archive).arg("-C").arg(into).args(["--no-same-owner", "--no-same-permissions"]);
+    cap_file_size(&mut tar, limits.file);
+    let out = tar.output().map_err(|e| format!("couldn't run tar: {e}"))?;
     if !out.status.success() {
+        use std::os::unix::process::ExitStatusExt;
+        if out.status.signal() == Some(libc::SIGXFSZ) {
+            return Err(file_too_big());
+        }
         return Err(bad(&format!("couldn't be unpacked ({})", String::from_utf8_lossy(&out.stderr).trim())));
     }
-    // Checked again once unpacked, in case the listing missed one.
-    fn check(dir: &Path) -> Result<(), String> {
+    // Checked again once unpacked, in case the listing missed something.
+    fn check(dir: &Path, limits: &Limits, entries: &mut usize, total: &mut u64) -> Result<(), String> {
+        let over = |what: String| format!("the download {what}; not installed");
         for e in std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
             let kind = e.file_type().map_err(|e| e.to_string())?;
+            *entries += 1;
+            if *entries > limits.entries {
+                return Err(over(format!("has more than {} files", limits.entries)));
+            }
             if kind.is_dir() {
-                check(&e.path())?;
+                check(&e.path(), limits, entries, total)?;
             } else if !kind.is_file() {
-                return Err(format!("the download has a link or special file ({}); not installed", e.file_name().to_string_lossy()));
+                return Err(over(format!("has a link or special file ({})", e.file_name().to_string_lossy())));
+            } else {
+                let bytes = e.metadata().map_err(|e| e.to_string())?.len();
+                if bytes > limits.file {
+                    return Err(over(format!("has a file over {}", size(limits.file))));
+                }
+                *total = total.saturating_add(bytes);
+                if *total > limits.unpacked {
+                    return Err(over(format!("unpacks to more than {}", size(limits.unpacked))));
+                }
             }
         }
         Ok(())
     }
-    check(into)?;
+    check(into, limits, &mut 0, &mut 0)?;
     let tops: Vec<PathBuf> = std::fs::read_dir(into).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).collect();
     match tops.as_slice() {
         [one] if one.is_dir() => Ok(one.clone()),
@@ -799,8 +1024,10 @@ mod tests {
 
     #[test]
     fn updates_are_counted() {
-        let installed = |v: &str| Installed { version: v.into(), commit: "c".repeat(40), permissions: vec![], dir: PathBuf::new() };
-        let all = BTreeMap::from([("mira/x".to_string(), installed("1.0.0")), ("mira/y".to_string(), installed("1.0.0"))]);
+        let installed =
+            |v: &str| Installed { version: v.into(), commit: "c".repeat(40), permissions: vec![], dir: PathBuf::new() };
+        let all =
+            BTreeMap::from([("mira/x".to_string(), installed("1.0.0")), ("mira/y".to_string(), installed("1.0.0"))]);
         let index = Index {
             version: 1,
             plugins: vec![
@@ -849,7 +1076,11 @@ mod tests {
         docker.categories = vec!["containers".into()];
         let index = Index {
             version: 1,
-            plugins: vec![entry("a/git-tools", 5, &[("1.0.0", "1.0.0")]), docker, entry("b/git-more", 50, &[("1.0.0", "1.0.0")])],
+            plugins: vec![
+                entry("a/git-tools", 5, &[("1.0.0", "1.0.0")]),
+                docker,
+                entry("b/git-more", 50, &[("1.0.0", "1.0.0")]),
+            ],
         };
         let names = |text: &str| search(&index, text).iter().map(|e| e.name.clone()).collect::<Vec<_>>();
         assert_eq!(names("GIT"), ["b/git-more", "a/git-tools"], "any case, most stars first");
@@ -953,7 +1184,8 @@ mod tests {
             }
         });
         assert_eq!(load_installed_from(&p.installed).len(), 8, "no install lost");
-        let approvals = (0..8).filter(|i| !crate::plugins::registry_approval_in(&p.approvals, &format!("mira/p{i}")).is_empty());
+        let approvals =
+            (0..8).filter(|i| !crate::plugins::registry_approval_in(&p.approvals, &format!("mira/p{i}")).is_empty());
         assert_eq!(approvals.count(), 8, "no approval lost");
         let config = config(&p);
         assert_eq!((0..8).filter(|i| config.contains(&format!("\"mira/p{i}\""))).count(), 8, "{config}");
@@ -968,6 +1200,72 @@ mod tests {
         assert!(e.contains("input"), "{e}");
         assert!(!p.root.join("mira").exists());
         assert!(load_installed_from(&p.installed).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Everything an install changes, to compare before and after.
+    fn state(p: &Paths) -> (String, Vec<Permission>) {
+        fn files(dir: &Path, out: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                if e.path().is_dir() {
+                    files(&e.path(), out);
+                } else {
+                    out.push(format!(
+                        "{}={}",
+                        e.path().display(),
+                        std::fs::read_to_string(e.path()).unwrap_or_default()
+                    ));
+                }
+            }
+        }
+        let mut found = Vec::new();
+        files(&p.root, &mut found);
+        found.sort();
+        let installed: Vec<_> =
+            load_installed_from(&p.installed).into_iter().map(|(n, i)| (n, i.version, i.dir)).collect();
+        (
+            format!("{found:?} {installed:?} {:?}", config(p)),
+            crate::plugins::registry_approval_in(&p.approvals, "mira/x"),
+        )
+    }
+
+    #[test]
+    fn an_install_that_cant_keep_its_approval_changes_nothing() {
+        let (dir, p) = paths("no-approval");
+        let idx = index_with(vec![release("1.0.0", vec![Permission::Panes], archive(&dir, "1.0.0", "\"panes\""))]);
+        // The approvals file can't be written: a folder is in its way.
+        std::fs::create_dir_all(&p.approvals).unwrap();
+        let before = state(&p);
+        let e = install_in(&p, &idx, "mira/x", &Approve::Yes).unwrap_err();
+        assert!(e.contains("couldn't keep your approval") && e.contains("not installed"), "{e}");
+        assert_eq!(state(&p), before);
+        assert!(!p.root.join("mira/x").exists() || std::fs::read_dir(p.root.join("mira/x")).unwrap().next().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_update_that_cant_be_turned_on_leaves_the_old_version() {
+        let (dir, p) = paths("no-enable");
+        let v1 = release("1.0.0", vec![Permission::Panes], archive(&dir, "1.0.0", "\"panes\""));
+        let v2 = release(
+            "1.1.0",
+            vec![Permission::Panes, Permission::Input],
+            archive(&dir, "1.1.0", "\"panes\", \"input\""),
+        );
+        install_in(&p, &index_with(vec![v1.clone()]), "mira/x", &Approve::Yes).unwrap();
+        let before = state(&p);
+        // config.toml can't be rewritten: its folder is read-only.
+        use std::os::unix::fs::PermissionsExt;
+        let folder = p.config.parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = update_in(&p, &index_with(vec![v1, v2]), "mira/x", &Approve::Yes);
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let e = result.unwrap_err();
+        assert!(e.contains("couldn't turn it on") && e.contains("not installed"), "{e}");
+        // The old files, record and approval (without `input`) are as they were.
+        assert_eq!(state(&p), before);
+        assert_eq!(before.1, vec![Permission::Panes]);
+        assert!(!p.root.join("mira/x/1.1.0").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1004,7 +1302,11 @@ mod tests {
         let (dir, p) = paths("update-asks");
         let v1 = release("1.0.0", vec![Permission::Panes], archive(&dir, "1.0.0", "\"panes\""));
         install_in(&p, &index_with(vec![v1.clone()]), "mira/x", &Approve::Yes).unwrap();
-        let v2 = release("2.0.0", vec![Permission::Panes, Permission::Screen], archive(&dir, "2.0.0", "\"panes\", \"screen\""));
+        let v2 = release(
+            "2.0.0",
+            vec![Permission::Panes, Permission::Screen],
+            archive(&dir, "2.0.0", "\"panes\", \"screen\""),
+        );
         let asked = std::cell::RefCell::new(Vec::new());
         let ask = |_: &str, new: &[Permission]| {
             asked.borrow_mut().extend_from_slice(new);
@@ -1015,7 +1317,10 @@ mod tests {
         assert_eq!(load_installed_from(&p.installed)["mira/x"].version, "1.0.0");
         let yes = |_: &str, _: &[Permission]| true;
         update_in(&p, &index_with(vec![v1, v2]), "mira/x", &Approve::Ask(&yes)).unwrap();
-        assert_eq!(crate::plugins::registry_approval_in(&p.approvals, "mira/x"), vec![Permission::Panes, Permission::Screen]);
+        assert_eq!(
+            crate::plugins::registry_approval_in(&p.approvals, "mira/x"),
+            vec![Permission::Panes, Permission::Screen]
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1032,6 +1337,109 @@ mod tests {
         assert_eq!(in_x, [std::ffi::OsString::from("1.0.0")]);
         let in_root: Vec<_> = std::fs::read_dir(&p.root).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(in_root, [std::ffi::OsString::from("mira")], "no temporary folders left");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn listing_sizes_are_read_from_gnu_and_bsd_tar() {
+        assert_eq!(listed_size("-rw-r--r-- root/root      1234 2026-11-18 10:00 x/main.py"), Some(1234));
+        assert_eq!(listed_size("-rw-r--r--  0 root   wheel    5678 Nov 18 10:00 x/main.py"), Some(5678));
+        assert_eq!(listed_size("drwxr-xr-x root/root         0 2026-11-18 10:00 x/"), Some(0));
+        assert_eq!(listed_size("nonsense"), None);
+        assert_eq!((size(50 * MB), size(1500)), ("50 MB".to_string(), "2 KB".to_string()));
+    }
+
+    #[test]
+    fn archives_over_the_limits_are_refused() {
+        let (dir, _p) = paths("limits");
+        // 40 files of 1000 bytes, which pack down to almost nothing.
+        let top = dir.join("src/x");
+        std::fs::create_dir_all(&top).unwrap();
+        for n in 0..40 {
+            std::fs::write(top.join(format!("f{n}")), "0".repeat(1000)).unwrap();
+        }
+        let archive = dir.join("x.tar.gz");
+        let ok = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(dir.join("src"))
+            .arg("x")
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let packed = std::fs::metadata(&archive).unwrap().len();
+        assert!(packed < 2000, "it compresses well: {packed}");
+        let roomy = || Limits { archive: 1 << 20, entries: 100, file: 1 << 20, unpacked: 1 << 20 };
+        let mut n = 0;
+        let mut attempt = |limits: Limits| {
+            n += 1;
+            let into = dir.join(format!("out-{n}"));
+            (unpack_within(&archive, &into, &limits), into)
+        };
+        assert!(attempt(roomy()).0.is_ok());
+        let (e, _) = attempt(Limits { archive: 100, ..roomy() });
+        assert!(e.unwrap_err().contains("is over 1 KB"));
+        // Refused from the listing: nothing is unpacked.
+        let (e, into) = attempt(Limits { entries: 10, ..roomy() });
+        assert!(e.unwrap_err().contains("has more than 10 files") && !into.exists());
+        let (e, into) = attempt(Limits { file: 999, ..roomy() });
+        assert!(e.unwrap_err().contains("has a file over 1 KB") && !into.exists());
+        let (e, into) = attempt(Limits { unpacked: 20_000, ..roomy() });
+        assert!(e.unwrap_err().contains("unpacks to more than 20 KB") && !into.exists());
+        // Too big to download at all.
+        let e = fetch_within(archive.to_str().unwrap(), &dir.join("copy"), 100).unwrap_err();
+        assert!(e.contains("is over 1 KB; not downloaded") && !dir.join("copy").exists(), "{e}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_listing_that_hides_sizes_cannot_hide_how_much_unpacks() {
+        // The owner's name is the archive's to choose and is printed before
+        // the size, so one with spaces in it moves the size out of place.
+        let (dir, _p) = paths("owner");
+        let archive = dir.join("x.tar.gz");
+        let script = "import io, sys, tarfile\nt = tarfile.open(sys.argv[1], 'w:gz')\n\
+                      for n in range(40):\n    \
+                      i = tarfile.TarInfo(f'x/f{n}'); i.size = 1000; i.uname = 'a/b 0 '; i.gname = 'g'\n    \
+                      t.addfile(i, io.BytesIO(b'0' * 1000))\nt.close()";
+        let ok = std::process::Command::new("python3").args(["-c", script]).arg(&archive).status().unwrap().success();
+        assert!(ok);
+        let limits = |unpacked| Limits { archive: 1 << 20, entries: 100, file: 1 << 20, unpacked };
+        // Refused before tar writes anything.
+        let into = dir.join("out");
+        let e = unpack_within(&archive, &into, &limits(20_000)).unwrap_err();
+        assert!(e.contains("unpacks to more than 20 KB") && !into.exists(), "{e}");
+        assert!(unpack_within(&archive, &into, &limits(40_000)).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn tar_cannot_write_a_file_past_the_limit() {
+        // What stops a file whose size the listing didn't give away.
+        let (dir, _p) = paths("fsize");
+        std::fs::create_dir_all(dir.join("src/x")).unwrap();
+        std::fs::write(dir.join("src/x/big"), "0".repeat(300_000)).unwrap();
+        let archive = dir.join("x.tar.gz");
+        assert!(
+            std::process::Command::new("tar")
+                .arg("-czf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(dir.join("src"))
+                .arg("x")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let mut tar = std::process::Command::new("tar");
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        tar.arg("-xzf").arg(&archive).arg("-C").arg(dir.join("out"));
+        cap_file_size(&mut tar, 100_000);
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(tar.output().unwrap().status.signal(), Some(libc::SIGXFSZ));
+        assert!(std::fs::metadata(dir.join("out/x/big")).map_or(0, |m| m.len()) <= 100_000);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1061,7 +1469,9 @@ mod tests {
             make("two.tar.gz", &format!("{head}add('y/other')\nt.close()")),
             make(
                 "through-link.tar.gz",
-                &format!("{head}add('x/out', kind=tarfile.SYMTYPE, link=sys.argv[2])\nadd('x/out/evil-through')\nt.close()"),
+                &format!(
+                    "{head}add('x/out', kind=tarfile.SYMTYPE, link=sys.argv[2])\nadd('x/out/evil-through')\nt.close()"
+                ),
             ),
             make("hard.tar.gz", &format!("{head}add('x/hard', kind=tarfile.LNKTYPE, link='/etc/passwd')\nt.close()")),
         ];
@@ -1132,7 +1542,15 @@ mod tests {
         std::fs::create_dir_all(p.config.parent().unwrap()).unwrap();
         std::fs::write(&p.config, "plugins = [\"pomodoro\"]\n[plugin.pomodoro]\nlong-break-every = 3\n").unwrap();
         let mut all = BTreeMap::new();
-        all.insert("sn/pomodoro".to_string(), Installed { version: "1.0.0".into(), commit: "c".repeat(40), permissions: vec![], dir: p.root.join("sn/pomodoro") });
+        all.insert(
+            "sn/pomodoro".to_string(),
+            Installed {
+                version: "1.0.0".into(),
+                commit: "c".repeat(40),
+                permissions: vec![],
+                dir: p.root.join("sn/pomodoro"),
+            },
+        );
         save_installed_to(&p.installed, &all).unwrap();
         std::fs::create_dir_all(p.data.join("pomodoro")).unwrap();
         remove_in(&p, "sn/pomodoro", true).unwrap();
@@ -1148,7 +1566,8 @@ mod tests {
             assert!(valid_name(good), "{good}");
         }
         let long = format!("a/{}", "b".repeat(40));
-        for bad in ["mira", "Mira/x", "mira/-x", "mira/x-", "mira/x/y", "../x", "mira/", "/x", "mi ra/x", long.as_str()] {
+        for bad in ["mira", "Mira/x", "mira/-x", "mira/x-", "mira/x/y", "../x", "mira/", "/x", "mi ra/x", long.as_str()]
+        {
             assert!(!valid_name(bad), "{bad}");
         }
     }
@@ -1160,7 +1579,12 @@ mod tests {
         let mut all = BTreeMap::new();
         all.insert(
             "mira/x".to_string(),
-            Installed { version: "1.0.0".into(), commit: "a".repeat(40), permissions: vec![Permission::Panes], dir: dir.join("x") },
+            Installed {
+                version: "1.0.0".into(),
+                commit: "a".repeat(40),
+                permissions: vec![Permission::Panes],
+                dir: dir.join("x"),
+            },
         );
         all.insert(
             "mira/y".to_string(),

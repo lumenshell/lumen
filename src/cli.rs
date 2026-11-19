@@ -347,7 +347,13 @@ fn list_text(result: &Value) -> String {
             tab["title"].as_str().unwrap_or("")
         ));
         for p in tab["panes"].as_array().into_iter().flatten() {
-            let marker = if p["focused"] == true { "*" } else if p["active"] == true { "+" } else { " " };
+            let marker = if p["focused"] == true {
+                "*"
+            } else if p["active"] == true {
+                "+"
+            } else {
+                " "
+            };
             let cwd = p["cwd"].as_str().unwrap_or("?");
             let cwd = match cwd.strip_prefix(&home) {
                 Some(rest) if !home.is_empty() => format!("~{rest}"),
@@ -447,7 +453,8 @@ mod tests {
 
     #[test]
     fn parses_flags_and_positionals() {
-        let a = parse(&s(&["down", "--cwd", "/tmp", "--run=make test", "--no-focus"]), &["cwd", "run"], &["no-focus"]).unwrap();
+        let a = parse(&s(&["down", "--cwd", "/tmp", "--run=make test", "--no-focus"]), &["cwd", "run"], &["no-focus"])
+            .unwrap();
         assert_eq!(a.positional, vec!["down"]);
         assert_eq!(a.options["cwd"], "/tmp");
         assert_eq!(a.options["run"], "make test");

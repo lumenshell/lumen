@@ -81,7 +81,8 @@ impl Snapshot {
         let local = plugins::plugins_dir()
             .and_then(|d| std::fs::read_dir(d).ok())
             .map(|entries| {
-                let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|d| d.join("plugin.toml").is_file()).collect();
+                let mut dirs: Vec<PathBuf> =
+                    entries.flatten().map(|e| e.path()).filter(|d| d.join("plugin.toml").is_file()).collect();
                 dirs.sort();
                 dirs.iter().filter_map(|d| plugins::check_folder(d).ok()).collect()
             })
@@ -238,7 +239,12 @@ mod tests {
         Installed { version: version.into(), commit: "c".repeat(40), permissions: perms, dir }
     }
 
-    fn snapshot(p: &crate::registry::Paths, config: &str, installed: BTreeMap<String, Installed>, index: Option<Index>) -> Snapshot {
+    fn snapshot(
+        p: &crate::registry::Paths,
+        config: &str,
+        installed: BTreeMap<String, Installed>,
+        index: Option<Index>,
+    ) -> Snapshot {
         let settings = crate::settings::Settings::parse(config);
         Snapshot {
             enabled: settings.plugins.clone(),
@@ -251,11 +257,12 @@ mod tests {
         }
     }
 
-    const X: &str = "version = \"1.0.0\"\ndescription = \"X things\"\ncommand = \"python3 main.py\"\npermissions = [\"panes\"]\n";
+    const X: &str =
+        "version = \"1.0.0\"\ndescription = \"X things\"\ncommand = \"python3 main.py\"\npermissions = [\"panes\"]\n";
 
     fn approve(p: &crate::registry::Paths, name: &str, perms: &[Permission]) {
         std::fs::create_dir_all(p.approvals.parent().unwrap()).unwrap();
-        crate::plugins::approve_registry_in(&p.approvals, name, perms);
+        crate::plugins::approve_registry_in(&p.approvals, name, perms).unwrap();
     }
 
     #[test]
@@ -263,8 +270,14 @@ mod tests {
         let (dir, p) = paths("data-kinds");
         let x = install(&p, "mira/x", "1.0.0", vec![Permission::Panes], X);
         approve(&p, "mira/x", &[Permission::Panes]);
-        let mut s = snapshot(&p, "plugins = [\"recent-dirs\", \"mira/x\", \"mira/y\"]\n", BTreeMap::from([("mira/x".into(), x)]), None);
-        let mut local = crate::plugins::parse_manifest(&dir.join("where"), "command = \"./where\"\nversion = \"0.1.0\"\n").unwrap();
+        let mut s = snapshot(
+            &p,
+            "plugins = [\"recent-dirs\", \"mira/x\", \"mira/y\"]\n",
+            BTreeMap::from([("mira/x".into(), x)]),
+            None,
+        );
+        let mut local =
+            crate::plugins::parse_manifest(&dir.join("where"), "command = \"./where\"\nversion = \"0.1.0\"\n").unwrap();
         local.name = "where".into();
         s.local = vec![local];
         let items = installed(&s);
@@ -300,7 +313,10 @@ mod tests {
         s.statuses.insert("mira/x".into(), ("exited with status 1".into(), true));
         s.statuses.insert("recent-dirs".into(), ("running".into(), false));
         let items = installed(&s);
-        assert_eq!(items.iter().find(|i| i.name == "mira/x").unwrap().attention, Some(Attention::Failed("exited with status 1".into())));
+        assert_eq!(
+            items.iter().find(|i| i.name == "mira/x").unwrap().attention,
+            Some(Attention::Failed("exited with status 1".into()))
+        );
         assert_eq!(items.iter().find(|i| i.name == "recent-dirs").unwrap().attention, None);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -311,7 +327,12 @@ mod tests {
         let toml = format!("{X}\n[settings.n]\ntype = \"integer\"\ndefault = 1\ndescription = \"n\"\n");
         let x = install(&p, "mira/x", "1.0.0", vec![Permission::Panes], &toml);
         approve(&p, "mira/x", &[Permission::Panes]);
-        let s = snapshot(&p, "plugins = [\"mira/x\"]\n\n[plugin.\"mira/x\"]\nn = \"x\"\n", BTreeMap::from([("mira/x".into(), x)]), None);
+        let s = snapshot(
+            &p,
+            "plugins = [\"mira/x\"]\n\n[plugin.\"mira/x\"]\nn = \"x\"\n",
+            BTreeMap::from([("mira/x".into(), x)]),
+            None,
+        );
         let items = installed(&s);
         let x = items.iter().find(|i| i.name == "mira/x").unwrap();
         match &x.attention {
@@ -351,7 +372,12 @@ mod tests {
         let x = install(&p, "mira/x", "1.0.0", vec![Permission::Panes], X);
         let mut too_new = release("1.1.0", vec![Permission::Panes], String::new());
         too_new.lumen = "99.0.0".into();
-        let s = snapshot(&p, "plugins = [\"mira/x\"]\n", BTreeMap::from([("mira/x".into(), x)]), Some(index(vec![too_new])));
+        let s = snapshot(
+            &p,
+            "plugins = [\"mira/x\"]\n",
+            BTreeMap::from([("mira/x".into(), x)]),
+            Some(index(vec![too_new])),
+        );
         assert!(updates(&s).is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }

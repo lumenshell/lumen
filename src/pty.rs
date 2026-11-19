@@ -84,10 +84,23 @@ impl Owner {
 }
 
 /// What's on the other side of the terminal: a shell (or other program) in
-/// a pseudoterminal, or a plugin drawing the pane itself.
+/// a pseudoterminal, a plugin drawing the pane itself, or nothing at all
+/// (a pane that only says why no shell could be started).
 enum Backend {
-    Process { notifier: Notifier, child_pid: u32 },
-    Plugin { owner: Owner, pane: u64, parser: Box<alacritty_terminal::vte::ansi::Processor>, events: UnboundedSender<Event> },
+    Process {
+        notifier: Notifier,
+        child_pid: u32,
+    },
+    Message {
+        parser: Box<alacritty_terminal::vte::ansi::Processor>,
+        events: UnboundedSender<Event>,
+    },
+    Plugin {
+        owner: Owner,
+        pane: u64,
+        parser: Box<alacritty_terminal::vte::ansi::Processor>,
+        events: UnboundedSender<Event>,
+    },
 }
 
 pub struct Pty {
@@ -134,9 +147,7 @@ impl Pty {
             (shell, false)
         };
         let options = tty::Options {
-            shell: shell
-                .split_first()
-                .map(|(program, args)| tty::Shell::new(program.clone(), args.to_vec())),
+            shell: shell.split_first().map(|(program, args)| tty::Shell::new(program.clone(), args.to_vec())),
             working_directory: cwd.filter(|p| p.is_dir()).or_else(fallback_cwd),
             drain_on_exit: false,
             env,
@@ -154,6 +165,55 @@ impl Pty {
         Ok((Self { term, backend: Backend::Process { notifier, child_pid }, size, shell_state }, rx))
     }
 
+    /// A pane's shell, whatever happens: yours (`shell`, or `$SHELL`); if
+    /// that can't be started, `/bin/sh` saying why; and if nothing can be,
+    /// a pane that only says so. A wrong `shell` setting mustn't take Lumen
+    /// down with it.
+    pub fn shell(
+        cwd: Option<PathBuf>,
+        shell: Option<&[String]>,
+        integrate: bool,
+        pane: u64,
+        config: Config,
+        size: GridSize,
+    ) -> (Self, UnboundedReceiver<Event>) {
+        let first = match Self::spawn(cwd.clone(), shell, integrate, pane, config.clone(), size) {
+            Ok(spawned) => return spawned,
+            Err(e) => e,
+        };
+        let wanted = shell.map(<[String]>::to_vec).unwrap_or_else(shell_integration::default_shell).join(" ");
+        let why = format!("Lumen couldn't start your shell, {wanted}: {first}");
+        let fix = if shell.is_some() { "Check `shell` in config.toml." } else { "Check $SHELL." };
+        // The message goes as arguments, so nothing in it is read as shell.
+        let fallback = [
+            "/bin/sh",
+            "-c",
+            r#"printf '\033[31m%s\033[0m\n%s This is /bin/sh instead.\n\n' "$1" "$2"; exec /bin/sh"#,
+            "sh",
+            why.as_str(),
+            fix,
+        ]
+        .map(String::from);
+        match Self::spawn(cwd, Some(&fallback), false, pane, config.clone(), size) {
+            Ok(spawned) => spawned,
+            Err(e) => Self::message(
+                &format!("\x1b[31m{why}\x1b[0m\r\n/bin/sh couldn't be started either: {e}\r\n{fix}\r\n"),
+                config,
+            ),
+        }
+    }
+
+    /// A pane with no program at all, showing `text`.
+    fn message(text: &str, config: Config) -> (Self, UnboundedReceiver<Event>) {
+        let (tx, rx) = unbounded();
+        let size = GridSize::DEFAULT;
+        let term = Arc::new(FairMutex::new(Term::new(config, &size, Listener(tx.clone()))));
+        let backend = Backend::Message { parser: Box::default(), events: tx };
+        let mut this = Self { term, backend, size, shell_state: Arc::new(Mutex::new(Shared::default())) };
+        this.feed(text.as_bytes());
+        (this, rx)
+    }
+
     /// A pane with no program: `owner` draws it with [`Pty::feed`], and gets
     /// what you type in it.
     pub fn plugin(owner: Owner, pane: u64, config: Config) -> (Self, UnboundedReceiver<Event>) {
@@ -168,13 +228,14 @@ impl Pty {
     pub fn owner(&self) -> Option<&Owner> {
         match &self.backend {
             Backend::Plugin { owner, .. } => Some(owner),
-            Backend::Process { .. } => None,
+            Backend::Process { .. } | Backend::Message { .. } => None,
         }
     }
 
-    /// Show `bytes` in a plugin pane, as if a program had printed them.
+    /// Show `bytes` in a pane with no program (a plugin's, or a message),
+    /// as if a program had printed them.
     pub fn feed(&mut self, bytes: &[u8]) {
-        if let Backend::Plugin { parser, events, .. } = &mut self.backend {
+        if let Backend::Plugin { parser, events, .. } | Backend::Message { parser, events } = &mut self.backend {
             parser.advance(&mut *self.term.lock(), bytes);
             let _ = events.unbounded_send(Event::Wakeup);
         }
@@ -185,6 +246,7 @@ impl Pty {
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
         match &self.backend {
             Backend::Process { notifier, .. } => notifier.notify(bytes),
+            Backend::Message { .. } => {}
             Backend::Plugin { owner, pane, .. } => {
                 let bytes = bytes.into();
                 owner.send(*pane, "input", serde_json::json!({ "text": String::from_utf8_lossy(&bytes) }));
@@ -199,6 +261,7 @@ impl Pty {
         self.size = size;
         match &mut self.backend {
             Backend::Process { notifier, .. } => notifier.on_resize(size.window_size()),
+            Backend::Message { .. } => {}
             Backend::Plugin { owner, pane, .. } => {
                 owner.send(*pane, "resize", serde_json::json!({ "cols": size.cols, "rows": size.rows }))
             }
@@ -274,6 +337,49 @@ impl Drop for Pty {
                 let _ = notifier.0.send(Msg::Shutdown);
             }
             Backend::Plugin { owner, pane, .. } => owner.send(*pane, "closed", serde_json::json!({})),
+            Backend::Message { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line, Point};
+    use std::time::{Duration, Instant};
+
+    fn screen(pty: &Pty) -> String {
+        let term = pty.term.lock();
+        let bottom = Line(term.screen_lines() as i32 - 1);
+        term.bounds_to_string(Point::new(Line(0), Column(0)), Point::new(bottom, term.last_column()))
+    }
+
+    #[test]
+    fn a_shell_that_isnt_there_gets_bin_sh_and_says_so() {
+        let missing = ["/nonexistent/lumen-test-shell".to_string()];
+        // What used to be fatal: starting it fails.
+        assert!(Pty::spawn(None, Some(&missing), true, 1, Config::default(), GridSize::DEFAULT).is_err());
+
+        let (pty, _rx) = Pty::shell(None, Some(&missing), true, 1, Config::default(), GridSize::DEFAULT);
+        assert!(matches!(pty.backend, Backend::Process { .. }), "/bin/sh runs in its place");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !screen(&pty).contains("This is /bin/sh instead.") {
+            assert!(Instant::now() < deadline, "no message: {:?}", screen(&pty));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let text = screen(&pty).replace('\n', "");
+        assert!(text.contains("Lumen couldn't start your shell, /nonexistent/lumen-test-shell"), "{text}");
+        assert!(text.contains("Check `shell` in config.toml."), "{text}");
+    }
+
+    #[test]
+    fn a_message_pane_shows_its_text_and_takes_no_input() {
+        let (mut pty, _rx) = Pty::message("\x1b[31mno shell\x1b[0m\r\nsecond line\r\n", Config::default());
+        assert_eq!(screen(&pty).trim_end(), "no shell\nsecond line");
+        assert!(pty.owner().is_none() && pty.cwd().is_none_or(|_| true));
+        pty.write(&b"ls\r"[..]);
+        pty.resize(GridSize { cols: 40, rows: 10, ..GridSize::DEFAULT });
+        assert!(screen(&pty).contains("no shell"));
     }
 }

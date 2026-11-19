@@ -90,11 +90,7 @@ pub fn opacity(shown_at: Option<Instant>, now: Instant, held: bool) -> f32 {
     }
     let Some(at) = shown_at else { return 0.0 };
     let since = now.saturating_duration_since(at);
-    if since <= SHOW_FOR {
-        1.0
-    } else {
-        1.0 - ((since - SHOW_FOR).as_secs_f32() / FADE_FOR.as_secs_f32()).min(1.0)
-    }
+    if since <= SHOW_FOR { 1.0 } else { 1.0 - ((since - SHOW_FOR).as_secs_f32() / FADE_FOR.as_secs_f32()).min(1.0) }
 }
 
 #[cfg(test)]

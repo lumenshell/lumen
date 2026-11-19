@@ -29,6 +29,10 @@ python3 -m unittest discover -s python/tests   # the Python package
 python3 -m unittest discover -s plugins/tests  # the built-in plugins
 ```
 
+Pull requests and pushes to `main` run these, and `cargo clippy` with
+warnings as errors, on Linux and macOS
+([the workflow](../.github/workflows/ci.yml)).
+
 ## Source layout
 
 | File                   | What it does                                              |
@@ -69,6 +73,7 @@ python3 -m unittest discover -s plugins/tests  # the built-in plugins
 | `dist/install.sh`      | The installer `lumenshell.dev/install` serves: downloads a release, checks it and installs it |
 | `dist/homebrew/lumen.rb` | The Homebrew cask; each release fills it in and pushes it to `lumenshell/homebrew-tap` |
 | `.github/workflows/release.yml` | Builds Linux and macOS releases when a `v*` tag is pushed ([how to release](#releasing)) |
+| `.github/workflows/ci.yml` | Runs Clippy and the tests on every pull request and push to `main` |
 | `examples/`            | Scripts using `lumen msg` and the socket API, and example plugins |
 | `python/`              | `lumen_plugin`, the Python package for plugins (built into Lumen), and its tests |
 | `plugins/`             | The built-in plugins (built into Lumen; turned on in Plugins), and tests |

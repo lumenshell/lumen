@@ -1,0 +1,51 @@
+# Check every pull request and every push to main: Clippy with warnings as
+# errors, the Rust tests, and the Python tests, on Linux and macOS.
+#
+# Like the release workflow, it uses no third-party actions, and GitHub's own
+# are pinned to commits.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request replaces the run before it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The same runners the releases are built on.
+          - { name: Linux, runner: ubuntu-22.04 }
+          - { name: macOS, runner: macos-15 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-xcb-dev \
+            libfreetype-dev libfontconfig-dev libwayland-dev libvulkan-dev
+      - run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt && rustup default stable
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - name: Python tests
+        run: |
+          python3 -m unittest discover -s python/tests
+          python3 -m unittest discover -s plugins/tests

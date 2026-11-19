@@ -200,7 +200,10 @@ pub enum Bell {
 pub enum ThemeChoice {
     One(usize),
     /// `theme = "light:A, dark:B"`.
-    Pair { light: usize, dark: usize },
+    Pair {
+        light: usize,
+        dark: usize,
+    },
 }
 
 impl Global for Settings {}
@@ -340,7 +343,13 @@ impl Settings {
     pub fn shown_index(&self) -> usize {
         let i = match self.theme_choice {
             ThemeChoice::One(i) => i,
-            ThemeChoice::Pair { light, dark } => if self.dark { dark } else { light },
+            ThemeChoice::Pair { light, dark } => {
+                if self.dark {
+                    dark
+                } else {
+                    light
+                }
+            }
         };
         i.min(self.themes.len() - 1)
     }
@@ -602,7 +611,8 @@ impl Settings {
                             }
                         }
                         (!bad_names.is_empty()).then(|| {
-                            let names: Vec<_> = crate::plugins::BUILTINS.iter().map(|b| format!("\"{}\"", b.name)).collect();
+                            let names: Vec<_> =
+                                crate::plugins::BUILTINS.iter().map(|b| format!("\"{}\"", b.name)).collect();
                             format!(
                                 "unknown plugin {}: use a built-in one ({}) or an installed one as \"owner/name\"",
                                 bad_names.join(", "),
@@ -616,7 +626,10 @@ impl Settings {
                     Some(t) => {
                         let mut bad_names = Vec::new();
                         for (name, sub) in t.iter() {
-                            let table = sub.as_table().cloned().or_else(|| sub.as_inline_table().map(|i| i.clone().into_table()));
+                            let table = sub
+                                .as_table()
+                                .cloned()
+                                .or_else(|| sub.as_inline_table().map(|i| i.clone().into_table()));
                             match table {
                                 // An old built-in name's table counts for its
                                 // registry plugin, unless that has its own.
@@ -628,7 +641,9 @@ impl Settings {
                                         s.plugin_settings.insert(name.to_string(), PluginTable(table));
                                     }
                                 },
-                                None => bad_names.push(format!("`plugin.{name}` should be a table like [plugin.{name}]")),
+                                None => {
+                                    bad_names.push(format!("`plugin.{name}` should be a table like [plugin.{name}]"))
+                                }
                             }
                         }
                         (!bad_names.is_empty()).then(|| bad_names.join("; "))
@@ -1019,11 +1034,8 @@ impl Settings {
         if self.keys.is_empty() {
             return "#\n# [keys]\n# ctrl-alt-t = \"new-tab\"\n# ctrl-tab = \"none\"\n".into();
         }
-        let lines: Vec<_> = self
-            .keys
-            .iter()
-            .map(|(k, a)| format!("\"{k}\" = \"{}\"", a.as_deref().unwrap_or(keymap::NONE)))
-            .collect();
+        let lines: Vec<_> =
+            self.keys.iter().map(|(k, a)| format!("\"{k}\" = \"{}\"", a.as_deref().unwrap_or(keymap::NONE))).collect();
         format!("[keys]\n{}\n", lines.join("\n"))
     }
 
@@ -1054,11 +1066,8 @@ impl Settings {
             changed = true;
         }
         if doc.get("font-size").and_then(number).map(|v| v as f32) != Some(self.font_size) {
-            doc["font-size"] = if self.font_size.fract() == 0.0 {
-                value(self.font_size as i64)
-            } else {
-                value(self.font_size as f64)
-            };
+            doc["font-size"] =
+                if self.font_size.fract() == 0.0 { value(self.font_size as i64) } else { value(self.font_size as f64) };
             changed = true;
         }
         let listed: Vec<String> = doc
@@ -1410,18 +1419,19 @@ mod tests {
         std::fs::write(dir.join("Midnight"), ghostty).unwrap();
         std::fs::write(dir.join("Midnight.toml"), lumen).unwrap();
         std::fs::write(dir.join("Typo.toml"), "background = \"#101010\nforeground = \"#eeeeee\"\n").unwrap();
+        // Not every file system takes a name that isn't UTF-8: APFS refuses.
         #[cfg(unix)]
-        {
+        let odd_name = {
             use std::os::unix::ffi::OsStrExt;
-            std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"Caf\xe9")), ghostty).unwrap();
-        }
+            std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"Caf\xe9")), ghostty).is_ok()
+        };
         let (themes, problems) = load_theme_files(&dir);
         let names: Vec<&str> = themes.iter().map(|t| t.name.as_ref()).collect();
         assert!(names.contains(&"Upper"), "an upper-case extension still loads: {names:?}");
         assert!(names.contains(&"Catppuccin.Mocha"), "a dot in the name isn't an extension: {names:?}");
         assert_eq!(names.iter().filter(|n| **n == "Midnight").count(), 1, "one Midnight: {names:?}");
         #[cfg(unix)]
-        assert!(names.iter().any(|n| n.starts_with("Caf")), "a non-UTF-8 name still loads: {names:?}");
+        assert!(!odd_name || names.iter().any(|n| n.starts_with("Caf")), "a non-UTF-8 name still loads: {names:?}");
         assert!(!problems.iter().any(|p| p.contains("README")), "a README isn't a broken theme: {problems:?}");
         let dup = problems.iter().find(|p| p.contains("themes/Midnight.toml")).expect("the duplicate is reported");
         assert!(dup.contains("Midnight"), "{dup}");
@@ -1498,7 +1508,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(&path, "# mine\nfont-size = 14\n").unwrap();
-        edit_config_at(&path, |doc| doc["plugins"] = toml_edit::value(toml_edit::Array::from_iter(["mira/x"]))).unwrap();
+        edit_config_at(&path, |doc| doc["plugins"] = toml_edit::value(toml_edit::Array::from_iter(["mira/x"])))
+            .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("# mine\nfont-size = 14\n"), "{text}");
         assert!(text.contains("plugins = [\"mira/x\"]"), "{text}");
@@ -1520,19 +1531,25 @@ mod tests {
 
     #[test]
     fn old_builtin_names_mean_their_registry_plugins() {
-        let s = Settings::parse("plugins = [\"pomodoro\", \"recent-dirs\", \"sn/pomodoro\"]\n[plugin.pomodoro]\nlong-break-every = 3\n");
+        let s = Settings::parse(
+            "plugins = [\"pomodoro\", \"recent-dirs\", \"sn/pomodoro\"]\n[plugin.pomodoro]\nlong-break-every = 3\n",
+        );
         assert!(s.problems.is_empty(), "{:?}", s.problems);
         assert_eq!(s.plugins, ["sn/pomodoro", "recent-dirs"]);
         assert_eq!(s.plugin_settings["sn/pomodoro"].get("long-break-every").and_then(|v| v.as_integer()), Some(3));
         assert!(!s.plugin_settings.contains_key("pomodoro"));
         // A table under the new name wins, wherever it is in the file.
-        let both = Settings::parse("[plugin.\"sn/pomodoro\"]\nlong-break-every = 5\n[plugin.pomodoro]\nlong-break-every = 3\n");
+        let both = Settings::parse(
+            "[plugin.\"sn/pomodoro\"]\nlong-break-every = 5\n[plugin.pomodoro]\nlong-break-every = 3\n",
+        );
         assert_eq!(both.plugin_settings["sn/pomodoro"].get("long-break-every").and_then(|v| v.as_integer()), Some(5));
     }
 
     #[test]
     fn plugin_tables_are_kept() {
-        let s = Settings::parse("[plugin.recent-dirs]\nmax-shown = 50\n[plugin.\"mira/docker-panes\"]\nengine = \"podman\"\n");
+        let s = Settings::parse(
+            "[plugin.recent-dirs]\nmax-shown = 50\n[plugin.\"mira/docker-panes\"]\nengine = \"podman\"\n",
+        );
         assert!(s.problems.is_empty(), "{:?}", s.problems);
         assert_eq!(s.plugin_settings["recent-dirs"].get("max-shown").and_then(|v| v.as_integer()), Some(50));
         assert!(s.plugin_settings.contains_key("mira/docker-panes"));
@@ -1596,7 +1613,11 @@ mod tests {
         assert!(s.copy_on_select && s.option_as_alt);
         assert!(!s.plugin_update_check);
         let bad = Settings::parse("plugin-update-check = \"no\"\n");
-        assert!(bad.plugin_update_check && bad.problems.iter().any(|p| p.contains("plugin-update-check")), "{:?}", bad.problems);
+        assert!(
+            bad.plugin_update_check && bad.problems.iter().any(|p| p.contains("plugin-update-check")),
+            "{:?}",
+            bad.problems
+        );
         assert_eq!(s.cursor_blink_interval, Duration::from_millis(800));
         assert_eq!(s.word_separators.as_deref(), Some(" ,│"));
         assert_eq!(s.scroll_speed, 5.0);
@@ -1622,7 +1643,16 @@ mod tests {
              unfocused-dim = 0.9\npane-gap = 30\nbell = \"loud\"\nworking-directory = \"\"\n",
         );
         assert_eq!(s.problems.len(), 8, "{:?}", s.problems);
-        for key in ["scroll-speed", "cursor-blink-interval", "right-click", "link-modifier", "unfocused-dim", "pane-gap", "bell", "working-directory"] {
+        for key in [
+            "scroll-speed",
+            "cursor-blink-interval",
+            "right-click",
+            "link-modifier",
+            "unfocused-dim",
+            "pane-gap",
+            "bell",
+            "working-directory",
+        ] {
             assert!(s.problems.iter().any(|p| p.contains(&format!("`{key}`"))), "{key}: {:?}", s.problems);
         }
         let d = Settings::default();
@@ -1656,7 +1686,15 @@ mod tests {
 
     #[test]
     fn template_round_trips() {
-        let s = Settings { font_size: 15.5, padding: 8.0, scrollback: 500, cursor_shape: CursorShape::Beam, cursor_blink: false, background_opacity: 0.85, ..Default::default() };
+        let s = Settings {
+            font_size: 15.5,
+            padding: 8.0,
+            scrollback: 500,
+            cursor_shape: CursorShape::Beam,
+            cursor_blink: false,
+            background_opacity: 0.85,
+            ..Default::default()
+        };
         let parsed = Settings::parse(&s.template());
         assert!(parsed.problems.is_empty(), "{:?}", parsed.problems);
         assert!(parsed == s);

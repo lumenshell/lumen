@@ -118,7 +118,8 @@ pub fn hit(area: Rect, model: &Model, column: u16, row: u16) -> (Option<usize>, 
 pub fn draw(frame: &mut Frame, model: &Model) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
-        let text = Paragraph::new("Make the window larger to manage plugins (60×12 at least)").wrap(Wrap { trim: true });
+        let text =
+            Paragraph::new("Make the window larger to manage plugins (60×12 at least)").wrap(Wrap { trim: true });
         frame.render_widget(text, area);
         return;
     }
@@ -250,7 +251,8 @@ fn draw_list(frame: &mut Frame, model: &Model, area: Rect) {
             let line = match row {
                 Row::Item(i) => row_line(Some(mark(i)), &i.title, &version_note(i), width),
                 Row::Entry(e) => {
-                    let have = model.items.iter().any(|i| i.name == e.name && i.attention != Some(Attention::NotInstalled));
+                    let have =
+                        model.items.iter().any(|i| i.name == e.name && i.attention != Some(Attention::NotInstalled));
                     let right = if have { "installed".to_string() } else { format!("★ {}", e.stars) };
                     row_line(None, &e.name, &right, width)
                 }
@@ -280,7 +282,9 @@ fn details_lines(model: &Model) -> Vec<Line<'static>> {
     let title = item.map_or_else(|| row.name().to_string(), |i| i.title.clone());
     let version = item
         .and_then(|i| i.version.clone())
-        .or_else(|| entry.and_then(|e| crate::registry::best(e, crate::registry::LUMEN_VERSION)).map(|r| r.version.clone()))
+        .or_else(|| {
+            entry.and_then(|e| crate::registry::best(e, crate::registry::LUMEN_VERSION)).map(|r| r.version.clone())
+        })
         .unwrap_or_default();
     out.push(Line::from(vec![Span::styled(title, bold), Span::raw("  "), Span::styled(version, MUTED)]));
     let mut about = vec![row.name().to_string()];
@@ -298,7 +302,8 @@ fn details_lines(model: &Model) -> Vec<Line<'static>> {
         out.push(Line::styled(format!("Updated {}", e.updated), MUTED));
     }
     out.push(Line::raw(""));
-    let description = item.map(|i| i.description.clone()).filter(|d| !d.is_empty()).or_else(|| entry.map(|e| e.description.clone()));
+    let description =
+        item.map(|i| i.description.clone()).filter(|d| !d.is_empty()).or_else(|| entry.map(|e| e.description.clone()));
     out.push(Line::raw(description.unwrap_or_default()));
     out.push(Line::raw(""));
     let permissions = item.map(|i| i.permissions.clone()).filter(|p| !p.is_empty()).or_else(|| {
@@ -328,7 +333,10 @@ fn details_lines(model: &Model) -> Vec<Line<'static>> {
             out.push(Line::raw(format!("Update: {} → {}", i.version.clone().unwrap_or_default(), u.version)));
             if !u.new_permissions.is_empty() {
                 let words: Vec<&str> = u.new_permissions.iter().map(|x| x.describe()).collect();
-                out.push(Line::styled(format!("It also asks to: {}", and_list(&words)), Style::new().fg(Color::Yellow)));
+                out.push(Line::styled(
+                    format!("It also asks to: {}", and_list(&words)),
+                    Style::new().fg(Color::Yellow),
+                ));
             }
         }
     }
@@ -359,7 +367,8 @@ fn details_lines(model: &Model) -> Vec<Line<'static>> {
 fn editor_lines(model: &Model, e: &crate::manager::settings_edit::Editor) -> Vec<Line<'static>> {
     use crate::plugin_settings::Kind as S;
     let title = model.items.iter().find(|i| i.name == e.plugin).map_or(e.plugin.clone(), |i| i.title.clone());
-    let mut out = vec![Line::styled(format!("Settings for {title}"), Style::new().add_modifier(Modifier::BOLD)), Line::raw("")];
+    let mut out =
+        vec![Line::styled(format!("Settings for {title}"), Style::new().add_modifier(Modifier::BOLD)), Line::raw("")];
     let widest = e.fields.iter().map(|f| f.spec.key.width()).max().unwrap_or(0);
     for (n, f) in e.fields.iter().enumerate() {
         let selected = n == e.selected;
@@ -368,9 +377,15 @@ fn editor_lines(model: &Model, e: &crate::manager::settings_edit::Editor) -> Vec
             _ => crate::manager::settings_edit::shown(&f.value),
         };
         let pad = " ".repeat(widest - f.spec.key.width());
-        let mut spans = vec![Span::raw(format!(" {}{pad}   ", f.spec.key)), Span::styled(value, Style::new().add_modifier(Modifier::BOLD))];
+        let mut spans = vec![
+            Span::raw(format!(" {}{pad}   ", f.spec.key)),
+            Span::styled(value, Style::new().add_modifier(Modifier::BOLD)),
+        ];
         if f.value != f.spec.default {
-            spans.push(Span::styled(format!("   (default {})", crate::manager::settings_edit::shown(&f.spec.default)), MUTED));
+            spans.push(Span::styled(
+                format!("   (default {})", crate::manager::settings_edit::shown(&f.spec.default)),
+                MUTED,
+            ));
         }
         let line = Line::from(spans);
         out.push(if selected { line.style(Style::new().add_modifier(Modifier::REVERSED)) } else { line });
@@ -378,8 +393,13 @@ fn editor_lines(model: &Model, e: &crate::manager::settings_edit::Editor) -> Vec
             let hint = match &f.spec.kind {
                 S::Boolean => "space or enter turns it on or off".to_string(),
                 S::Choice(c) => format!("← → choose: {}", c.join(", ")),
-                S::Integer { min, max } => format!("type a whole number, or ← →{}", bounds(min.map(|v| v.to_string()), max.map(|v| v.to_string()))),
-                S::Number { min, max } => format!("type a number, or ← →{}", bounds(min.map(|v| v.to_string()), max.map(|v| v.to_string()))),
+                S::Integer { min, max } => format!(
+                    "type a whole number, or ← →{}",
+                    bounds(min.map(|v| v.to_string()), max.map(|v| v.to_string()))
+                ),
+                S::Number { min, max } => {
+                    format!("type a number, or ← →{}", bounds(min.map(|v| v.to_string()), max.map(|v| v.to_string())))
+                }
                 S::String => "enter to edit".into(),
                 S::List => "enter to edit, separated by commas".into(),
             };
@@ -404,7 +424,11 @@ fn footer(model: &Model) -> &'static str {
         return "esc cancel";
     }
     if let Some(e) = &model.editing {
-        return if e.input.is_some() { "type the value   enter save   esc cancel" } else { "↑ ↓ choose   ← → change   enter save   d default   esc done" };
+        return if e.input.is_some() {
+            "type the value   enter save   esc cancel"
+        } else {
+            "↑ ↓ choose   ← → change   enter save   d default   esc done"
+        };
     }
     if model.typing {
         return "type to filter   enter done   esc clear";
@@ -475,7 +499,12 @@ impl Part {
             Part::Bullet(t) => wrap(&t, width.saturating_sub(2).max(1))
                 .into_iter()
                 .enumerate()
-                .map(|(n, r)| Line::from(vec![Span::styled(if n == 0 { "• " } else { "  " }, Style::new().fg(ACCENT)), Span::raw(r)]))
+                .map(|(n, r)| {
+                    Line::from(vec![
+                        Span::styled(if n == 0 { "• " } else { "  " }, Style::new().fg(ACCENT)),
+                        Span::raw(r),
+                    ])
+                })
                 .collect(),
             Part::Gap => vec![Line::raw("")],
         }
@@ -490,7 +519,11 @@ fn draw_dialog(frame: &mut Frame, dialog: &Dialog, area: Rect) {
     let (title, parts): (&str, Vec<Part>) = match dialog {
         Dialog::Approve { name, permissions, .. } => {
             let mut l = vec![
-                Part::Row(Line::from(vec![Span::styled("Allow ", bold), Span::styled(name.clone(), accent), Span::styled(" to:", bold)])),
+                Part::Row(Line::from(vec![
+                    Span::styled("Allow ", bold),
+                    Span::styled(name.clone(), accent),
+                    Span::styled(" to:", bold),
+                ])),
                 Part::Gap,
             ];
             l.extend(permissions.iter().map(|p| Part::Bullet(p.describe().to_string())));
@@ -504,7 +537,11 @@ fn draw_dialog(frame: &mut Frame, dialog: &Dialog, area: Rect) {
         Dialog::RemoveData { name } => (
             "Remove",
             vec![
-                Part::Row(Line::from(vec![Span::styled("Remove ", bold), Span::styled(name.clone(), accent), Span::styled(".", bold)])),
+                Part::Row(Line::from(vec![
+                    Span::styled("Remove ", bold),
+                    Span::styled(name.clone(), accent),
+                    Span::styled(".", bold),
+                ])),
                 Part::Gap,
                 Part::Text(format!("Also delete {name}'s data? (y/N)"), plain),
                 Part::Gap,
@@ -535,7 +572,8 @@ fn draw_dialog(frame: &mut Frame, dialog: &Dialog, area: Rect) {
     // take 3 columns a side and 2 rows top and bottom.
     let widest = parts.iter().map(Part::width).max().unwrap_or(0).clamp(36, 58);
     let width = (widest as u16 + 6).min(area.width.saturating_sub(4));
-    let lines: Vec<Line> = parts.into_iter().flat_map(|p| p.rows(usize::from(width.saturating_sub(6)).max(1))).collect();
+    let lines: Vec<Line> =
+        parts.into_iter().flat_map(|p| p.rows(usize::from(width.saturating_sub(6)).max(1))).collect();
     let height = (lines.len() as u16 + 4).min(area.height);
     let r = Rect::new(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height);
     frame.render_widget(Clear, r);
@@ -553,8 +591,8 @@ mod tests {
     use crate::manager::data::{Attention, Item, Kind, Snapshot, Upgrade};
     use crate::manager::model::{Dialog, Model, Tab};
     use crate::plugins::Permission;
-    use crate::registry::testing::{entry, release};
     use crate::registry::Index;
+    use crate::registry::testing::{entry, release};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -608,7 +646,8 @@ mod tests {
     fn model() -> Model {
         let mut docker = entry("mira/docker-panes", 214, &[]);
         docker.versions = vec![release("1.3.0", vec![Permission::Panes], String::new())];
-        let mut m = Model::new(Snapshot { index: Some(Index { version: 1, plugins: vec![docker] }), ..Default::default() });
+        let mut m =
+            Model::new(Snapshot { index: Some(Index { version: 1, plugins: vec![docker] }), ..Default::default() });
         let mut missing = item("jira/picker", "jira/picker", Kind::Registry, true);
         missing.attention = Some(Attention::NotInstalled);
         missing.version = None;
@@ -626,7 +665,17 @@ mod tests {
         let mut m = model();
         m.selected = 3;
         let s = screen(&m, 120, 30);
-        for want in ["● Recent Directories", "○ Pomodoro Timer", "! jira/picker", "not installed", "built in", "local", "Installed (4)", "Browse", "Updates (0)"] {
+        for want in [
+            "● Recent Directories",
+            "○ Pomodoro Timer",
+            "! jira/picker",
+            "not installed",
+            "built in",
+            "local",
+            "Installed (4)",
+            "Browse",
+            "Updates (0)",
+        ] {
             assert!(s.contains(want), "{want:?} missing:\n{s}");
         }
         assert!(s.contains("space on/off   enter details   s settings   u update   x remove   q quit"), "{s}");

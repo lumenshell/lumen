@@ -4,14 +4,14 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::{
-    App, BoxShadow, Context, EventEmitter, FocusHandle, Focusable, HighlightStyle, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, StyledText, Window, div, point, prelude::FluentBuilder, px,
+    App, BoxShadow, Context, EventEmitter, FocusHandle, Focusable, HighlightStyle, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, StyledText, Window, div,
+    point, prelude::FluentBuilder, px,
 };
 
 use crate::settings::{MONO_FONT, Settings, ui_font};
-use gpui::{ScrollStrategy, uniform_list};
 use crate::theme::alpha;
+use gpui::{ScrollStrategy, uniform_list};
 
 /// Something the palette runs: a choice, or what happens on cancel.
 pub type PaletteFn = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -452,7 +452,12 @@ fn fit_hint(item: &PaletteItem, dots: bool, window: &Window, cx: &App) -> Option
         return Some(text.clone());
     }
     let mut runs = vec![run(text, family.clone())];
-    Some(cx.text_system().line_wrapper(gpui::font(family), px(size)).truncate_line(text.clone(), px(room), "…", &mut runs))
+    Some(cx.text_system().line_wrapper(gpui::font(family), px(size)).truncate_line(
+        text.clone(),
+        px(room),
+        "…",
+        &mut runs,
+    ))
 }
 
 /// One row of the palette.
@@ -541,7 +546,12 @@ fn caret(color: gpui::Hsla) -> gpui::Div {
 
 impl CommandPalette {
     /// The rows `range` of the filtered list.
-    fn rows(&mut self, range: std::ops::Range<usize>, window: &mut Window, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+    fn rows(
+        &mut self,
+        range: std::ops::Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
         let theme = Settings::get(cx).theme().clone();
         // A column for dots when any item has one, so labels line up.
         let dots = self.items.iter().any(|i| i.dot.is_some());
@@ -573,11 +583,7 @@ impl Render for CommandPalette {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Settings::get(cx).theme().clone();
         let has_query = !self.query.is_empty();
-        let query: SharedString = if has_query {
-            self.query.clone().into()
-        } else {
-            self.placeholder.clone()
-        };
+        let query: SharedString = if has_query { self.query.clone().into() } else { self.placeholder.clone() };
 
         div()
             .id("palette")
@@ -642,21 +648,14 @@ impl Render for CommandPalette {
                 )
             })
             .child(
-                div()
-                    .id("palette-list")
-                    .mt(px(6.0))
-                    .flex()
-                    .flex_col()
-                    .flex_shrink()
-                    .min_h_0()
-                    .child(
-                        // Only the rows in view are built and drawn.
-                        uniform_list("palette-rows", self.filtered.len(), cx.processor(Self::rows))
-                            .track_scroll(self.scroll.clone())
-                            .h(px(ROW_HEIGHT * (self.filtered.len() as f32).min(VISIBLE_ROWS)))
-                            .flex_shrink()
-                            .min_h_0(),
-                    ),
+                div().id("palette-list").mt(px(6.0)).flex().flex_col().flex_shrink().min_h_0().child(
+                    // Only the rows in view are built and drawn.
+                    uniform_list("palette-rows", self.filtered.len(), cx.processor(Self::rows))
+                        .track_scroll(self.scroll.clone())
+                        .h(px(ROW_HEIGHT * (self.filtered.len() as f32).min(VISIBLE_ROWS)))
+                        .flex_shrink()
+                        .min_h_0(),
+                ),
             )
             .when(first_item(&self.filtered).is_none() && self.submit.is_none(), |d| {
                 d.child(div().px(px(18.0)).py(px(10.0)).text_color(theme.muted).child("No matches"))
@@ -704,7 +703,8 @@ mod tests {
 
     #[test]
     fn sections_group_matches_in_order_of_first_appearance() {
-        let items = [item(Some("Lumen"), "Next Pane"), item(Some("Plugins"), "Pane Log"), item(Some("Lumen"), "Pane Split")];
+        let items =
+            [item(Some("Lumen"), "Next Pane"), item(Some("Plugins"), "Pane Log"), item(Some("Lumen"), "Pane Split")];
         // Within a section: best match first ("Pane Split" starts with it).
         assert_eq!(shape(&arrange(&items, "pane")), ["# Lumen", "2", "0", "# Plugins", "1"]);
         // Nothing typed: the order given, under headings.

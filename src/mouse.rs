@@ -99,13 +99,7 @@ pub fn encode(
 mod tests {
     use super::*;
 
-    const NONE: Modifiers = Modifiers {
-        control: false,
-        alt: false,
-        shift: false,
-        platform: false,
-        function: false,
-    };
+    const NONE: Modifiers = Modifiers { control: false, alt: false, shift: false, platform: false, function: false };
 
     fn click() -> TermMode {
         TermMode::MOUSE_REPORT_CLICK

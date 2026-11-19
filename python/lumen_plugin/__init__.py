@@ -211,7 +211,7 @@ class Pane:
     ) -> "Pane":
         """Split this pane ("right" or "down") and return the new one, which
         starts in `cwd` (default: this pane's directory; ~ works) and runs `run` (a
-        string, or a list to quote). Needs `panes`.
+        string, or a list to quote). Needs `panes`, and `input` to `run`.
 
         With `plugin_pane=True` the new pane runs nothing: you draw it, and
         get what's typed in it. It returns a PluginPane.
@@ -549,7 +549,7 @@ class Plugin:
     async def new_tab(self, *, cwd=None, run=None, plugin_pane: bool = False) -> Pane:
         """Open a tab in `cwd` (~ works) and return its pane. `run` is a
         string, or a list to quote. With `plugin_pane=True`, the tab holds a
-        PluginPane for you to draw. Needs `panes`."""
+        PluginPane for you to draw. Needs `panes`, and `input` to `run`."""
         if plugin_pane:
             if cwd is not None or run is not None:
                 raise ValueError("a plugin pane runs no program, so takes no cwd or run")

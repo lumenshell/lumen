@@ -97,9 +97,7 @@ fn path() -> Option<PathBuf> {
     let base = if cfg!(target_os = "macos") {
         home?.join("Library/Application Support")
     } else {
-        std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| home.map(|h| h.join(".local/state")))?
+        std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".local/state")))?
     };
     Some(base.join("lumen").join("session.json"))
 }
@@ -133,20 +131,15 @@ fn parse(text: &str) -> Vec<Session> {
 
 /// Repair one window's saved state; None if it has no panes left.
 fn clean(session: Session) -> Option<Session> {
-    let tabs: Vec<TabState> = session
-        .tabs
-        .into_iter()
-        .filter_map(|t| Some(TabState { root: t.root.sanitize()?, ..t }))
-        .collect();
+    let tabs: Vec<TabState> =
+        session.tabs.into_iter().filter_map(|t| Some(TabState { root: t.root.sanitize()?, ..t })).collect();
     if tabs.is_empty() {
         return None;
     }
     let active_tab = session.active_tab.min(tabs.len() - 1);
-    let window = session.window.filter(|w| {
-        [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite())
-            && w.width > 0.0
-            && w.height > 0.0
-    });
+    let window = session
+        .window
+        .filter(|w| [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite()) && w.width > 0.0 && w.height > 0.0);
     Some(Session::new(window, active_tab, tabs))
 }
 
@@ -236,13 +229,17 @@ mod tests {
     use super::*;
 
     fn window(cwd: &str) -> Session {
-        Session::new(None, 0, vec![TabState {
-            root: NodeState::Pane { cwd: Some(cwd.into()) },
-            active: 0,
-            zoomed: false,
-            title: None,
-            color: None,
-        }])
+        Session::new(
+            None,
+            0,
+            vec![TabState {
+                root: NodeState::Pane { cwd: Some(cwd.into()) },
+                active: 0,
+                zoomed: false,
+                title: None,
+                color: None,
+            }],
+        )
     }
 
     #[test]

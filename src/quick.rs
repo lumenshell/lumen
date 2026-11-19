@@ -9,7 +9,9 @@
 //! grabs `quick-terminal-key` itself. Elsewhere (Wayland, macOS) it's a
 //! normal window that toggles between shown and minimized.
 
-use gpui::{App, AppContext, Bounds, Global, WindowBounds, WindowDecorations, WindowHandle, WindowOptions, point, px, size};
+use gpui::{
+    App, AppContext, Bounds, Global, WindowBounds, WindowDecorations, WindowHandle, WindowOptions, point, px, size,
+};
 
 use crate::settings::Settings;
 use crate::workspace::Workspace;
@@ -91,15 +93,15 @@ pub fn activation_changed(active: bool, cx: &mut App) {
 
 fn open(cx: &mut App) {
     let height = Settings::get(cx).quick_terminal_height;
-    let scale = cx
-        .windows()
-        .first()
-        .and_then(|w| w.update(cx, |_, window, _| window.scale_factor()).ok())
-        .unwrap_or(1.0);
+    let scale =
+        cx.windows().first().and_then(|w| w.update(cx, |_, window, _| window.scale_factor()).ok()).unwrap_or(1.0);
     // Where it goes, in logical pixels: the top of the pointer's monitor.
     let area = monitor_under_pointer()
         .map(|(x, y, w, h)| {
-            Bounds::new(point(px(x as f32 / scale), px(y as f32 / scale)), size(px(w as f32 / scale), px(h as f32 / scale)))
+            Bounds::new(
+                point(px(x as f32 / scale), px(y as f32 / scale)),
+                size(px(w as f32 / scale), px(h as f32 / scale)),
+            )
         })
         .or_else(|| cx.primary_display().map(|d| d.bounds()))
         .unwrap_or_else(|| Bounds::new(point(px(0.0), px(0.0)), size(px(1280.0), px(800.0))));
@@ -157,7 +159,7 @@ mod x11 {
     use x11rb::protocol::randr::ConnectionExt as _;
     use x11rb::protocol::xproto::{
         AtomEnum, ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask, InputFocus, PropMode, StackMode,
-        UnmapNotifyEvent, UNMAP_NOTIFY_EVENT,
+        UNMAP_NOTIFY_EVENT, UnmapNotifyEvent,
     };
     use x11rb::rust_connection::RustConnection;
     use x11rb::wrapper::ConnectionExt as _;
@@ -205,8 +207,12 @@ mod x11 {
     /// on every workspace and out of the taskbar, and give it the keyboard.
     pub fn show(xid: u32, height: f32) {
         let Some((conn, root)) = connect() else { return };
-        let names: [&[u8]; 4] =
-            [b"_NET_WM_STATE_ABOVE", b"_NET_WM_STATE_STICKY", b"_NET_WM_STATE_SKIP_TASKBAR", b"_NET_WM_STATE_SKIP_PAGER"];
+        let names: [&[u8]; 4] = [
+            b"_NET_WM_STATE_ABOVE",
+            b"_NET_WM_STATE_STICKY",
+            b"_NET_WM_STATE_SKIP_TASKBAR",
+            b"_NET_WM_STATE_SKIP_PAGER",
+        ];
         let states: Vec<u32> = names.iter().filter_map(|n| atom(&conn, n)).collect();
         let (Some(wm_state), Some(active), Some(desktop)) =
             (atom(&conn, b"_NET_WM_STATE"), atom(&conn, b"_NET_ACTIVE_WINDOW"), atom(&conn, b"_NET_WM_DESKTOP"))
@@ -261,7 +267,13 @@ mod x11 {
     pub fn hide(xid: u32) {
         let Some((conn, root)) = connect() else { return };
         let _ = conn.unmap_window(xid);
-        let ev = UnmapNotifyEvent { response_type: UNMAP_NOTIFY_EVENT, sequence: 0, event: root, window: xid, from_configure: false };
+        let ev = UnmapNotifyEvent {
+            response_type: UNMAP_NOTIFY_EVENT,
+            sequence: 0,
+            event: root,
+            window: xid,
+            from_configure: false,
+        };
         let _ = conn.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev);
         let _ = conn.sync();
     }

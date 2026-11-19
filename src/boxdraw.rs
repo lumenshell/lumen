@@ -13,7 +13,13 @@ pub enum Shape {
     Rect(Bounds<Pixels>, f32),
     /// A rounded corner: draw `quad` with only the borders on `corner`'s two
     /// sides, clipped to `clip`.
-    Arc { quad: Bounds<Pixels>, clip: Bounds<Pixels>, corner: Corner, radius: Pixels, width: Pixels },
+    Arc {
+        quad: Bounds<Pixels>,
+        clip: Bounds<Pixels>,
+        corner: Corner,
+        radius: Pixels,
+        width: Pixels,
+    },
     Polygon(Vec<Point<Pixels>>),
     Polyline(Vec<Point<Pixels>>, Pixels),
 }
@@ -88,6 +94,7 @@ const DOUBLE: u8 = 3;
 /// Arms of U+2500..=U+257F as "urdl" digits (0 none, 1 light, 2 heavy,
 /// 3 double). `-`/`|` are dashed (horizontal/vertical, followed by the
 /// weight and dash count), `a` is a rounded corner, `x` a diagonal.
+#[rustfmt::skip]
 const BOX: [&str; 128] = [
     // 2500
     "0101", "0202", "1010", "2020", "-13", "-23", "|13", "|23",
@@ -197,10 +204,7 @@ fn joined(cell: &Cell, arms: [u8; 4], t: f32) -> Vec<Shape> {
                     0.0
                 }
             };
-            vec![
-                (band(-d, t), near(side_a, side_b)),
-                (band(d, t), near(side_b, side_a)),
-            ]
+            vec![(band(-d, t), near(side_a, side_b)), (band(d, t), near(side_b, side_a))]
         } else {
             // Reach across the centre far enough to cover perpendicular arms.
             let own = band(0.0, thick(w));
@@ -248,10 +252,10 @@ fn arc(code: u32, cell: &Cell, t: f32) -> Vec<Shape> {
     let clip = Bounds::new(point(px(cell.x0), px(cell.y0)), size(px(cell.w()), px(cell.h())));
     let big = cell.w() + cell.h();
     let (corner, x, y) = match code {
-        0x256D => (Corner::TopLeft, cx - a, cy - a),                // ╭
-        0x256E => (Corner::TopRight, cx - big + t - a, cy - a),     // ╮
+        0x256D => (Corner::TopLeft, cx - a, cy - a),                         // ╭
+        0x256E => (Corner::TopRight, cx - big + t - a, cy - a),              // ╮
         0x256F => (Corner::BottomRight, cx - big + t - a, cy - big + t - a), // ╯
-        _ => (Corner::BottomLeft, cx - a, cy - big + t - a),        // ╰
+        _ => (Corner::BottomLeft, cx - a, cy - big + t - a),                 // ╰
     };
     let quad = Bounds::new(point(px(x), px(y)), size(px(big), px(big)));
     vec![Shape::Arc { quad, clip, corner, radius: px(r), width: px(t) }]
@@ -299,11 +303,7 @@ fn blocks(code: u32, cell: &Cell) -> Vec<Shape> {
                 (0b0010, x0, my, mx, y1),
                 (0b0001, mx, my, x1, y1),
             ];
-            quads
-                .iter()
-                .filter(|q| bits & q.0 != 0)
-                .map(|&(_, a, b, c, d)| rect(a, b, c, d))
-                .collect()
+            quads.iter().filter(|q| bits & q.0 != 0).map(|&(_, a, b, c, d)| rect(a, b, c, d)).collect()
         }
     }
 }

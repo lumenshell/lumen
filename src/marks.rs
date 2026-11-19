@@ -137,7 +137,8 @@ mod tests {
         let mut rewriter = Rewriter::new(Arc::new(Mutex::new(Shared::default())), None, None, false);
         let mut bytes = Vec::new();
         let output = output.replace('A', "\x1b]133;A\x07").replace('B', "\x1b]133;B\x07");
-        let output = output.replace('C', "\x1b]133;C\x07").replace("D0", "\x1b]133;D;0\x07").replace("D1", "\x1b]133;D;1\x07");
+        let output =
+            output.replace('C', "\x1b]133;C\x07").replace("D0", "\x1b]133;D;0\x07").replace("D1", "\x1b]133;D;1\x07");
         rewriter.feed(output.replace('\n', "\r\n").as_bytes(), &mut bytes);
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, &bytes);
