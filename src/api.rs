@@ -13,7 +13,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -98,7 +98,7 @@ pub fn socket_dir() -> Result<PathBuf, String> {
 struct Subscriber {
     /// Event names wanted; `None` means all.
     events: Option<HashSet<String>>,
-    out: mpsc::Sender<String>,
+    out: Out,
     /// May see command text (plugins need the `screen` permission).
     screen: bool,
 }
@@ -183,7 +183,7 @@ fn needed(method: &str, params: &Value) -> Vec<Permission> {
 #[derive(Clone)]
 pub struct Origin {
     pub conn: u64,
-    pub out: mpsc::Sender<String>,
+    pub out: Out,
 }
 
 static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -355,21 +355,94 @@ pub fn serve(listener: UnixListener, cx: &mut App) {
 
 /// One socket connection.
 fn serve_connection(stream: UnixStream, jobs: Jobs) {
-    let Ok(write_half) = stream.try_clone() else { return };
-    let out = writer(write_half);
+    let (Ok(write_half), Ok(whole)) = (stream.try_clone(), stream.try_clone()) else { return };
+    // A client that stops reading is hung up on, which ends the reading here too.
+    let out = writer_until(write_half, None, move || {
+        let _ = whole.shutdown(std::net::Shutdown::Both);
+    });
     serve_lines(BufReader::new(stream), &out, &jobs, &Caller::Socket);
 }
 
-/// A thread writing lines to `w`; replies and events share it, so lines
-/// never interleave. Ends when `w` can't be written.
-pub fn writer(w: impl Write + Send + 'static) -> mpsc::Sender<String> {
-    writer_until(w, None)
+/// The most that may wait to be written to one connection, in bytes. Lines
+/// wait when the other end isn't reading; past this it's taken to have
+/// stopped for good, so it can't use up Lumen's memory.
+const MAX_QUEUED: usize = 16 << 20;
+
+/// What ends a connection that has stopped reading.
+type CutOff = Box<dyn FnOnce() + Send>;
+
+/// Where a connection's replies and events go: the queue its writer thread
+/// ([`writer_until`]) writes from.
+#[derive(Clone)]
+pub struct Out {
+    lines: mpsc::Sender<String>,
+    /// Bytes queued and not yet taken by the writer.
+    queued: Arc<AtomicUsize>,
+    limit: usize,
+    /// Run once, when the queue goes over its limit; then nothing more is taken.
+    cut_off: Arc<Mutex<Option<CutOff>>>,
+    cut: Arc<AtomicBool>,
 }
 
-/// [`writer`], which also ends (closing `w`, and so refusing every later
-/// reply and event) soon after `revoked` is set.
-pub fn writer_until(mut w: impl Write + Send + 'static, revoked: Option<Arc<AtomicBool>>) -> mpsc::Sender<String> {
-    let (out, lines) = mpsc::channel::<String>();
+impl Out {
+    /// A queue holding up to `limit` bytes, and the end the writer reads.
+    fn new(limit: usize, cut_off: impl FnOnce() + Send + 'static) -> (Out, mpsc::Receiver<String>) {
+        let (lines, queue) = mpsc::channel();
+        let out = Out {
+            lines,
+            queued: Arc::default(),
+            limit,
+            cut_off: Arc::new(Mutex::new(Some(Box::new(cut_off)))),
+            cut: Arc::default(),
+        };
+        (out, queue)
+    }
+
+    /// A queue nothing writes from, for tests to read what was sent.
+    #[cfg(test)]
+    pub fn channel() -> (Out, mpsc::Receiver<String>) {
+        Out::new(MAX_QUEUED, || {})
+    }
+
+    /// Queue a line for the connection. Fails once the connection is over,
+    /// or has been cut off for not reading.
+    pub fn send(&self, line: String) -> Result<(), Closed> {
+        if self.cut.load(Ordering::SeqCst) {
+            return Err(Closed);
+        }
+        if self.queued.fetch_add(line.len(), Ordering::SeqCst) + line.len() > self.limit {
+            self.cut.store(true, Ordering::SeqCst);
+            if let Some(cut_off) = self.cut_off.lock().unwrap().take() {
+                cut_off();
+            }
+            return Err(Closed);
+        }
+        self.lines.send(line).map_err(|_| Closed)
+    }
+
+    /// The writer has taken a line of `len` bytes off the queue.
+    fn taken(&self, len: usize) {
+        self.queued.fetch_sub(len, Ordering::SeqCst);
+    }
+}
+
+/// The connection is over: nothing more can be sent to it.
+#[derive(Debug, PartialEq)]
+pub struct Closed;
+
+/// A thread writing lines to `w`; replies and events share it, so lines
+/// never interleave. Ends when `w` can't be written, and (closing `w`, and
+/// so refusing every later reply and event) soon after `revoked` is set.
+///
+/// If the other end stops reading and [`MAX_QUEUED`] is waiting, nothing
+/// more is queued and `cut_off` is run, to end the connection.
+pub fn writer_until(
+    mut w: impl Write + Send + 'static,
+    revoked: Option<Arc<AtomicBool>>,
+    cut_off: impl FnOnce() + Send + 'static,
+) -> Out {
+    let (out, lines) = Out::new(MAX_QUEUED, cut_off);
+    let queue = out.clone();
     std::thread::spawn(move || {
         let gone = || revoked.as_ref().is_some_and(|r| r.load(Ordering::SeqCst));
         loop {
@@ -380,6 +453,7 @@ pub fn writer_until(mut w: impl Write + Send + 'static, revoked: Option<Arc<Atom
             match line {
                 _ if gone() => break,
                 Ok(line) => {
+                    queue.taken(line.len());
                     if w.write_all(line.as_bytes()).and_then(|_| w.write_all(b"\n")).and_then(|_| w.flush()).is_err() {
                         break;
                     }
@@ -401,7 +475,7 @@ pub fn new_conn() -> u64 {
 }
 
 /// Read requests line by line from `reader` until it closes, answering on `out`.
-pub fn serve_lines(reader: impl BufRead, out: &mpsc::Sender<String>, jobs: &Jobs, caller: &Caller) {
+pub fn serve_lines(reader: impl BufRead, out: &Out, jobs: &Jobs, caller: &Caller) {
     serve_conn(reader, new_conn(), out, jobs, caller, None);
 }
 
@@ -410,7 +484,7 @@ pub fn serve_lines(reader: impl BufRead, out: &mpsc::Sender<String>, jobs: &Jobs
 pub fn serve_conn(
     mut reader: impl BufRead,
     conn: u64,
-    out: &mpsc::Sender<String>,
+    out: &Out,
     jobs: &Jobs,
     caller: &Caller,
     revoked: Option<&AtomicBool>,
@@ -548,7 +622,7 @@ fn handle_line(text: &str, jobs: &Jobs, origin: &Origin, caller: &Caller) -> Opt
     Some(ok_response(id?, result))
 }
 
-fn subscribe(params: &Value, out: &mpsc::Sender<String>, screen: bool) -> ApiResult {
+fn subscribe(params: &Value, out: &Out, screen: bool) -> ApiResult {
     let events = match params.get("events") {
         None | Some(Value::Null) => None,
         Some(Value::Array(names)) => {
@@ -629,7 +703,7 @@ mod tests {
 
         // A plugin with only `panes` is refused before anything is opened.
         let (jobs, mut asked) = fmpsc::unbounded();
-        let (out, _events) = mpsc::channel();
+        let (out, _events) = Out::channel();
         let origin = Origin { conn: 0, out };
         let caller = Caller::Plugin { name: "p".into(), perms: vec![Panes] };
         let reply = handle_line(
@@ -645,9 +719,35 @@ mod tests {
         assert!(asked.try_recv().is_err(), "nothing reached the UI");
     }
 
+    #[test]
+    fn a_connection_that_stops_reading_is_cut_off() {
+        // Nothing takes lines off this queue, like a writer stuck on a full pipe.
+        let cuts = Arc::new(AtomicUsize::new(0));
+        let counted = cuts.clone();
+        let (out, queue) = Out::new(1000, move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let line = || "x".repeat(100);
+        for _ in 0..10 {
+            assert_eq!(out.send(line()), Ok(()));
+        }
+        assert_eq!(cuts.load(Ordering::SeqCst), 0, "at the limit, not over it");
+        assert_eq!(out.send(line()), Err(Closed));
+        assert_eq!(out.clone().send(String::new()), Err(Closed), "and it stays cut off");
+        assert_eq!(cuts.load(Ordering::SeqCst), 1, "the connection is ended once");
+        assert_eq!(queue.try_iter().count(), 10, "nothing past the limit was kept");
+
+        // One that keeps reading is never cut off, however much it's sent.
+        let (out, queue) = Out::new(1000, || panic!("cut off while reading"));
+        for _ in 0..100 {
+            out.send(line()).unwrap();
+            out.taken(queue.recv().unwrap().len());
+        }
+    }
+
     fn line(text: &str) -> (Option<Value>, mpsc::Receiver<String>) {
         let (jobs, _rx) = fmpsc::unbounded();
-        let (out, events) = mpsc::channel();
+        let (out, events) = Out::channel();
         let origin = Origin { conn: 0, out };
         (handle_line(text, &jobs, &origin, &Caller::Socket).map(|r| serde_json::from_str(&r).unwrap()), events)
     }
@@ -676,7 +776,7 @@ mod tests {
     #[test]
     fn plugins_are_held_to_their_permissions() {
         let (jobs, _rx) = fmpsc::unbounded();
-        let (out, events) = mpsc::channel();
+        let (out, events) = Out::channel();
         let plugin = Caller::Plugin { name: "p".into(), perms: vec![Permission::Panes] };
         let origin = Origin { conn: 0, out };
         let ask = |text: &str| -> Value {

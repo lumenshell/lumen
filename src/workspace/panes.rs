@@ -414,12 +414,15 @@ pub fn startup_panes(saved: Option<&Session>, window: Size<Pixels>, cx: &App) ->
     let settings = Settings::get(cx);
     let text_system = cx.text_system();
     let font_size = settings.font_size();
-    let cell = text_system
+    let advance = text_system
         .advance(text_system.resolve_font(&font(settings.font_family.clone())), font_size, 'm')
-        .map(|s| f32::from(s.width))
-        .unwrap_or(8.0)
-        .max(1.0);
-    let line = f32::from((font_size * settings.line_height).round()).max(1.0);
+        .map(|s| s.width)
+        .unwrap_or(px(8.0));
+    // The same cells the pane will draw, so the shell starts at the size
+    // it will have. The display's scale isn't known before there's a
+    // window: this is a guess, and a wrong one costs a resize.
+    let (cell, line) = crate::terminal_view::cell_size(advance, font_size, settings.line_height, startup_scale());
+    let (cell, line) = (f32::from(cell), f32::from(line));
     // Inside a pane's frame: its 1px border and the padding.
     let inset = 2.0 + 2.0 * settings.padding;
     let grid = |w: f32, h: f32| GridSize {
@@ -434,6 +437,16 @@ pub fn startup_panes(saved: Option<&Session>, window: Size<Pixels>, cx: &App) ->
         Some(saved) => layout_panes(&saved.tabs, content, settings.pane_gap, &grid),
         None => vec![(None, grid(content.0, content.1))],
     }
+}
+
+/// The display scale to expect before a window says: what GPUI was told to
+/// use on X11, else the usual for the platform.
+fn startup_scale() -> f32 {
+    std::env::var("GPUI_X11_SCALE_FACTOR")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(if cfg!(target_os = "macos") { 2.0 } else { 1.0 })
 }
 
 /// Each pane of `tabs` with the grid `grid` gives the room it gets when the

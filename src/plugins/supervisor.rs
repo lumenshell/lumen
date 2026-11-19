@@ -19,7 +19,7 @@ struct Running {
     manifest: Manifest,
     status: String,
     /// Messages to the plugin, while it's running.
-    out: Option<mpsc::Sender<String>>,
+    out: Option<api::Out>,
     commands: Vec<PluginCommand>,
     stop: Arc<AtomicBool>,
     /// Its connection and process, while [`supervise`] is running it.
@@ -311,7 +311,12 @@ fn supervise(m: Manifest, stop: Arc<AtomicBool>, jobs: api::Jobs, generation: u6
             }
         };
         // Stopping the plugin closes its stdin and ends its replies and events.
-        let out = api::writer_until(pipes.stdin, Some(stop.clone()));
+        // One that stops reading what it's sent is killed, and so started again.
+        let (stuck, stuck_name) = (process.clone(), name.clone());
+        let out = api::writer_until(pipes.stdin, Some(stop.clone()), move || {
+            log(&stuck_name, &format!("{} [lumen] stopped reading what Lumen sends it; killed", now()));
+            stuck.signal(libc::SIGKILL);
+        });
         let live = Live { conn: api::new_conn(), process: process.clone() };
         attach(&name, generation, out.clone(), live.clone(), &started_with);
         log(&name, &format!("{} [lumen] started `{}` (pid {})", now(), m.command.join(" "), process.pid));
@@ -447,13 +452,7 @@ pub fn clear() {
 
 /// The plugin's process is up and can be written to. Settings saved since
 /// it was given `started_with` reached nobody, so they're sent now.
-fn attach(
-    name: &str,
-    generation: u64,
-    out: mpsc::Sender<String>,
-    live: Live,
-    started_with: &serde_json::Map<String, Value>,
-) {
+fn attach(name: &str, generation: u64, out: api::Out, live: Live, started_with: &serde_json::Map<String, Value>) {
     with_run(name, generation, |r| {
         if &r.settings != started_with {
             let _ = out.send(settings_message(&r.settings));
@@ -538,8 +537,8 @@ pub fn run_command(plugin: &str, id: &str, pane: Option<u64>) -> Result<(), Stri
 mod tests {
     use super::*;
 
-    fn running(name: &str, settings: serde_json::Map<String, Value>) -> mpsc::Receiver<String> {
-        let (tx, rx) = mpsc::channel();
+    fn running(name: &str, settings: serde_json::Map<String, Value>) -> std::sync::mpsc::Receiver<String> {
+        let (tx, rx) = api::Out::channel();
         let m = parse_manifest(Path::new(name), "command = \"x\"").unwrap();
         PLUGINS.lock().unwrap().push(Running { out: Some(tx), ..Running::new(m, "running", 0, settings) });
         rx
@@ -577,7 +576,7 @@ mod tests {
     #[test]
     fn settings_saved_while_starting_are_sent() {
         // Saved after the process got its environment, before its stdin was ready.
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = api::Out::channel();
         let m = parse_manifest(Path::new("t-starting"), "command = \"x\"").unwrap();
         PLUGINS.lock().unwrap().push(Running::new(m, "starting", 7, map(json!({"n": 1}))));
         assert!(update_settings("t-starting", map(json!({"n": 2}))));

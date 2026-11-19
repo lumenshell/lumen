@@ -1001,15 +1001,21 @@ impl TerminalView {
         }));
     }
 
-    /// Find every prompt again and refresh the exit statuses shown in the
-    /// margin and the scrollbar.
+    /// Whether the scrollbar is showing at all, and so its command marks.
+    fn scrollbar_showing(&self) -> bool {
+        let held = self.scrollbar.hovered || self.scrollbar.drag.is_some();
+        scrollbar::opacity(self.scrollbar.shown_at, Instant::now(), held) > 0.0
+    }
+
     /// Whether the prompts found by the last [`Self::rescan_marks`] may have
     /// changed or moved, in a terminal keeping `scrollback` lines. Looking
     /// for them reads all the scrollback, so it's skipped while the shell
     /// has marked nothing new and what was found is still where it was:
     /// lines are counted from the oldest, which stays put until the
-    /// scrollback is full.
+    /// scrollback is full. After that they do move, but where they are is
+    /// only drawn on the scrollbar, which looks again when it appears.
     fn marks_moved(&mut self, scrollback: usize) -> bool {
+        let showing = self.scrollbar_showing();
         use alacritty_terminal::grid::Dimensions as _;
         let marks = self.pty.shell_state.lock().unwrap().marks;
         let Some(seen) = &mut self.marks_seen else { return true };
@@ -1020,12 +1026,14 @@ impl TerminalView {
             history: term.grid().history_size(),
             prompts: seen.prompts,
         };
-        let moved = seen.moved(&now, scrollback);
+        let moved = seen.moved(&now, scrollback, showing);
         // So that scrollback cleared and filled again is still seen to have shrunk.
         seen.history = now.history;
         moved
     }
 
+    /// Find every prompt again and refresh the exit statuses shown in the
+    /// margin and the scrollbar.
     fn rescan_marks(&mut self) -> Vec<marks::Prompt> {
         // Read before the grid, so a mark arriving meanwhile isn't missed.
         let marks = self.pty.shell_state.lock().unwrap().marks;
@@ -1419,16 +1427,18 @@ struct MarksSeen {
 }
 
 impl MarksSeen {
-    /// Whether the prompts found then may have changed or moved by `now`,
-    /// in a terminal keeping `scrollback` lines.
-    fn moved(&self, now: &MarksSeen, scrollback: usize) -> bool {
+    /// Whether the prompts found then may have changed, or moved somewhere
+    /// it shows, by `now`: in a terminal keeping `scrollback` lines, with
+    /// the scrollbar and its command marks `showing` or not.
+    fn moved(&self, now: &MarksSeen, scrollback: usize, showing: bool) -> bool {
         // A new mark, a different grid (lines rewrap), or scrollback cleared.
         if now.marks != self.marks || now.grid != self.grid || now.history < self.history {
             return true;
         }
         // Otherwise they only move once the scrollback is full and its
-        // oldest lines start to go; with none found, there's nothing to move.
-        self.prompts > 0 && now.history >= scrollback
+        // oldest lines start to go; with none found, there's nothing to
+        // move, and with the scrollbar hidden, nowhere it shows.
+        showing && self.prompts > 0 && now.history >= scrollback
     }
 }
 
@@ -1661,6 +1671,17 @@ fn caret(color: Hsla) -> gpui::Div {
     div().w(px(2.0)).h(px(16.0)).mx(px(1.0)).rounded(px(1.0)).bg(color)
 }
 
+/// How wide and tall a cell is, in a font whose characters advance by
+/// `advance`, at display scale `scale`: each a whole number of the screen's
+/// pixels. The font asks for a fraction (8.4 at the default size); rounding
+/// it makes every column the same width and puts every glyph on the pixel
+/// grid, at the cost of text up to half a pixel a character tighter or
+/// looser than the font's own spacing.
+pub fn cell_size(advance: Pixels, font_size: Pixels, line_height: f32, scale: f32) -> (Pixels, Pixels) {
+    let snap = |v: Pixels| px((f32::from(v) * scale).round().max(1.0) / scale);
+    (snap(advance), snap((font_size * line_height).round()))
+}
+
 fn paint_shape(window: &mut Window, shape: boxdraw::Shape, color: Hsla) {
     use boxdraw::{Corner, Shape};
     match shape {
@@ -1807,13 +1828,17 @@ impl Render for TerminalView {
             let text_system = window.text_system().clone();
             let base_font = font(font_family.clone());
             let font_id = text_system.resolve_font(&base_font);
-            let cell_width = text_system.advance(font_id, font_size, 'm').map(|s| s.width).unwrap_or(px(8.0));
+            let advance = text_system.advance(font_id, font_size, 'm').map(|s| s.width).unwrap_or(px(8.0));
             // Everything on the grid sits on the screen's own pixels, whatever
-            // the display scale: rows are a whole number of them tall, and
-            // cell edges, lines and the cursor fall between them.
+            // the display scale: cells are a whole number of them wide and
+            // tall, so every column is the same, every glyph is drawn the
+            // same way, and lines and the cursor fall between pixels.
             let scale = window.scale_factor();
             let snap = move |v: Pixels| px((f32::from(v) * scale).round() / scale);
-            let line_height = snap((font_size * line_height_factor).round());
+            let (cell_width, line_height) = cell_size(advance, font_size, line_height_factor, scale);
+            // Glyphs shaped together (ligatures, combining marks) are spaced
+            // by the font's own advance: fit them to the cells they cover.
+            let fit = cell_width / advance;
             let cols = ((bounds.size.width / cell_width).floor() as usize).max(2);
             let rows = ((bounds.size.height / line_height).floor() as usize).max(1);
             // Centre the grid so the space left over by whole cells is shared
@@ -1878,19 +1903,15 @@ impl Render for TerminalView {
             // One screen pixel at least, and a whole number of them.
             let hairline = snap(px(1.0)).max(px(1.0 / scale));
 
-            // Cells are a fraction of a pixel wide, so each one's edges go
-            // to the nearest pixel: some are a pixel wider than others, and
-            // neighbours always share an edge.
             let col_x = |col: usize| snap(origin.x + cell_width * col as f32);
             let row_y = |row: usize| snap(origin.y + line_height * row as f32);
             let cell_bounds = |row: usize, col: usize, span: usize| {
                 Bounds::from_corners(point(col_x(col), row_y(row)), point(col_x(col + span), row_y(row + 1)))
             };
             let emit = |glyphs: &mut Vec<GlyphDraw>, row: usize, col: usize, color: Hsla, cached: &[Glyph]| {
-                // Text keeps its even spacing: glyphs aren't moved to the cell's snapped edge.
-                let origin = point(origin.x + cell_width * col as f32, row_y(row));
+                let origin = point(col_x(col), row_y(row));
                 glyphs.extend(cached.iter().map(|g| GlyphDraw {
-                    origin: point(origin.x + g.x, origin.y + baseline),
+                    origin: point(origin.x + g.x * fit, origin.y + baseline),
                     glyph: *g,
                     color,
                 }));
@@ -2272,6 +2293,10 @@ impl Render for TerminalView {
                         if this.scrollbar.drag.is_some() {
                             this.scrollbar_drag(track, f32::from(ev.position.y), cx);
                         } else if inside != this.scrollbar.hovered {
+                            if inside && !this.scrollbar_showing() && this.pty.shell_state.lock().unwrap().active {
+                                // It appears under the pointer: its marks may have moved meanwhile.
+                                this.rescan_marks();
+                            }
                             this.scrollbar.hovered = inside;
                             if !inside {
                                 // Stay a moment after the pointer leaves.
@@ -2370,18 +2395,38 @@ mod tests {
         let seen = MarksSeen { marks: 4, grid: (80, 24), history: 100, prompts: 2 };
         let now = |marks, grid, history| MarksSeen { marks, grid, history, prompts: 2 };
         // Output with no new mark, scrollback still filling: nothing moved.
-        assert!(!seen.moved(&now(4, (80, 24), 100), 10_000));
-        assert!(!seen.moved(&now(4, (80, 24), 9_999), 10_000));
-        // The shell marked something, the grid changed, or scrollback was cleared.
-        assert!(seen.moved(&now(5, (80, 24), 100), 10_000));
-        assert!(seen.moved(&now(4, (100, 24), 100), 10_000));
-        assert!(seen.moved(&now(4, (80, 30), 100), 10_000));
-        assert!(seen.moved(&now(4, (80, 24), 50), 10_000));
-        // Scrollback full: old lines go, so what's left moves up.
-        assert!(seen.moved(&now(4, (80, 24), 10_000), 10_000));
-        // Unless there were no prompts to move.
+        for showing in [false, true] {
+            assert!(!seen.moved(&now(4, (80, 24), 100), 10_000, showing));
+            assert!(!seen.moved(&now(4, (80, 24), 9_999), 10_000, showing));
+            // The shell marked something, the grid changed, or scrollback was cleared.
+            assert!(seen.moved(&now(5, (80, 24), 100), 10_000, showing));
+            assert!(seen.moved(&now(4, (100, 24), 100), 10_000, showing));
+            assert!(seen.moved(&now(4, (80, 30), 100), 10_000, showing));
+            assert!(seen.moved(&now(4, (80, 24), 50), 10_000, showing));
+        }
+        // Scrollback full: old lines go, so what's left moves up. That only
+        // shows on the scrollbar.
+        assert!(seen.moved(&now(4, (80, 24), 10_000), 10_000, true));
+        assert!(!seen.moved(&now(4, (80, 24), 10_000), 10_000, false));
+        // And not if there were no prompts to move.
         let none = MarksSeen { prompts: 0, ..now(4, (80, 24), 100) };
-        assert!(!none.moved(&now(4, (80, 24), 10_000), 10_000));
+        assert!(!none.moved(&now(4, (80, 24), 10_000), 10_000, true));
+    }
+
+    #[test]
+    fn cells_are_whole_screen_pixels() {
+        let size = |scale| {
+            let (w, h) = cell_size(px(8.4), px(14.0), 1.35, scale);
+            (f32::from(w) * scale, f32::from(h) * scale)
+        };
+        let whole =
+            |(w, h): (f32, f32)| ((w - w.round()).abs() < 1e-3 && (h - h.round()).abs() < 1e-3, w.round(), h.round());
+        assert_eq!(whole(size(1.0)), (true, 8.0, 19.0));
+        assert_eq!(whole(size(1.25)), (true, 11.0, 24.0));
+        assert_eq!(whole(size(1.5)), (true, 13.0, 29.0));
+        assert_eq!(whole(size(2.0)), (true, 17.0, 38.0));
+        // Never nothing, however small the font.
+        assert_eq!(cell_size(px(0.2), px(0.4), 1.0, 1.0), (px(1.0), px(1.0)));
     }
 
     #[test]
