@@ -23,32 +23,105 @@ fn exit_of(uri: &str) -> Option<i32> {
     uri.strip_prefix(PROMPT)?.strip_prefix("?exit=")?.parse().ok()
 }
 
-/// Every prompt in the screen and scrollback, oldest first.
+/// Every prompt in the screen and scrollback, oldest first. This reads all
+/// of the scrollback; for the newest few, see [`newest_first`].
 pub fn prompts<T>(term: &Term<T>) -> Vec<Prompt> {
-    let grid = term.grid();
     let mut found: Vec<Prompt> = Vec::new();
-    for line in (term.topmost_line().0..=term.bottommost_line().0).map(Line) {
+    newest_first(term, None, |p| {
+        found.push(p);
+        true
+    });
+    found.reverse();
+    found
+}
+
+/// Give `each` every prompt, newest first, until it returns false. The grid
+/// is read from the bottom up and no further than that, so asking for the
+/// newest prompt or two costs the same however long the scrollback is.
+///
+/// A prompt is a run of cells linked with one prompt id; typed input after
+/// it (and before the next prompt) extends its `input_end`.
+///
+/// Where a prompt starts is only certain once the one above it is reached,
+/// which may be a long way up. With `gap`, a prompt is taken as whole once
+/// that many lines above it have none of it: a shell draws its prompt in
+/// one go, so a screenful is plenty.
+pub fn newest_first<T>(term: &Term<T>, gap: Option<usize>, mut each: impl FnMut(Prompt) -> bool) {
+    let grid = term.grid();
+    let mut current: Option<Prompt> = None;
+    // The last line of input met since the newer prompt began: it belongs
+    // to the prompt above it, which hasn't been reached yet.
+    let mut input: Option<Line> = None;
+    for line in (term.topmost_line().0..=term.bottommost_line().0).rev().map(Line) {
+        if let Some(gap) = gap
+            && current.as_ref().is_some_and(|p| (p.line.0 - line.0) as usize > gap)
+            && let Some(done) = current.take()
+            && !each(done)
+        {
+            return;
+        }
         let row = &grid[line];
-        for col in 0..term.columns() {
+        for col in (0..term.columns()).rev() {
             let Some(link) = row[Column(col)].hyperlink() else { continue };
             let uri = link.uri();
             if uri.starts_with(PROMPT) {
-                match found.last_mut() {
-                    Some(p) if p.id == link.id() => p.input_end = line,
-                    _ => found.push(Prompt {
-                        line,
-                        input_end: line,
-                        id: link.id().to_string(),
-                        exit_before: exit_of(uri),
-                    }),
+                match &mut current {
+                    Some(p) if p.id == link.id() => {
+                        p.line = line;
+                        p.exit_before = exit_of(uri);
+                        input = None;
+                    }
+                    _ => {
+                        if let Some(done) = current.take()
+                            && !each(done)
+                        {
+                            return;
+                        }
+                        current = Some(Prompt {
+                            line,
+                            input_end: input.take().map_or(line, |i| i.max(line)),
+                            id: link.id().to_string(),
+                            exit_before: exit_of(uri),
+                        });
+                    }
                 }
-            } else if uri == INPUT
-                && let Some(p) = found.last_mut()
-            {
-                p.input_end = p.input_end.max(line);
+            } else if uri == INPUT && input.is_none() {
+                input = Some(line);
             }
         }
     }
+    if let Some(p) = current {
+        each(p);
+    }
+}
+
+/// The newest prompt, if there is one.
+pub fn newest_prompt<T>(term: &Term<T>) -> Option<Prompt> {
+    let mut newest = None;
+    newest_first(term, Some(term.screen_lines()), |p| {
+        newest = Some(p);
+        false
+    });
+    newest
+}
+
+/// [`recent_commands`] of every prompt in the terminal, reading back only
+/// as far as the commands asked for.
+pub fn newest_commands<T>(term: &Term<T>, n: usize, skip: usize) -> Vec<Option<String>> {
+    let mut found: Vec<Option<String>> = Vec::new();
+    let mut skipped = 0;
+    if n > 0 {
+        newest_first(term, Some(term.screen_lines()), |p| {
+            match command_at(term, &p) {
+                Some(_) if skipped < skip => skipped += 1,
+                Some(command) => found.push(Some(command)),
+                None => {}
+            }
+            found.len() < n
+        });
+    }
+    found.resize(n, None);
+    found.reverse();
     found
 }
 
@@ -63,14 +136,16 @@ pub fn exits(prompts: &[Prompt]) -> std::collections::HashMap<String, Option<i32
 }
 
 /// The command typed at the newest prompt that has one, as shown on screen
-/// (wrapped lines joined).
+/// (wrapped lines joined). Tests check [`newest_commands`] against this.
+#[cfg(test)]
 pub fn last_command<T>(term: &Term<T>, prompts: &[Prompt]) -> Option<String> {
     recent_commands(term, prompts, 1, 0).pop().flatten()
 }
 
 /// The last `n` commands typed, oldest first, after skipping the newest
 /// `skip` (say, one still running). Padded at the front with `None` when
-/// fewer are on screen.
+/// fewer are on screen. Tests check [`newest_commands`] against this.
+#[cfg(test)]
 pub fn recent_commands<T>(term: &Term<T>, prompts: &[Prompt], n: usize, skip: usize) -> Vec<Option<String>> {
     let mut found: Vec<Option<String>> =
         prompts.iter().rev().filter_map(|p| command_at(term, p)).skip(skip).take(n).map(Some).collect();
@@ -175,6 +250,11 @@ mod tests {
         assert_eq!(recent_commands(&t, &p, 2, 0), vec![Some("ls".into()), Some("false".into())]);
         assert_eq!(recent_commands(&t, &p, 1, 1), vec![Some("ls".into())]);
         assert_eq!(recent_commands(&t, &p, 3, 0)[0], None);
+        // Read from the bottom up, the answers are the same.
+        for (n, skip) in [(0, 0), (1, 0), (2, 0), (1, 1), (3, 0), (2, 5)] {
+            assert_eq!(newest_commands(&t, n, skip), recent_commands(&t, &p, n, skip), "{n} {skip}");
+        }
+        assert_eq!(newest_prompt(&t).as_ref(), p.last());
         // `false` printed nothing; the last output is empty.
         assert_eq!(last_output(&t, &p), None);
         // Before that, `ls` printed two lines.

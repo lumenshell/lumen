@@ -129,6 +129,9 @@ pub struct Shared {
     /// UI sends the `command-finished` event, since it can read the command
     /// text off the screen.
     pub finished: Vec<Finished>,
+    /// How many marks the shell has sent. While it stays the same, no
+    /// prompt has been added to the terminal.
+    pub marks: u64,
 }
 
 /// A command that finished, for long-command notifications.
@@ -274,23 +277,27 @@ impl Rewriter {
     pub fn feed(&mut self, input: &[u8], out: &mut Vec<u8>) {
         // A redraw arrives in one write; don't look back past this read.
         self.redraw_at = None;
-        for &b in input {
-            match self.state {
-                State::Normal => {
-                    if b == 0x1b {
-                        self.state = State::Esc;
-                    } else {
-                        out.push(b);
-                        self.cwd_ok = false;
-                        if self.editing {
-                            match b {
-                                b'\r' => self.redraw_at = Some(out.len()),
-                                b'\n' => self.redraw_at = None,
-                                _ => {}
-                            }
-                        }
-                    }
+        let mut rest = input;
+        while let Some((&b, after)) = rest.split_first() {
+            // Nearly all output is plain text between escapes: copy each
+            // stretch in one go rather than a byte at a time.
+            if matches!(self.state, State::Normal) && b != 0x1b {
+                let len = rest.iter().position(|&b| b == 0x1b).unwrap_or(rest.len());
+                let (text, after) = rest.split_at(len);
+                if self.editing
+                    && let Some(at) = text.iter().rposition(|&b| b == b'\r' || b == b'\n')
+                {
+                    self.redraw_at = (text[at] == b'\r').then(|| out.len() + at + 1);
                 }
+                out.extend_from_slice(text);
+                self.cwd_ok = false;
+                rest = after;
+                continue;
+            }
+            rest = after;
+            match self.state {
+                // Anything but ESC was copied above.
+                State::Normal => self.state = State::Esc,
                 State::Esc => {
                     if b == b']' {
                         self.body.clear();
@@ -396,7 +403,11 @@ impl Rewriter {
             if !self.trusted(key) {
                 return;
             }
-            self.shared.lock().unwrap().active = true;
+            {
+                let mut shared = self.shared.lock().unwrap();
+                shared.active = true;
+                shared.marks += 1;
+            }
             let mut parts = parts.into_iter();
             match parts.next() {
                 Some("A") => {

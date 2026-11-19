@@ -5,6 +5,10 @@
 //! which leaves visible seams between characters that are meant to join.
 //! Drawing them ourselves, snapped to whole pixels at shared cell edges,
 //! makes borders, bars and powerline prompts continuous.
+//!
+//! Everything here is worked out in the screen's own pixels, so lines are
+//! a whole number of them thick at any display scale; [`Shape::scaled`]
+//! turns the result into the units GPUI draws in.
 
 use gpui::{Bounds, Pixels, Point, point, px, size};
 
@@ -24,6 +28,24 @@ pub enum Shape {
     Polyline(Vec<Point<Pixels>>, Pixels),
 }
 
+impl Shape {
+    /// The shape with every length multiplied by `k`.
+    pub fn scaled(self, k: f32) -> Shape {
+        let b = |b: Bounds<Pixels>| {
+            Bounds::new(point(b.origin.x * k, b.origin.y * k), size(b.size.width * k, b.size.height * k))
+        };
+        let pts = |points: Vec<Point<Pixels>>| points.into_iter().map(|p| point(p.x * k, p.y * k)).collect();
+        match self {
+            Shape::Rect(bounds, alpha) => Shape::Rect(b(bounds), alpha),
+            Shape::Arc { quad, clip, corner, radius, width } => {
+                Shape::Arc { quad: b(quad), clip: b(clip), corner, radius: radius * k, width: width * k }
+            }
+            Shape::Polygon(points) => Shape::Polygon(pts(points)),
+            Shape::Polyline(points, width) => Shape::Polyline(pts(points), width * k),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Corner {
     TopLeft,
@@ -37,10 +59,13 @@ pub fn handles(c: char) -> bool {
     matches!(c as u32, 0x2500..=0x2570 | 0x2574..=0x259F | 0xE0B0..=0xE0B3)
 }
 
-/// Shapes for `c` in the cell spanning `x0..x1` by `y0..y1`. Callers pass
-/// edges already rounded to whole pixels, shared with neighbouring cells.
-pub fn shapes(c: char, x0: f32, x1: f32, y0: f32, y1: f32) -> Vec<Shape> {
-    let cell = Cell { x0, x1, y0, y1 };
+/// Shapes for `c` in the cell spanning `x0..x1` by `y0..y1`, in the screen's
+/// pixels. Callers pass edges already rounded to whole pixels, shared with
+/// neighbouring cells, and `light`, how thick a light line is: one value
+/// for the whole grid ([`light`]), so cells a pixel wider than their
+/// neighbours don't get thicker lines.
+pub fn shapes(c: char, x0: f32, x1: f32, y0: f32, y1: f32, light: f32) -> Vec<Shape> {
+    let cell = Cell { x0, x1, y0, y1, light };
     let code = c as u32;
     match code {
         0x2500..=0x257F => box_lines(code, &cell),
@@ -50,11 +75,18 @@ pub fn shapes(c: char, x0: f32, x1: f32, y0: f32, y1: f32) -> Vec<Shape> {
     }
 }
 
+/// How thick a light line is in a grid whose cells are `cell_width` pixels
+/// wide, on average: a whole number of pixels, and at least one.
+pub fn light(cell_width: f32) -> f32 {
+    (cell_width * 0.12).round().max(1.0)
+}
+
 struct Cell {
     x0: f32,
     x1: f32,
     y0: f32,
     y1: f32,
+    light: f32,
 }
 
 impl Cell {
@@ -72,7 +104,7 @@ impl Cell {
     }
     /// Thickness of a light line.
     fn light(&self) -> f32 {
-        (self.w() * 0.12).round().max(1.0)
+        self.light
     }
 }
 
@@ -262,7 +294,7 @@ fn arc(code: u32, cell: &Cell, t: f32) -> Vec<Shape> {
 }
 
 fn blocks(code: u32, cell: &Cell) -> Vec<Shape> {
-    let Cell { x0, x1, y0, y1 } = *cell;
+    let Cell { x0, x1, y0, y1, .. } = *cell;
     let fx = |f: f32| (x0 + cell.w() * f).round();
     let fy = |f: f32| (y0 + cell.h() * f).round();
     let (mx, my) = (fx(0.5), fy(0.5));
@@ -309,7 +341,7 @@ fn blocks(code: u32, cell: &Cell) -> Vec<Shape> {
 }
 
 fn powerline(code: u32, cell: &Cell) -> Vec<Shape> {
-    let Cell { x0, x1, y0, y1 } = *cell;
+    let Cell { x0, x1, y0, y1, .. } = *cell;
     let my = y0 + cell.h() / 2.0;
     let p = |x: f32, y: f32| point(px(x), px(y));
     match code {
@@ -325,7 +357,7 @@ mod tests {
     use super::*;
 
     fn rects(c: char) -> Vec<(f32, f32, f32, f32)> {
-        shapes(c, 0.0, 8.0, 0.0, 18.0)
+        shapes(c, 0.0, 8.0, 0.0, 18.0, light(8.0))
             .into_iter()
             .filter_map(|s| match s {
                 Shape::Rect(b, _) => Some((
@@ -382,6 +414,23 @@ mod tests {
         // And a corner plus its mirror covers a cross exactly.
         let cross: std::collections::BTreeSet<_> = pixels('┘').union(&pixels('┌')).copied().collect();
         assert_eq!(cross, pixels('┼'));
+    }
+
+    #[test]
+    fn lines_are_as_thick_in_a_cell_a_pixel_wider() {
+        // At 1.5x a 8.4-wide cell is 12 or 13 screen pixels: the line
+        // through both must be the same whole number of pixels.
+        let light = light(12.6);
+        let thickness = |x1: f32| match &shapes('│', 0.0, x1, 0.0, 28.0, light)[..] {
+            [Shape::Rect(b, _), ..] => f32::from(b.size.width),
+            _ => panic!("a vertical line is rectangles"),
+        };
+        assert_eq!((thickness(12.0), thickness(13.0)), (2.0, 2.0));
+        // Scaled back for drawing, it's that many screen pixels still.
+        let Shape::Rect(b, _) = shapes('│', 0.0, 13.0, 0.0, 28.0, light).remove(0).scaled(1.0 / 1.5) else {
+            panic!("a vertical line is rectangles")
+        };
+        assert!((f32::from(b.size.width) * 1.5 - 2.0).abs() < 1e-4);
     }
 
     #[test]
