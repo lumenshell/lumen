@@ -1001,15 +1001,21 @@ impl TerminalView {
         }));
     }
 
-    /// Find every prompt again and refresh the exit statuses shown in the
-    /// margin and the scrollbar.
+    /// Whether the scrollbar is showing at all, and so its command marks.
+    fn scrollbar_showing(&self) -> bool {
+        let held = self.scrollbar.hovered || self.scrollbar.drag.is_some();
+        scrollbar::opacity(self.scrollbar.shown_at, Instant::now(), held) > 0.0
+    }
+
     /// Whether the prompts found by the last [`Self::rescan_marks`] may have
     /// changed or moved, in a terminal keeping `scrollback` lines. Looking
     /// for them reads all the scrollback, so it's skipped while the shell
     /// has marked nothing new and what was found is still where it was:
     /// lines are counted from the oldest, which stays put until the
-    /// scrollback is full.
+    /// scrollback is full. After that they do move, but where they are is
+    /// only drawn on the scrollbar, which looks again when it appears.
     fn marks_moved(&mut self, scrollback: usize) -> bool {
+        let showing = self.scrollbar_showing();
         use alacritty_terminal::grid::Dimensions as _;
         let marks = self.pty.shell_state.lock().unwrap().marks;
         let Some(seen) = &mut self.marks_seen else { return true };
@@ -1020,12 +1026,14 @@ impl TerminalView {
             history: term.grid().history_size(),
             prompts: seen.prompts,
         };
-        let moved = seen.moved(&now, scrollback);
+        let moved = seen.moved(&now, scrollback, showing);
         // So that scrollback cleared and filled again is still seen to have shrunk.
         seen.history = now.history;
         moved
     }
 
+    /// Find every prompt again and refresh the exit statuses shown in the
+    /// margin and the scrollbar.
     fn rescan_marks(&mut self) -> Vec<marks::Prompt> {
         // Read before the grid, so a mark arriving meanwhile isn't missed.
         let marks = self.pty.shell_state.lock().unwrap().marks;
@@ -1419,16 +1427,18 @@ struct MarksSeen {
 }
 
 impl MarksSeen {
-    /// Whether the prompts found then may have changed or moved by `now`,
-    /// in a terminal keeping `scrollback` lines.
-    fn moved(&self, now: &MarksSeen, scrollback: usize) -> bool {
+    /// Whether the prompts found then may have changed, or moved somewhere
+    /// it shows, by `now`: in a terminal keeping `scrollback` lines, with
+    /// the scrollbar and its command marks `showing` or not.
+    fn moved(&self, now: &MarksSeen, scrollback: usize, showing: bool) -> bool {
         // A new mark, a different grid (lines rewrap), or scrollback cleared.
         if now.marks != self.marks || now.grid != self.grid || now.history < self.history {
             return true;
         }
         // Otherwise they only move once the scrollback is full and its
-        // oldest lines start to go; with none found, there's nothing to move.
-        self.prompts > 0 && now.history >= scrollback
+        // oldest lines start to go; with none found, there's nothing to
+        // move, and with the scrollbar hidden, nowhere it shows.
+        showing && self.prompts > 0 && now.history >= scrollback
     }
 }
 
@@ -2272,6 +2282,10 @@ impl Render for TerminalView {
                         if this.scrollbar.drag.is_some() {
                             this.scrollbar_drag(track, f32::from(ev.position.y), cx);
                         } else if inside != this.scrollbar.hovered {
+                            if inside && !this.scrollbar_showing() && this.pty.shell_state.lock().unwrap().active {
+                                // It appears under the pointer: its marks may have moved meanwhile.
+                                this.rescan_marks();
+                            }
                             this.scrollbar.hovered = inside;
                             if !inside {
                                 // Stay a moment after the pointer leaves.
@@ -2370,18 +2384,22 @@ mod tests {
         let seen = MarksSeen { marks: 4, grid: (80, 24), history: 100, prompts: 2 };
         let now = |marks, grid, history| MarksSeen { marks, grid, history, prompts: 2 };
         // Output with no new mark, scrollback still filling: nothing moved.
-        assert!(!seen.moved(&now(4, (80, 24), 100), 10_000));
-        assert!(!seen.moved(&now(4, (80, 24), 9_999), 10_000));
-        // The shell marked something, the grid changed, or scrollback was cleared.
-        assert!(seen.moved(&now(5, (80, 24), 100), 10_000));
-        assert!(seen.moved(&now(4, (100, 24), 100), 10_000));
-        assert!(seen.moved(&now(4, (80, 30), 100), 10_000));
-        assert!(seen.moved(&now(4, (80, 24), 50), 10_000));
-        // Scrollback full: old lines go, so what's left moves up.
-        assert!(seen.moved(&now(4, (80, 24), 10_000), 10_000));
-        // Unless there were no prompts to move.
+        for showing in [false, true] {
+            assert!(!seen.moved(&now(4, (80, 24), 100), 10_000, showing));
+            assert!(!seen.moved(&now(4, (80, 24), 9_999), 10_000, showing));
+            // The shell marked something, the grid changed, or scrollback was cleared.
+            assert!(seen.moved(&now(5, (80, 24), 100), 10_000, showing));
+            assert!(seen.moved(&now(4, (100, 24), 100), 10_000, showing));
+            assert!(seen.moved(&now(4, (80, 30), 100), 10_000, showing));
+            assert!(seen.moved(&now(4, (80, 24), 50), 10_000, showing));
+        }
+        // Scrollback full: old lines go, so what's left moves up. That only
+        // shows on the scrollbar.
+        assert!(seen.moved(&now(4, (80, 24), 10_000), 10_000, true));
+        assert!(!seen.moved(&now(4, (80, 24), 10_000), 10_000, false));
+        // And not if there were no prompts to move.
         let none = MarksSeen { prompts: 0, ..now(4, (80, 24), 100) };
-        assert!(!none.moved(&now(4, (80, 24), 10_000), 10_000));
+        assert!(!none.moved(&now(4, (80, 24), 10_000), 10_000, true));
     }
 
     #[test]
