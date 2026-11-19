@@ -44,7 +44,13 @@ warnings as errors, on Linux and macOS
 | `src/info.rs`          | The `lumen info` command                                  |
 | `src/campfire.rs`      | The `lumen campfire` command                              |
 | `src/plugins.rs`       | Plugin manifests, approvals, running and restarting them  |
-| `src/workspace.rs`     | Title bar, tabs, pane tree, focus halo, palette overlay   |
+| `src/workspace/`       | The window, in six files: |
+| `  mod.rs`             | The window's state, session restore, tab and pane actions, and drawing the whole |
+| `  titlebar.rs`        | Title bar, tab strip, tab colours and badges, window controls |
+| `  panes.rs`           | Pane tree, its layout, dividers and each pane's frame     |
+| `  palettes.rs`        | Command palette, theme picker and tab colour picker       |
+| `  plugin_host.rs`     | Starting and reloading plugins, approvals, their prompts, pickers and logs |
+| `  socket_api.rs`      | Answering the socket API's requests                       |
 | `src/terminal_view.rs` | Grid rendering, cursor, selection, mouse and key input    |
 | `src/pty.rs`           | Shell process + `alacritty_terminal` state and event loop; plugin panes, which a plugin draws instead |
 | `src/input.rs`         | Keystroke → escape-sequence encoding, legacy and kitty keyboard protocol |
