@@ -21,6 +21,10 @@ cargo run --release
 ./install.sh --restart   # the same, then restart the running Lumen (closes its shells)
 ```
 
+The Rust version is pinned in `rust-toolchain.toml`, so your build, CI and
+the releases all use the same one. rustup downloads it the first time you
+build.
+
 ## Tests
 
 ```sh

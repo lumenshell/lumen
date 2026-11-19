@@ -1,0 +1,7 @@
+# The Rust every build uses: yours, CI's and the releases'. rustup reads this
+# and fetches it the first time. To move to a newer Rust, change the number
+# and fix whatever Clippy then finds.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
