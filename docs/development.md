@@ -115,6 +115,10 @@ folder:
 - stand-ins for `npm` that print the same test run and dev server every time;
 - the todo plugin approved, with a seeded todo list.
 
+The `pomodoro` scene shows a plugin from the registry. Its source is taken
+from a checkout at `../sn/lumen-pomodoro` (or wherever `LUMEN_POMODORO`
+says), so nothing is downloaded; without one, that scene is skipped.
+
 The scene lays out tabs and panes with `lumen msg`, presses keys through
 XTEST where it needs the palette or a plugin, and saves the window framed:
 rounded corners, a hairline edge and a soft shadow on a sunset gradient
