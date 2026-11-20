@@ -278,9 +278,19 @@ class Lumen:
         xtest.fake_input(self.x, X.MotionNotify, x=g.x + g.width // 2, y=g.y + g.height // 2)
         self.window.set_input_focus(X.RevertToParent, X.CurrentTime)
 
+    def park(self):
+        """Move the pointer to the window's bottom left corner, in the gap
+        around the panes, so nothing in the shot is lit up just because the
+        pointer happens to be over it. (Moving it off the window isn't
+        enough: what it was over last stays lit.)"""
+        g = self.window.get_geometry()
+        xtest.fake_input(self.x, X.MotionNotify, x=g.x + 3 * SCALE, y=g.y + g.height - 3 * SCALE)
+        self.x.sync()
+
     def shoot(self, path: Path, wait=0.8) -> Path:
         """Capture the window, save it framed at `path`, and return the raw
         capture (for scenes that crop more out of it)."""
+        self.park()
         time.sleep(wait)
         raw = Path(tempfile.mkstemp(suffix=".png")[1])
         subprocess.run(["import", "-display", self.disp, "-window", hex(self.window.id), str(raw)], check=True)
@@ -454,6 +464,43 @@ def scene_select(l, out):
     l.shoot(out / "select.png")
 
 
+def scene_themes(l, out):
+    pane = l.first
+    l.run(pane, "cd ~/shop && clear && git log --oneline -3 && npm test", 1.0)
+    l.keys("ctrl+shift+p", 0.6)
+    l.type("theme")
+    l.keys("Return", 0.8)  # the picker: each theme is shown as you move to it
+    l.type("tokyo")
+    l.shoot(out / "themes.png")
+
+
+def scene_tab_color(l, out):
+    pane = l.first
+    l.run(pane, "cd ~/shop && clear && git log --oneline -12", 0.8)
+    l.msg("tab-style", "--pane", pane, "--color", "magenta")
+    tests = l.msg("new-tab", "--cwd", l.shop)
+    l.msg("set-title", "--pane", tests, "tests")
+    l.msg("tab-style", "--pane", tests, "--badge", "✓ 128", "--color", "green")
+    deploy = l.msg("new-tab", "--cwd", l.shop)
+    l.msg("set-title", "--pane", deploy, "deploy")
+    l.msg("tab-style", "--pane", deploy, "--color", "yellow")
+    l.msg("focus", pane)
+    l.keys("ctrl+shift+p", 0.6)
+    l.type("tab color")
+    l.keys("Return", 0.8)
+    l.shoot(out / "tab-color.png")
+
+
+def scene_pomodoro(l, out):
+    pane = l.first
+    l.run(pane, "cd ~/shop && clear && git log --oneline -12", 0.8)
+    l.keys("ctrl+shift+p", 0.6)
+    l.type("start pomodoro")
+    l.keys("Return", 1.2)  # the plugin asks how long: 25 minutes is first
+    l.keys("Return", 2.5)
+    l.shoot(out / "pomodoro.png")
+
+
 def scene_todo(l, out):
     pane = l.first
     l.run(pane, "cd ~/shop && clear && git log --oneline -12", 0.8)
@@ -490,12 +537,43 @@ def scene_light(l, out):
     l.shoot(out / "light.png", wait=1.5)
 
 
+# Plugins a scene needs that aren't in this repository: scene -> (name, where
+# its source is). Registry plugins are taken from a checkout beside this
+# one, so no scene reaches the network; without it, the scene is skipped.
+EXTRA_PLUGINS = {
+    "pomodoro": ("pomodoro", Path(os.environ.get("LUMEN_POMODORO", ROOT.parent / "sn" / "lumen-pomodoro"))),
+}
+
+
+def install_plugin(env: dict, name: str, source: Path):
+    """Put a plugin in the demo's plugins folder, approved as if you'd said
+    yes. Returns a function that takes it out again."""
+    dest = Path(env["XDG_CONFIG_HOME"]) / "lumen" / "plugins" / name
+    shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git", "tests", "__pycache__"))
+    approvals_file = Path(env["XDG_STATE_HOME"]) / "lumen" / "plugin-approvals.json"
+    before = approvals_file.read_text()
+    m = tomllib.loads((source / "plugin.toml").read_text())
+    cmd = m["command"].split() if isinstance(m["command"], str) else m["command"]
+    approvals = json.loads(before)
+    approvals[name] = {"command": cmd, "permissions": m.get("permissions", []), "allowed": True}
+    approvals_file.write_text(json.dumps(approvals, indent=2))
+
+    def remove():
+        shutil.rmtree(dest, ignore_errors=True)
+        approvals_file.write_text(before)
+
+    return remove
+
+
 # name -> (what it shows, window size, theme, scene)
 SCENES = {
     "main": ("tabs with badges, split panes, test runs with a failed mark, a campfire", MAIN, "Rosé Pine", scene_main),
     "palette": ("the command palette", FEATURE, "Rosé Pine", scene_palette),
     "find": ("find in scrollback", FEATURE, "Rosé Pine", scene_find),
     "select": ("keyboard select mode", FEATURE, "Rosé Pine", scene_select),
+    "themes": ("the theme picker, trying a theme on", FEATURE, "Rosé Pine", scene_themes),
+    "tab-color": ("the tab colour picker", FEATURE, "Rosé Pine", scene_tab_color),
+    "pomodoro": ("the Pomodoro Timer plugin, from the registry", FEATURE, "Rosé Pine", scene_pomodoro),
     "todo": ("a todo list in a plugin pane", (960, 600), "Rosé Pine", scene_todo),
     "gallery": ("the plugin manager", (960, 600), "Rosé Pine", scene_gallery),
     "watch": ("watch_pane.py, an example script", FEATURE, "Rosé Pine", scene_watch),
@@ -512,7 +590,7 @@ def main():
     args = ap.parse_args()
     if args.list:
         for name, (what, *_rest) in SCENES.items():
-            print(f"  {name:<9} {what}")
+            print(f"  {name:<10} {what}")
         return
     unknown = [s for s in args.scenes if s not in SCENES]
     if unknown:
@@ -544,12 +622,22 @@ def main():
         for name in args.scenes or SCENES:
             what, size, theme, scene = SCENES[name]
             print(f"{name}: {what}")
+            remove_plugin = lambda: None
+            if name in EXTRA_PLUGINS:
+                plugin, source = EXTRA_PLUGINS[name]
+                if not (source / "plugin.toml").exists():
+                    if name in args.scenes:
+                        sys.exit(f"{name} needs the {plugin} plugin's source at {source} (or set LUMEN_{plugin.upper()})")
+                    print(f"  skipped: the {plugin} plugin's source isn't at {source}")
+                    continue
+                remove_plugin = install_plugin(env, plugin, source)
             write_config(env, theme)
             lumen = Lumen(disp, env, runtime, size)
             try:
                 scene(lumen, OUT)
             finally:
                 lumen.stop()
+                remove_plugin()
     finally:
         xvfb.terminate()
         shutil.rmtree(runtime, ignore_errors=True)

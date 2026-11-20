@@ -67,7 +67,7 @@ countdown, a staging server, what's left to do.
 
 <table>
 <tr>
-<td width="50%"><b>Command palette</b>: every action, theme and plugin command, fuzzy-searched, with its shortcut.<br><br><img src="assets/screenshots/palette.png" alt="The command palette over a git log, filtered to split: Split Right and Split Down with their shortcuts"></td>
+<td width="50%"><b>Command palette</b>: every action, theme and plugin command, fuzzy-searched, with its shortcut.<br><br><img src="assets/screenshots/palette.png" alt="The command palette over a git log, filtered to tab: Tab Color, New Tab, Next Tab, Rename Tab and Previous Tab, with their shortcuts"></td>
 <td width="50%"><b>Find in scrollback</b>, with every match highlighted.<br><br><img src="assets/screenshots/find.png" alt="A git log with file stats and the find bar searching for checkout: 6 of 6 matches highlighted"></td>
 </tr>
 <tr>
@@ -81,6 +81,10 @@ countdown, a staging server, what's left to do.
 <tr>
 <td><b><code>watch_pane.py</code></b>, an example script: <code>watch</code> in a pane of its own, with changes highlighted.<br><br><img src="assets/screenshots/watch.png" alt="A shell above a watch pane rerunning a status script every second, with the changed time highlighted"></td>
 <td><b><code>lumen campfire</code></b>: a pixel-art fire in a pane, for cold coding sessions.<br><br><img src="assets/screenshots/campfire.png" alt="A shell with a passing test run beside a pane with a pixel-art campfire, its sparks drifting up"></td>
+</tr>
+<tr>
+<td><b>Theme picker</b>: 24 themes, each tried on the whole window as you move through the list.<br><br><img src="assets/screenshots/themes.png" alt="The theme picker filtered to tokyo, with Tokyo Night chosen and the window behind it already in that theme's colours"></td>
+<td><b>Tab colours</b>: tint a tab in one of the theme's six colours, kept for next time.<br><br><img src="assets/screenshots/tab-color.png" alt="The tab colour picker listing red, green, yellow, blue, magenta, cyan and no colour, over three tabs tinted magenta, green and yellow"></td>
 </tr>
 <tr>
 <td colspan="2"><b>Rosé Pine Dawn</b>, the light theme: every theme recolours the window around the terminal too.<br><br><img src="assets/screenshots/light.png" alt="The main layout in a light theme: a shell with test runs beside a Vite dev server, and tabs with badges"></td>
