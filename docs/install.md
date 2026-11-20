@@ -6,7 +6,7 @@
 curl -fsSL https://lumenshell.dev/install | sh
 ```
 
-This installs the latest release for your user, without sudo.
+This installs the latest release without sudo.
 
 - **Linux** (x86_64 and arm64): the `lumen` command goes in `~/.local/bin`,
   with a menu entry and icon.

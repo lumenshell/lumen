@@ -55,7 +55,8 @@ The full list, grouped by area. The [README](../README.md) has the highlights.
 
 ## Finding and selecting
 
-- The command palette fuzzy-searches every action and theme.
+- The command palette fuzzy-searches every action and plugin command, and its
+  theme picker does the same for themes.
 - Find in scrollback, with optional case-sensitive and regex matching.
 - [Keyboard select mode](keyboard.md#keyboard-select-mode): move through the
   screen and scrollback with vi keys, then select and copy without the mouse.

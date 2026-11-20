@@ -16,8 +16,8 @@ Every glyph is drawn straight to the GPU.
 curl -fsSL https://lumenshell.dev/install | sh
 ```
 
-It installs for your user, without sudo, on Linux (x86_64 and arm64) and
-macOS. Run it again to update.
+It installs without sudo on Linux (x86_64 and arm64) and macOS. Run it again
+to update.
 
 On macOS you can use Homebrew instead:
 
@@ -41,7 +41,7 @@ To uninstall, pick a version, or build from source, see
   a long command finishes while you're elsewhere.
   [More](docs/shell-integration.md)
 - **One palette for everything.** Ctrl+Shift+P (⌘⇧P) fuzzy-searches every
-  action, theme and plugin command.
+  action and plugin command, and opens the theme picker.
 - **Select and copy without the mouse.** Move over the screen and scrollback
   with vi keys. [More](docs/keyboard.md#keyboard-select-mode)
 - **Scripts that drive it.** `lumen msg` opens tabs and splits, types into
@@ -67,7 +67,7 @@ countdown, a staging server, what's left to do.
 
 <table>
 <tr>
-<td width="50%"><b>Command palette</b>: every action, theme and plugin command, fuzzy-searched, with its shortcut.<br><br><img src="assets/screenshots/palette.png" alt="The command palette over a git log, filtered to tab: Tab Color, New Tab, Next Tab, Rename Tab and Previous Tab, with their shortcuts"></td>
+<td width="50%"><b>Command palette</b>: every action and plugin command, fuzzy-searched, with its shortcut.<br><br><img src="assets/screenshots/palette.png" alt="The command palette over a git log, filtered to tab: Tab Color, New Tab, Next Tab, Rename Tab and Previous Tab, with their shortcuts"></td>
 <td width="50%"><b>Find in scrollback</b>, with every match highlighted.<br><br><img src="assets/screenshots/find.png" alt="A git log with file stats and the find bar searching for checkout: 6 of 6 matches highlighted"></td>
 </tr>
 <tr>
